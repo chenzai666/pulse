@@ -17,7 +17,12 @@ $allowed = @('CMakeLists.txt', '.github/workflows/custom-build.yml', 'docs/custo
     'src/ui/properties_window.h', 'src/ui/properties_window.cpp',
     'src/bench/item_properties_test.cpp', 'src/bench/properties_gallery.cpp')
 $changed = @(& git diff --name-only $baseCommit HEAD)
-if ($LASTEXITCODE) { throw '无法比较组件源码版本' }
+if ($LASTEXITCODE) {
+    & git fetch --no-tags --depth=1 origin $baseCommit
+    if ($LASTEXITCODE) { throw '无法读取固定组件源码版本' }
+    $changed = @(& git diff --name-only $baseCommit HEAD)
+    if ($LASTEXITCODE) { throw '无法比较组件源码版本' }
+}
 foreach ($file in $changed) {
     if ($file -notin $allowed) { throw "属性定向构建不支持此改动，请执行完整构建：$file" }
 }
