@@ -1,5 +1,4 @@
-// tab_detach.cpp - Multi-window M6a: drags a tab off the strip into its own
-// window (plan §8.2).
+// Tab/pane drag previews commit on release; title-bar moves keep the native loop.
 #include "tab_detach.h"
 
 #include "app_internal.h"
@@ -35,6 +34,15 @@ struct Grab {
     POINT offset{};
 };
 Grab g_grab;
+struct PendingDrop {
+    HWND window = nullptr;
+    const app::LayoutTab* tab = nullptr;
+    app::Pane* pane = nullptr;
+    std::unique_ptr<app::LayoutTab> pane_preview;
+    POINT grab{};
+    bool strip_dragging = false;
+};
+PendingDrop g_pending;
 // The window in our move loop, and the strip spot its tab would drop on
 // (windows are looked up by handle: one may close during the loop).
 HWND g_moving = nullptr;
@@ -229,6 +237,10 @@ void DescribeDrop(AppState& moving, const Drop& drop, ui::DragGhostView& ghost) 
     ghost.detail.clear();
     ghost.em_start = ghost.em_length = 0;
     if (!drop.window) {
+        if (g_pending.window == moving.hwnd && drop.over == moving.hwnd) {
+            ghost.hint = l10n::Pick(L"松开后保留在当前窗口", L"Release to keep it in this window");
+            return;
+        }
         ghost.hint = DropText(l10n::StringId::DropHintNewWindow);
         if (drop.resting) ghost.detail = Fill(DropText(l10n::StringId::DropHintRest), L"%1", name);
         return;
@@ -255,8 +267,9 @@ void DescribeDrop(AppState& moving, const Drop& drop, ui::DragGhostView& ghost) 
 
 // Moves the drawn tab to the window under the cursor (`drop.over`), or clears
 // it when there is none.
-void ShowGhost(AppState& moving, const Drop& drop, POINT cursor) {
-    AppState* const target = drop.over ? WindowOf(moving, drop.over) : nullptr;
+void ShowGhost(AppState& moving, const Drop& drop, POINT cursor, const app::LayoutTab* incoming = nullptr,
+               const app::Pane* pane = nullptr, bool captured = false) {
+    AppState* const target = drop.over ? WindowOf(moving, drop.over) : captured ? &moving : nullptr;
     if (g_ghost && (!target || target->hwnd != g_ghost)) {
         if (AppState* old = WindowOf(moving, g_ghost)) {
             old->dragGhost = ui::DragGhostView{};
@@ -264,21 +277,28 @@ void ShowGhost(AppState& moving, const Drop& drop, POINT cursor) {
         }
     }
     g_ghost = target ? target->hwnd : nullptr;
-    if (!target || moving.window_tabs.items.empty() || !moving.window_tabs.items[0]) return;
-    const app::LayoutTab& tab = *moving.window_tabs.items[0];
+    if (!incoming && !moving.window_tabs.items.empty()) incoming = moving.window_tabs.items[0].get();
+    if (!target || !incoming) return;
+    const app::LayoutTab& tab = *incoming;
     ui::DragGhostView& ghost = target->dragGhost;
     POINT client = cursor;
     ScreenToClient(target->hwnd, &client);
     ghost.on = true;
     ghost.x = static_cast<float>(client.x);
     ghost.y = static_cast<float>(client.y);
+    if (captured && !drop.over) {
+        ghost.x = std::clamp(ghost.x, 40.0f * target->scale,
+            (std::max)(40.0f * target->scale, static_cast<float>(target->compositor.Width()) - 40.0f * target->scale));
+        ghost.y = std::clamp(ghost.y, 80.0f * target->scale,
+            (std::max)(80.0f * target->scale, static_cast<float>(target->compositor.Height()) - 80.0f * target->scale));
+    }
     // The folder by name: the pill counts the panes itself ("2 panes"), where
     // the strip title says "name · 2".
-    const app::Tab* const view = tab.ActiveFolder();
-    ghost.title = !tab.title.empty() || !view ? app::LayoutTabTitle(tab)
+    const app::Tab* const view = pane ? pane->ActiveTab() : tab.ActiveFolder();
+    ghost.title = (!pane && !tab.title.empty()) || !view ? app::LayoutTabTitle(tab)
                   : view->virtual_title.empty() ? app::TabTitle(view->current_path)
                                                 : view->virtual_title;
-    ghost.panes = static_cast<int>((std::max)(size_t{1}, tab.VisiblePanes().size()));
+    ghost.panes = pane ? 1 : static_cast<int>((std::max)(size_t{1}, tab.VisiblePanes().size()));
     DescribeDrop(moving, drop, ghost);
     InvalidateRect(target->hwnd, nullptr, FALSE);
 }
@@ -308,15 +328,13 @@ bool Cloaked(HWND hwnd) {
 // `moving`: its panes split the pane under the cursor at the side it is
 // nearest (M7i, anywhere on the pane M7j), where the layout has room for them
 // (up to four in all, M7h), else a tab.
-Drop ContentDropAt(AppState& moving, AppState& target, POINT client, float width) {
+Drop ContentDropAt(const app::LayoutTab* incoming, AppState& target, POINT client, float width) {
     const D2D1_RECT_F content =
         target.renderer.ContentRect(width, static_cast<float>(target.compositor.Height()));
-    if (app::ContentDropZone(content, client, kContentDropBand) == app::ContentDrop::None ||
-        moving.window_tabs.items.size() != 1)
+    if (app::ContentDropZone(content, client, kContentDropBand) == app::ContentDrop::None)
         return {};
-    const app::LayoutTab* incoming = moving.window_tabs.items[0].get();
     const app::LayoutTab* active = target.window_tabs.Active();
-    if (!active || !incoming) return {};
+    if (!active || !incoming || active == incoming) return {};
     Drop drop{target.hwnd, target.window_tabs.active + 1, app::ContentDrop::Center, {}, {content}};
     const bool settings = IsSettingsTab(ActiveTab(target)) ||
                           std::any_of(incoming->panes.begin(), incoming->panes.end(),
@@ -338,13 +356,16 @@ Drop ContentDropAt(AppState& moving, AppState& target, POINT client, float width
 // `moving`, when that window is another Pulse window on the same core: its
 // tab strip, or (`content`) its content area, on the window the tab came from
 // after a rest.
-Drop FindDrop(AppState& moving, POINT cursor, bool content) {
-    for (HWND below = GetWindow(moving.hwnd, GW_HWNDNEXT); below; below = GetWindow(below, GW_HWNDNEXT)) {
+Drop FindDrop(AppState& moving, POINT cursor, bool content, const app::LayoutTab* incoming = nullptr,
+              bool captured = false) {
+    if (!incoming && moving.window_tabs.items.size() == 1) incoming = moving.window_tabs.items[0].get();
+    for (HWND below = captured ? GetTopWindow(nullptr) : GetWindow(moving.hwnd, GW_HWNDNEXT);
+         below; below = GetWindow(below, GW_HWNDNEXT)) {
         if (!IsWindowVisible(below) || IsIconic(below) || Cloaked(below)) continue;
         RECT bounds{};
         if (!GetWindowRect(below, &bounds) || !PtInRect(&bounds, cursor)) continue;
         AppState* target = WindowOf(moving, below);
-        if (!target || target == &moving) {  // another program covers the spot
+        if (!target || (!captured && target == &moving)) {  // another program covers the spot
             ForgetDwell();
             return {};
         }
@@ -373,13 +394,16 @@ Drop FindDrop(AppState& moving, POINT cursor, bool content) {
             return over;
         }
         if (!content) return over;
-        Drop drop = ContentDropAt(moving, *target, client, width);
+        // A pane still belongs to this split during preview. Dropping back on
+        // its own content keeps it there; no extraction/restoration is needed.
+        if (captured && target == &moving && g_pending.pane) return over;
+        Drop drop = ContentDropAt(incoming, *target, client, width);
         drop.over = below;
         if (!drop.window) {
             ForgetDwell();
-            return over;  // on its toolbar, sidebar or status bar: a new window
+            return over;  // toolbar, sidebar or status bar: no valid drop spot
         }
-        if (below != g_source) {
+        if (captured || below != g_source) {
             ForgetDwell();
             return drop;
         }
@@ -404,6 +428,7 @@ bool PrimaryButtonDown() {
 
 // Drops the strip drag as WM_CAPTURECHANGED does; the tabs never reordered.
 void EndStripDrag(AppState& s) {
+    s.tabDropPending = false;
     s.tabDragPending = false;
     s.tabDragging = false;
     s.tabDragIndex = -1;
@@ -423,7 +448,8 @@ void EndStripDrag(AppState& s) {
 // Opens tab `index` of `s` as a window of the size of `s` whose client point
 // `grab` (where the cursor holds its tab) is under the cursor, and starts its
 // move loop.
-HWND OpenDetachedWindow(AppState& s, size_t index, POINT grab) {
+HWND OpenDetachedWindow(AppState& s, size_t index, POINT grab, bool begin_move = true) {
+    if (index >= s.window_tabs.items.size() || !s.window_tabs.items[index]) return nullptr;
     RECT window{};
     GetWindowRect(s.hwnd, &window);
     POINT origin{0, 0};
@@ -447,7 +473,7 @@ HWND OpenDetachedWindow(AppState& s, size_t index, POINT grab) {
     init.adopt_index = index;
     init.rect = DetachedWindowRect(size, cursor, grab, offset);
     const HWND hwnd = OpenPulseWindow(s, init);
-    if (hwnd) {
+    if (hwnd && begin_move) {
         g_grab = Grab{hwnd, POINT{cursor.x - init.rect->left, cursor.y - init.rect->top}};
         PostMessageW(hwnd, WM_BEGIN_TAB_DETACH, reinterpret_cast<WPARAM>(s.hwnd), static_cast<LPARAM>(index));
     }
@@ -460,6 +486,35 @@ bool FirstTabRect(AppState& s, const ui::WindowViewModel& vm, D2D1_RECT_F* rect)
     for (int i = 0; i < static_cast<int>(vm.tabs.size()); ++i)
         if (s.renderer.TabItemRect(vm, width, i, rect)) return true;
     return false;
+}
+
+std::optional<size_t> IndexOf(const AppState& s, const app::LayoutTab* tab) {
+    for (size_t i = 0; i < s.window_tabs.items.size(); ++i)
+        if (s.window_tabs.items[i].get() == tab) return i;
+    return std::nullopt;
+}
+
+bool PendingSourceValid(const AppState& s) {
+    if (!IndexOf(s, g_pending.tab)) return false;
+    if (!g_pending.pane) return true;
+    const auto visible = g_pending.tab->VisiblePanes();
+    return std::find(visible.begin(), visible.end(), g_pending.pane) != visible.end();
+}
+
+void ClearPendingPreview(AppState& s, bool restore_tab) {
+    const app::LayoutTab* const tab = g_pending.tab;
+    const bool strip_dragging = g_pending.strip_dragging;
+    g_pending = PendingDrop{};
+    s.tabDropPending = false;
+    s.paneDragPending = false;
+    s.paneDragPane = nullptr;
+    ShowDrop(s, Drop{});
+    HideGhost(s);
+    if (restore_tab) {
+        if (const auto at = IndexOf(s, tab); at && s.window_tabs.active != *at) SwitchTab(s, *at);
+    }
+    s.tabDragging = strip_dragging;
+    InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 }  // namespace
 
@@ -512,7 +567,7 @@ void TrackTabDrop(AppState& s) {
 }
 
 void BeginWindowMove(AppState& s) {
-    if (g_moving || s.window_tabs.items.empty()) return;  // our own loop ends itself (M6a, M6b)
+    if (g_moving || g_pending.window || s.window_tabs.items.empty()) return;
     g_moving = s.hwnd;
     g_moving_state = &s;
     g_caption_move = true;
@@ -546,38 +601,190 @@ void FinishWindowMerge(AppState& s, HWND target, size_t index) {
     MergeWindowInto(s, *dst, index, g_before);
 }
 
+bool BeginTabDropPreview(AppState& s, size_t index, POINT grab, app::Pane* pane) {
+    if (!s.hwnd || !IsWindow(s.hwnd) || g_moving || g_pending.window ||
+        index >= s.window_tabs.items.size() || !s.window_tabs.items[index])
+        return false;
+    app::LayoutTab* const tab = s.window_tabs.items[index].get();
+    if (pane) {
+        const auto visible = tab->VisiblePanes();
+        if (visible.size() < 2 || std::find(visible.begin(), visible.end(), pane) == visible.end() || IsSettingsPane(pane))
+            return false;
+    }
+    g_pending.window = s.hwnd;
+    g_pending.tab = tab;
+    g_pending.pane = pane;
+    g_pending.grab = grab;
+    g_pending.strip_dragging = s.tabDragging;
+    if (pane) g_pending.pane_preview = app::MakeSingleLayoutTab(L"");
+    s.tabDropPending = true;
+    s.tabDragPending = true;
+    s.tabDragging = false;
+    s.tabDragIndex = static_cast<int>(index);
+    s.paneDragPending = false;
+    // The content that would remain after detaching is shown for same-window
+    // split previews, while ownership, ordering and all pane state stay intact.
+    if (!pane && s.window_tabs.items.size() > 1)
+        SwitchTab(s, index + 1 < s.window_tabs.items.size() ? index + 1 : index - 1);
+    SetCapture(s.hwnd);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+    return true;
+}
+
+bool CancelPendingTabDrop(AppState& s) {
+    AppState* source = &s;
+    if (g_pending.window) {
+        if (g_pending.window != s.hwnd && g_drop.window != s.hwnd && g_ghost != s.hwnd) return false;
+        source = WindowOf(s, g_pending.window);
+        if (!source) {
+            g_pending = PendingDrop{};
+            ShowDrop(s, Drop{});
+            HideGhost(s);
+            return true;
+        }
+        ClearPendingPreview(*source, true);
+    } else if (!s.tabDragPending && !s.tabDragging && !s.paneDragPending) {
+        return false;
+    }
+    source->paneDragPending = false;
+    source->paneDragPane = nullptr;
+    EndStripDrag(*source);
+    return true;
+}
+
+bool UpdatePendingTabDrop(AppState& s, int mx, int my) {
+    if (!s.tabDropPending || g_pending.window != s.hwnd) return false;
+    if (GetCapture() != s.hwnd || !PendingSourceValid(s)) {
+        CancelPendingTabDrop(s);
+        return true;
+    }
+    POINT cursor{mx, my};
+    ClientToScreen(s.hwnd, &cursor);
+    const app::LayoutTab* const incoming = g_pending.pane ? g_pending.pane_preview.get() : g_pending.tab;
+    const Drop drop = FindDrop(s, cursor, true, incoming, true);
+    if (!g_pending.pane && drop.window == s.hwnd && drop.zone == app::ContentDrop::None) {
+        // Returning to the strip resumes the original sorter and its tentative
+        // group/pin order; no cross-window transfer has happened yet.
+        ClearPendingPreview(s, true);
+        return false;
+    }
+    ShowDrop(s, drop);
+    ShowGhost(s, drop, cursor, g_pending.tab, g_pending.pane, true);
+    return true;
+}
+
+bool FinishPendingTabDrop(AppState& s, int mx, int my) {
+    if (!s.tabDropPending || g_pending.window != s.hwnd) return false;
+    if (GetCapture() != s.hwnd || !PendingSourceValid(s)) return CancelPendingTabDrop(s);
+    const auto old_index = IndexOf(s, g_pending.tab);
+    if (!old_index) return CancelPendingTabDrop(s);
+    POINT cursor{mx, my};
+    ClientToScreen(s.hwnd, &cursor);
+    const app::LayoutTab* const incoming = g_pending.pane ? g_pending.pane_preview.get() : g_pending.tab;
+    const Drop drop = FindDrop(s, cursor, true, incoming, true);
+    app::Pane* const pane = g_pending.pane;
+    const POINT grab = g_pending.grab;
+    if (!pane && drop.window == s.hwnd && drop.zone == app::ContentDrop::None) {
+        ClearPendingPreview(s, true);
+        return false;  // WM_LBUTTONUP commits the unchanged strip sorter.
+    }
+    AppState* const target = WindowOf(s, drop.window);
+    RECT source_bounds{};
+    const bool outside = GetWindowRect(s.hwnd, &source_bounds) && !PtInRect(&source_bounds, cursor);
+    // Sidebar, toolbar, status bar, a full layout or a stale target never
+    // creates an unexpected window while the pointer is inside Pulse.
+    const bool new_window = !target && !drop.over && outside;
+    if ((!target && !new_window) || (target == &s && drop.zone == app::ContentDrop::Center))
+        return CancelPendingTabDrop(s);
+    ClearPendingPreview(s, false);
+    EndStripDrag(s);
+    size_t index = *old_index;
+    app::PaneOrigin origin;
+    const app::LayoutTab* const parent = s.window_tabs.items[index].get();
+    if (pane) {
+        const auto extracted = SplitPaneIntoTab(s, pane, origin);
+        if (!extracted) return true;
+        index = *extracted;
+        if (target == &s) {
+            // A pane header dropped on this strip becomes a tab there.
+            auto own = s.window_tabs.TakeTab(index);
+            if (own) s.window_tabs.InsertTab(std::move(own), drop.index);
+            BindCurrentLayout(s);
+            InvalidateRect(s.hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
+    if (target) {
+        const bool split = drop.zone != app::ContentDrop::None && drop.zone != app::ContentDrop::Center;
+        const bool closing = target != &s && s.window_tabs.items.size() == 1;
+        const auto source = closing ? TransferSource::Closing : TransferSource::KeepsTabs;
+        const bool moved = split ? MoveTabIntoPane(s, index, *target, drop.placement, source)
+                                 : MoveLayoutTab(s, index, *target, drop.index, source);
+        if (moved) {
+            const HWND target_hwnd = target->hwnd;
+            if (closing) DestroyWindow(s.hwnd);
+            SetForegroundWindow(target_hwnd);
+            return true;
+        }
+    } else if (s.window_tabs.items.size() == 1 && !pane) {
+        // A single tab carries its existing window, but only after release.
+        if (IsZoomed(s.hwnd)) ShowWindow(s.hwnd, SW_RESTORE);
+        RECT bounds{};
+        GetWindowRect(s.hwnd, &bounds);
+        POINT client_origin{};
+        ClientToScreen(s.hwnd, &client_origin);
+        const RECT next = DetachedWindowRect(SIZE{bounds.right - bounds.left, bounds.bottom - bounds.top},
+            cursor, grab, POINT{client_origin.x - bounds.left, client_origin.y - bounds.top});
+        SetWindowPos(s.hwnd, nullptr, next.left, next.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return true;
+    } else if (OpenDetachedWindow(s, index, grab, false)) {
+        return true;
+    }
+    // Failed commits keep their data in the source; a just-extracted pane
+    // returns to its exact origin instead of being left as an accidental tab.
+    if (pane && index < s.window_tabs.items.size()) {
+        auto& tabs = s.window_tabs;
+        const auto parent_index = IndexOf(s, parent);
+        if (parent_index && app::CanPutPaneBack(*tabs.items[*parent_index], *tabs.items[index], origin)) {
+            auto own = tabs.TakeTab(index);
+            if (own) {
+                app::PutPaneBack(*tabs.items[*IndexOf(s, parent)], std::move(own), origin);
+                tabs.SwitchTab(*IndexOf(s, parent));
+                BindCurrentLayout(s);
+                RevalidateVisibleFolders(s);
+            }
+        }
+    } else if (const auto at = IndexOf(s, parent)) {
+        SwitchTab(s, *at);
+    }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+    return true;
+}
+
 bool TryDetachDraggedTab(AppState& s, int mx, int my) {
     if ((!s.tabDragPending && !s.tabDragging) || s.tabDragFromChip) return false;
     const int index = s.tabDragIndex;
     if (index < 0 || index >= static_cast<int>(s.window_tabs.items.size())) return false;
     const POINT now{mx, my};
-    if (s.window_tabs.items.size() < 2) {
-        // A window's only tab carries the window (plan §5 P2).
-        if (std::abs(mx - s.tabDragStartPt.x) < GetSystemMetrics(SM_CXDRAG) &&
-            std::abs(my - s.tabDragStartPt.y) < GetSystemMetrics(SM_CYDRAG))
-            return false;
-        POINT press = s.tabDragStartPt;
-        ClientToScreen(s.hwnd, &press);
-        RECT window{};
-        GetWindowRect(s.hwnd, &window);
-        g_grab = Grab{s.hwnd, POINT{press.x - window.left, press.y - window.top}};
-        EndStripDrag(s);
-        PostMessageW(s.hwnd, WM_BEGIN_TAB_DETACH, 0, 0);
-        return true;
-    }
-    if (!TabDetachDistanceReached(s.tabDragStartPt, now, s.scale)) return false;
+    const RECT client{0, 0, static_cast<LONG>(s.compositor.Width()), static_cast<LONG>(s.compositor.Height())};
+    const bool outside = !PtInRect(&client, now) &&
+        (std::abs(mx - s.tabDragStartPt.x) >= GetSystemMetrics(SM_CXDRAG) ||
+         std::abs(my - s.tabDragStartPt.y) >= GetSystemMetrics(SM_CYDRAG));
+    if (!outside && !TabDetachDistanceReached(s.tabDragStartPt, now, s.scale)) return false;
 
     // Where the cursor held the tab, so it holds the new window's tab there.
     const ui::WindowViewModel vm = BuildVm(s, false);
     const float width = static_cast<float>(s.compositor.Width());
     D2D1_RECT_F first{}, self{};
     if (!FirstTabRect(s, vm, &first) || !s.renderer.TabItemRect(vm, width, index, &self)) return false;
+    const float slack = 12.0f * s.scale;
+    if (my >= first.top - slack && my <= first.bottom + slack && mx >= first.left - slack &&
+        mx <= width - 3.0f * 46.0f * s.scale) return false;
     const POINT grab{static_cast<LONG>(std::lround(first.left)) + (s.tabDragStartPt.x -
                                                                      static_cast<LONG>(std::lround(self.left))),
                      s.tabDragStartPt.y};
-    EndStripDrag(s);
-    OpenDetachedWindow(s, static_cast<size_t>(index), grab);
-    return true;
+    if (!BeginTabDropPreview(s, static_cast<size_t>(index), grab)) return false;
+    return UpdatePendingTabDrop(s, mx, my);
 }
 
 void ArmPaneDrag(AppState& s, const ui::HitTestResult& hit, int mx, int my) {
@@ -600,14 +807,11 @@ bool TryDetachDraggedPane(AppState& s, int mx, int my) {
     if (std::abs(mx - s.paneDragStartPt.x) < GetSystemMetrics(SM_CXDRAG) &&
         std::abs(my - s.paneDragStartPt.y) < GetSystemMetrics(SM_CYDRAG))
         return false;
-    s.paneDragPending = false;
-
     // The cursor holds the new window's tab as far into it as it held the
     // pane header, within the tab.
     const ui::WindowViewModel vm = BuildVm(s, false);
     D2D1_RECT_F first{};
     const app::LayoutTab* const into = s.window_tabs.Active();
-    const size_t back_to = s.window_tabs.active;
     LONG header_left = 0;
     for (size_t i = 0; i < vm.pane_slots.size(); ++i)
         if (PaneAtSlot(s, static_cast<int>(i)) == s.paneDragPane)
@@ -619,16 +823,8 @@ bool TryDetachDraggedPane(AppState& s, int mx, int my) {
     const POINT grab{tab_left + std::clamp(s.paneDragStartPt.x - header_left, edge, tab_width - edge),
                      static_cast<LONG>(std::lround((first.top + first.bottom) / 2.0f))};
 
-    app::PaneOrigin origin;
-    const std::optional<size_t> index = SplitPaneIntoTab(s, s.paneDragPane, origin);
-    s.paneDragPane = nullptr;
-    if (!index) return false;
-    if (GetCapture() == s.hwnd) ReleaseCapture();
-    if (OpenDetachedWindow(s, *index, grab)) g_pane_back = PaneBack{s.hwnd, into, std::move(origin)};
-    // The split, one pane fewer, stays in front here (if no window opened,
-    // the pane is left as a tab of its own).
-    SwitchTab(s, back_to);
-    return true;
+    if (!BeginTabDropPreview(s, s.window_tabs.active, grab, s.paneDragPane)) return false;
+    return UpdatePendingTabDrop(s, mx, my);
 }
 
 void RunDetachedTabMove(AppState& s, HWND from, size_t index) {

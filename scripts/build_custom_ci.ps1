@@ -26,12 +26,12 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test
+cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw 'Pulse 定制版原生编译失败' }
-foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test')) {
+foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test', 'pulse_drop_navigation_test')) {
     & (Join-Path $taskBuild "$testName.exe")
     if ($LASTEXITCODE) { throw "定向回归失败：$testName" }
 }

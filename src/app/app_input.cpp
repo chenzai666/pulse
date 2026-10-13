@@ -5,6 +5,7 @@
 #include "app_prompts.h"
 #include "vertical_tabs.h"
 #include "tab_detach.h"
+#include "sidebar_navigation.h"
 #include "tab_spring.h"
 #include "tab_shortcuts.h"
 #include "explorer_shortcuts.h"
@@ -33,6 +34,7 @@
 #include "batch_rename.h"
 #include "blank_pane_click.h"
 #include "drop_staging.h"
+#include "drop_navigation_model.h"
 #include "link_resolve.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
@@ -199,13 +201,17 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     D2D1_RECT_F rect = D2D1::RectF(0, 0, (float)s.compositor.Width(), (float)s.compositor.Height());
     ui::HitTestResult hit = s.renderer.HitTest(vm, rect, (float)pt.x, (float)pt.y);
 
-    // Resting on a tab of the strip opens it (M6e); the tab takes the drop
-    // into the folder it shows.
-    const bool on_strip_tab = hit.region == ui::HitTestResult::Tab && hit.index >= 0 &&
-                              hit.index < static_cast<int>(s.window_tabs.items.size());
-    if (app::AdvanceTabSpring(s.springTab, s.springTabStart, on_strip_tab ? hit.index : -1, s.window_tabs.active,
-                              GetTickCount64()))
-        SwitchTab(s, static_cast<size_t>(hit.index));
+    if (IsTabNavigationDropTarget(s, hit, pt)) {
+        const DWORD effect = app::TabNavigationDropEffect(allowed);
+        s.springRow = -1;
+        s.springTab = -1;
+        s.springTabStart = 0;
+        if (effect != DROPEFFECT_NONE) s.dropBadge = l10n::Get(l10n::StringId::OpenNewTab);
+        s.dropBadgeX = static_cast<float>(pt.x);
+        s.dropBadgeY = static_cast<float>(pt.y);
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return effect;
+    }
 
     app::Pane* hitPane = PaneAtSlot(s, hit.pane_index);
     app::Tab* tab = hitPane ? hitPane->ActiveTab() : ActiveTab(s);
@@ -266,13 +272,6 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
         s.dropBadgeY = (float)pt.y;
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return effect;
-    } else if (on_strip_tab) {
-        s.springRow = -1;
-        const app::Tab* view = s.window_tabs.items[static_cast<size_t>(hit.index)]->ActiveFolder();
-        if (view && !view->current_path.empty() && !fs::IsVirtualPath(view->current_path)) {
-            s.dropDestDir = view->current_path;
-            destName = BaseName(view->current_path);
-        }
     } else if (hit.region == ui::HitTestResult::BreadcrumbSegment && !hit.path.empty()) {
         s.dropDestDir = hit.path;
         s.dropBreadcrumb = hit.index;
@@ -427,6 +426,7 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     // Tray drag-out is copy-only: the staged originals stay where they are.
     if (s.trayDragOut) allowed &= DROPEFFECT_COPY;
     DWORD effect = ResolveDropTarget(s, sources, pt, key_state, allowed, preferred_effect);
+    const bool navigation_drop = IsTabNavigationDropTarget(s, pt);
     std::wstring dest = s.dropDestDir;
     const std::wstring launch_program = s.dropLaunchProgram;
     bool tray = s.dropTray;
@@ -436,6 +436,9 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     ClearDropFeedback(s);
     s.springEntered = false;
     if (effect == DROPEFFECT_NONE || !(effect & allowed)) return DROPEFFECT_NONE;
+
+    if (navigation_drop)
+        return QueueDroppedPathsInTabs(s, sources) ? effect : DROPEFFECT_NONE;
 
     if (!launch_program.empty()) {
         // Launched on the ops open thread, in the program's own folder.
@@ -1149,6 +1152,7 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
         s->hoverPoint = POINT{ mx, my };
+        if (s->tabDropPending && UpdatePendingTabDrop(*s, mx, my)) return 0;
         s->bloom_accent.SetPointer(static_cast<float>(mx), static_cast<float>(my), true);
         if (static_cast<float>(my) >= s->renderer.TitleBarHeight() && s->renderer.ReleaseTabWidths())
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -1338,7 +1342,7 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             }
         }
 
-        if (TryDetachDraggedPane(*s, mx, my)) return 0;  // the pane is a window now (M6d)
+        if (TryDetachDraggedPane(*s, mx, my)) return 0;  // captured pane preview, committed on release
         if (s->tabDragPending) {
             if ((GetKeyState(VK_LBUTTON) & 0x8000) == 0) {
                 s->tabDragPending = false;
@@ -1352,7 +1356,7 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 s->tabOrder.clear();
                 if (GetCapture() == hwnd) ReleaseCapture();
             } else if (TryDetachDraggedTab(*s, mx, my)) {
-                return 0;  // off the strip: the tab is a window now (M6a)
+                return 0;  // off the strip: captured preview, committed on release
             } else if (s->tabDragging ||
                        (s->pane && s->window_tabs.items.size() >= 2 &&
                         std::abs(mx - s->tabDragStartPt.x) >= 2)) {
@@ -3054,7 +3058,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 app::ParsePulsePath(hit.path, &kind, &rest);
                 OpenWorkspace(*s, _wtoi(rest.c_str()));
             } else if (!hit.path.empty()) {
-                NavigateTo(*s, hit.path);
+                OpenSidebarPath(*s, hit.path);
             }
         } else if (hit.region == ui::HitTestResult::StatusBarCancelSearch) {
             if (auto* tab = ActiveTab(*s)) CancelActiveContentSearch(*s, *tab);
@@ -3200,6 +3204,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         (void)msg;
         (void)wParam;
         if (s) {
+            if (FinishPendingTabDrop(*s, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) return 0;
             s->paneDragPending = false;
             if (s->settings.slider_drag() >= 0) {
                 s->settings.EndSlider();
@@ -3259,7 +3264,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 if (!was_active) {
                     // A row of a header-less section navigates on release; a
                     // header folds its section (masks are keyed by id).
-                    if (navigate || !path.empty()) NavigateTo(*s, path);
+                    if (navigate || !path.empty()) OpenSidebarPath(*s, path);
                     else if (section >= 0) s->sidebarCollapsedMask ^= 1u << section;
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -3278,7 +3283,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 }
                 ResetSidebarPinDrag(*s);
                 if (GetCapture() == hwnd) ReleaseCapture();
-                if (!was_active && !path.empty() && !tab_row) NavigateTo(*s, path);
+                if (!was_active && !path.empty() && !tab_row) OpenSidebarPath(*s, path);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -3292,7 +3297,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 s->starDragPath.clear();
                 s->dropSidebar = -1;
                 if (GetCapture() == hwnd) ReleaseCapture();
-                if (!was_active && !path.empty()) NavigateTo(*s, path);
+                if (!was_active && !path.empty()) OpenSidebarPath(*s, path);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -3350,7 +3355,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 s->tagGapVisible = false;
                 s->tagGapFrom = s->tagGapTo = s->tagGapLineY = 0.0f;
                 if (GetCapture() == hwnd) ReleaseCapture();
-                if (!wasActive && !path.empty()) NavigateTo(*s, path); // plain click
+                if (!wasActive && !path.empty()) OpenSidebarPath(*s, path); // plain click
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -3581,6 +3586,7 @@ LRESULT HandleCaptureChanged(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LP
         (void)wParam;
         (void)lParam;
         if (s) {
+            CancelPendingTabDrop(*s);
             s->columnResizing = false;
             s->columnResizeIndex = -1;
             s->columnResizePane = -1;
@@ -3789,7 +3795,10 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             const app::StarredItem* starred = s->places.FindStarred(hit.path);
             const app::SidebarEntry* quick_access = QuickAccessEntryForPath(*s, hit.path);
             if ((starred && starred->kind == app::PlaceItemKind::Folder) || quick_access) {
-                ShowCuratedItemMenu(*s, hit.path, false, sp);
+                ShowCuratedItemMenu(*s, hit.path, false, sp, true);
+                shown = true;
+            } else {
+                ShowSidebarPathMenu(*s, hit.path, sp);
                 shown = true;
             }
         } else if (hit.region == ui::HitTestResult::SidebarHeader ||
@@ -3991,6 +4000,9 @@ void ShowKeyboardContextMenu(AppState& s) {
 
 LRESULT HandleKeyDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!s) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        if (wParam == VK_ESCAPE && CancelPendingTabDrop(*s)) return 0;
+        if (s->tabDropPending && wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU)
+            CancelPendingTabDrop(*s); // keyboard navigation/close acts on the original active tab
         if (wParam == VK_ESCAPE && s->settings.menu_drag_item() >= 0) {
             // Esc puts a dragged Pulse menu preview row back.
             s->settings.EndMenuDrag();

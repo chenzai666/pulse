@@ -2093,9 +2093,10 @@ void TestMenuModel() {
           recycle_bg[0].enabled,
           L"menu: recycle background can empty the bin");
     auto recycle_place = BuildRecyclePlaceMenu(true);
-    Check(recycle_place.size() == 2 && recycle_place[0].command == CmdOpenRecycle &&
-          recycle_place[1].command == CmdEmptyRecycle,
-          L"menu: recycle quick access pin opens and empties");
+    Check(recycle_place.size() == 4 && recycle_place[0].command == CmdOpenRecycle &&
+          recycle_place[1].command == CmdOpenInNewTab && recycle_place[2].command == CmdOpenInNewWindow &&
+          recycle_place[3].command == CmdEmptyRecycle,
+          L"menu: recycle quick access supports new tab/window and preserves empty");
     {
         std::vector<ui::FluentMenuItem> en_place;
         ui::FluentMenuItem open_en;

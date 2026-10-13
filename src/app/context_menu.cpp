@@ -310,10 +310,19 @@ std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,
 }
 
 std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty) {
-    std::vector<ui::FluentMenuItem> items;
-    items.push_back(Item(CmdOpenRecycle, l10n::Get(l10n::StringId::Open).c_str(), kGlyphOpen));
+    auto items = BuildSidebarNavigationMenu();
+    items.front().command = CmdOpenRecycle;
     items.push_back(Item(CmdEmptyRecycle, l10n::Get(l10n::StringId::EmptyRecycleBin).c_str(),
                          kGlyphRecycle, nullptr, can_empty));
+    return items;
+}
+
+std::vector<ui::FluentMenuItem> BuildSidebarNavigationMenu() {
+    std::vector<ui::FluentMenuItem> items;
+    items.push_back(Item(CmdOpen, l10n::Get(l10n::StringId::Open).c_str(), kGlyphOpen));
+    items.push_back(Item(CmdOpenInNewTab, l10n::Get(l10n::StringId::OpenNewTab).c_str(), kGlyphOpenInNewTab));
+    items.push_back(Item(CmdOpenInNewWindow, l10n::Pick(L"在新窗口打开", L"Open in new window"), L"\xE8A7"));
+    items.back().separator_after = true;
     return items;
 }
 

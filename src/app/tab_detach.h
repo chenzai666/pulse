@@ -1,13 +1,13 @@
 #pragma once
-// tab_detach.h - Multi-window M6a (plan §8.2, Chrome model): a tab dragged off
-// the tab strip becomes a real window that follows the cursor in the system
-// move loop, so Snap and Snap Layouts come from Windows itself. Esc during
-// the move puts the tab back where it was.
+// A tab or pane dragged away stays in its source until button release.
+// Drop previews use the existing strip and pane placement model; cancellation
+// clears the preview without creating a temporary window.
 #include <windows.h>
 #include <cstddef>
 
 namespace pulse {
 struct AppState;
+namespace app { struct Pane; }
 namespace ui {
 struct HitTestResult;
 }
@@ -15,7 +15,7 @@ struct HitTestResult;
 // Vertical distance from the press, in DIP, that pulls a tab off the strip.
 constexpr float kTabDetachDistanceDip = 24.0f;
 
-// True once a strip drag has left the strip far enough to detach the tab.
+// True once the drag has moved far enough to start an off-strip preview.
 bool TabDetachDistanceReached(POINT press, POINT now, float scale);
 
 // The new window's rect: `size`, placed so that the cursor lands on
@@ -23,18 +23,24 @@ bool TabDetachDistanceReached(POINT press, POINT now, float scale);
 // the client origin relative to the window's top-left corner.
 RECT DetachedWindowRect(SIZE size, POINT cursor, POINT grab_client, POINT client_offset);
 
-// WM_MOUSEMOVE during a press on a tab (mx, my: client px). Pulls the tab off
-// into a new window once the drag leaves the strip; in a window with one tab,
-// any drag moves the window instead. Returns true when the strip drag ended
-// here (the caller stops handling the move).
+// WM_MOUSEMOVE during a press on a tab (mx, my: client px). Once it leaves the
+// strip, capture follows the drop preview. Returns true when preview handles
+// this move instead of the existing strip reorder.
 bool TryDetachDraggedTab(AppState& s, int mx, int my);
+// Starts a captured preview without moving the tab or extracting the pane.
+bool BeginTabDropPreview(AppState& s, size_t index, POINT grab, app::Pane* pane = nullptr);
+// WM_MOUSEMOVE while captured; returning to the source strip resumes its sorter.
+bool UpdatePendingTabDrop(AppState& s, int mx, int my);
+// WM_LBUTTONUP: commit the final target, or create a window only outside Pulse.
+// True when handled; a last-tab transfer may destroy s, so callers return now.
+bool FinishPendingTabDrop(AppState& s, int mx, int my);
+// Esc, capture loss, deactivation or close: clear the preview and keep all tabs.
+bool CancelPendingTabDrop(AppState& s);
 // WM_LBUTTONDOWN (after the pane under the press is focused): a press on the
 // header of one of at least two visible panes may drag that pane out (M6d).
 void ArmPaneDrag(AppState& s, const ui::HitTestResult& hit, int mx, int my);
-// WM_MOUSEMOVE: once a drag from an armed pane header passes the system drag
-// distance, the pane becomes a tab of its own (the split keeps the rest)
-// that opens as a window under the cursor, exactly like a tab pulled off the
-// strip; Esc puts the pane back into its split. True when that happened.
+// WM_MOUSEMOVE: a pane-header drag past the system distance starts a preview.
+// The pane remains in its split until release, so Esc preserves its origin.
 bool TryDetachDraggedPane(AppState& s, int mx, int my);
 
 // A visible tab of a strip, in strip order: its window_tabs index and rect.

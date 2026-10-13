@@ -75,7 +75,7 @@ app::SidebarEntry* QuickAccessEntryForPath(AppState& s,
 void ShowStarredBadgeEditor(AppState& s, const std::wstring& path,
                                     POINT screen_pt);
 void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
-                                bool recent, POINT screen_pt);
+                                bool recent, POINT screen_pt, bool sidebar = false);
 void SetViewMode(AppState& s, ui::ViewMode mode);
 // "Apply to all folders" (#31) for the active real folder. Returns true when
 // applied; confirm=false skips the dialog (self tests).

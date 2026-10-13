@@ -7,6 +7,7 @@
 #include "app_column_view.h"
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
+#include "sidebar_navigation.h"
 #include "app_sidebar_refresh.h"
 #include "tray_reveal.h"
 #include "group_wheel_ui.h"
@@ -1571,7 +1572,7 @@ void ShowStarredBadgeEditor(AppState& s, const std::wstring& path,
 }
 
 void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
-                                bool recent, POINT screen_pt) {
+                                bool recent, POINT screen_pt, bool sidebar) {
     if (path.empty() || !EnsureMenu(s)) return;
     constexpr int kCustomColor = 30100;
     std::vector<ui::FluentMenuItem> items;
@@ -1629,10 +1630,15 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
     const bool known_folder = (favorite && favorite->kind == app::PlaceItemKind::Folder) ||
         (recent_item && recent_item->kind == app::PlaceItemKind::Folder) ||
         (!fs::IsVirtualPath(path) && QuickAccessEntryForPath(s, path));
-    if (known_folder) AppendQuickAccessCommand(s, items, {path});
+    if (known_folder) {
+        const auto navigation = app::BuildSidebarNavigationMenu();
+        items.insert(items.begin() + 1, navigation.begin() + 1, navigation.end());
+        AppendQuickAccessCommand(s, items, {path});
+    }
     const int cmd = s.menu->TrackPopup(screen_pt, std::move(items));
     if (HandleQuickAccessCommand(s, cmd, known_folder ? std::vector<std::wstring>{path}
                                                                    : std::vector<std::wstring>{})) return;
+    if (known_folder && (sidebar || cmd != app::CmdOpen) && HandleSidebarNavigationCommand(s, path, cmd)) return;
     if (cmd == app::CmdOpen) {
         const DWORD attrs = GetFileAttributesW(path.c_str());
         const bool is_dir = attrs != INVALID_FILE_ATTRIBUTES &&
@@ -2162,6 +2168,7 @@ void ShowRecyclePlaceMenu(AppState& s, POINT screen_pt) {
     if (!EnsureMenu(s)) return;
     const bool can_empty = !s.recycle_info.valid || s.recycle_info.items > 0;
     const int cmd = s.menu->TrackPopup(screen_pt, app::BuildRecyclePlaceMenu(can_empty));
+    if (HandleSidebarNavigationCommand(s, app::MakeRecyclePath(), cmd)) return;
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
 }
 void ApplyAppWindowChrome(AppState& s) {

@@ -114,8 +114,9 @@ bool MoveTabIntoPane(AppState& src, size_t index, AppState& dst, const app::Pane
     auto& from = src.window_tabs;
     const bool closing = source == TransferSource::Closing;
     app::LayoutTab* const into = dst.window_tabs.Active();
-    if (&src == &dst || index >= from.items.size() || (from.items.size() < 2 && !closing) ||
-        !from.items[index] || !into || !app::CanPlacePanes(*into, *from.items[index], placement))
+    if (index >= from.items.size() || (from.items.size() < 2 && !closing) ||
+        !from.items[index] || !into || from.items[index].get() == into ||
+        !app::CanPlacePanes(*into, *from.items[index], placement))
         return false;
     std::unique_ptr<app::LayoutTab> tab = TakeLeavingTab(src, index, closing, dst);
     if (!tab) return false;

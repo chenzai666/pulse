@@ -112,6 +112,7 @@ enum MenuCmd : int {
     CmdApplyViewToAllFolders = 194, // view menu: this view + sort become every folder's default
     CmdApplyGroupToAllFolders = 195, // group menu: this grouping becomes every folder's default (#75)
     CmdExitPulse = 196,         // palette: quit even when closing keeps Pulse running (#57)
+    CmdOpenInNewWindow = 197,   // sidebar destination: preserve the current window
     CmdRecentBase = 200,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
@@ -238,6 +239,7 @@ std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,
                                                            const std::wstring& undo_label,
                                                            bool can_empty);
 std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty);
+std::vector<ui::FluentMenuItem> BuildSidebarNavigationMenu();
 
 // Toolbar "新建▾" dropdown (reuses the same FluentMenu component).
 std::vector<ui::FluentMenuItem> BuildNewMenu();

@@ -2,8 +2,11 @@
 // tab_transfer_test.cpp - Multi-window M5b: WindowTabs::TakeTab/InsertTab and
 // MoveLayoutTab move a live tab between two windows sharing one core.
 #include "app_internal.h"
+#include "app_input.h"
 #include "tab_detach.h"
 #include "pane_drop.h"
+#include "pane_layout.h"
+#include "session.h"
 #include "split_tree_shape.h"
 #include "dir_notify_queue.h"
 #include "folder_move_remap.h"
@@ -312,6 +315,56 @@ bool RunTabTransferTest() {
         Seed(dst->window_tabs, 2);
         BindCurrentLayout(*dst);
 
+        // Crossing the strip threshold must not transfer ownership or create
+        // a real window; Esc/capture loss/release inside the source cancel it.
+        {
+            src->window_tabs.SwitchTab(1);
+            BindCurrentLayout(*src);
+            LayoutTab* const held = src->window_tabs.items[1].get();
+            Pane* const held_pane = held->panes[0].get();
+            held_pane->ActiveTab()->selected_index = 7;
+            held_pane->ActiveTab()->scroll_y = 128.0f;
+            const size_t windows = core->windows.Count();
+            check(BeginTabDropPreview(*src, 1, POINT{150, 20}) && src->tabDropPending &&
+                      src->window_tabs.items.size() == 3 && src->window_tabs.items[1].get() == held &&
+                      held->panes[0].get() == held_pane && core->windows.Count() == windows,
+                  "leaving the strip starts only a captured preview, retaining the live tab and window count");
+            HandleKeyDown(src.get(), src->hwnd, WM_KEYDOWN, VK_ESCAPE, 0);
+            check(!src->tabDropPending && !src->tabDragPending && src->window_tabs.Active() == held &&
+                      src->window_tabs.items.size() == 3 && held_pane->ActiveTab()->selected_index == 7 &&
+                      held_pane->ActiveTab()->scroll_y == 128.0f && core->windows.Count() == windows,
+                  "Esc cancels a preview without losing active tab, selection, scroll or creating a window");
+            BeginTabDropPreview(*src, 1, POINT{150, 20});
+            if (GetCapture() == src->hwnd) ReleaseCapture();
+            HandleCaptureChanged(src.get(), src->hwnd, WM_CAPTURECHANGED, 0, 0);
+            check(!src->tabDropPending && src->window_tabs.Active() == held &&
+                      src->window_tabs.items.size() == 3 && core->windows.Count() == windows,
+                  "capture loss abandons the preview and leaves every tab in the original window");
+            BeginTabDropPreview(*src, 1, POINT{150, 20});
+            check(FinishPendingTabDrop(*src, 80, 100) && !src->tabDropPending &&
+                      src->window_tabs.Active() == held && src->window_tabs.items.size() == 3 &&
+                      core->windows.Count() == windows,
+                  "release inside the source without a valid drop keeps the tab instead of creating a window");
+            held->tab_group = 41;
+            src->window_tabs.tab_groups.push_back(TabGroup{});
+            src->window_tabs.tab_groups.back().id = 41;
+            const int group = held->tab_group;
+            BeginTabDropPreview(*src, 1, POINT{150, 20});
+            CancelPendingTabDrop(*src);  // same entry used by close/deactivation hooks
+            check(held->tab_group == group && src->window_tabs.items[1].get() == held &&
+                      core->windows.Count() == windows,
+                  "close or deactivation cancellation preserves strip order and group membership");
+            held->tab_group = 0;
+            src->window_tabs.tab_groups.clear();
+            BeginTabDropPreview(*src, 1, POINT{150, 20});
+            src->window_tabs.CloseTab(1);
+            CancelPendingTabDrop(*src);
+            check(!src->tabDropPending && src->window_tabs.items.size() == 2 && core->windows.Count() == windows,
+                  "closing the dragged tab during preview clears stale identity without creating a window");
+            Seed(src->window_tabs, 3);
+            BindCurrentLayout(*src);
+        }
+
         // The moved tab: split in two, focus on the right pane, scrolled and
         // with a selection in it.
         LayoutTab* moved = src->window_tabs.items[1].get();
@@ -381,6 +434,56 @@ bool RunTabTransferTest() {
               "a tab dropped on the right edge becomes the focused right pane, its selection kept");
         check(!MoveTabIntoPane(*src, 0, *dst, ContentDrop::Left) && src->window_tabs.items.size() == 1,
               "a window's only tab does not leave unless the window is closing");
+
+        // The delayed drag can now join the neighboring tab directly, without
+        // creating an intermediate window. Pane identities and session shape
+        // use the same placement and restore helpers as a cross-window drop.
+        {
+            Seed(src->window_tabs, 2);
+            src->window_tabs.SwitchTab(0);
+            BindCurrentLayout(*src);
+            LayoutTab* const into = src->window_tabs.items[0].get();
+            Pane* const existing = into->panes[0].get();
+            Pane* const arriving = src->window_tabs.items[1]->panes[0].get();
+            arriving->ActiveTab()->selected_index = 5;
+            arriving->ActiveTab()->scroll_y = 64.0f;
+            const auto placement = AimPaneDrop(*into, 1, D2D1_RECT_F{0, 0, 1000, 800}, 1.0f, POINT{800, 400});
+            check(MoveTabIntoPane(*src, 1, *src, placement) && src->window_tabs.items.size() == 1 &&
+                      src->window_tabs.Active() == into && into->VisiblePanes().size() == 2 &&
+                      into->VisiblePanes()[0] == existing && into->VisiblePanes()[1] == arriving &&
+                      src->pane == arriving && arriving->ActiveTab()->selected_index == 5 &&
+                      arriving->ActiveTab()->scroll_y == 64.0f,
+                  "release can split a neighboring tab in the same window while preserving pane state");
+            check(!MoveTabIntoPane(*src, 0, *src, ContentDrop::Left) && into->VisiblePanes().size() == 2,
+                  "a tab cannot be split into itself or consumed as its own destination");
+            const auto saved = CaptureLayoutTab(*into);
+            LayoutTab restored;
+            RestoreLayoutTab(restored, saved, [](Tab&, const std::wstring&) {});
+            RebuildLayoutRoot(restored);
+            check(restored.VisiblePanes().size() == 2 &&
+                      restored.root && SplitTreeShape(*restored.root) == SplitTreeShape(*into->root),
+                  "a same-window split keeps a restorable session layout");
+            const auto original_shape = SplitTreeShape(*into->root);
+            const auto original_ratios = saved.split_ratios;
+            check(BeginTabDropPreview(*src, 0, POINT{150, 20}, arriving) &&
+                      src->window_tabs.items.size() == 1 && into->VisiblePanes().size() == 2 &&
+                      core->windows.Count() == 2,
+                  "a pane-header preview keeps its pane in the original split without a temporary tab or window");
+            HandleKeyDown(src.get(), src->hwnd, WM_KEYDOWN, VK_ESCAPE, 0);
+            check(!src->tabDropPending && src->window_tabs.items.size() == 1 &&
+                      into->VisiblePanes()[1] == arriving && src->pane == arriving &&
+                      SplitTreeShape(*into->root) == original_shape &&
+                      CaptureLayoutTab(*into).split_ratios == original_ratios && arriving->ActiveTab()->selected_index == 5,
+                  "Esc preserves a pane's position, split shape, ratios and selection exactly");
+            Seed(src->window_tabs, 2);
+            src->window_tabs.SwitchTab(0);
+            LayoutTab* const full = src->window_tabs.items[0].get();
+            for (int i = 0; i < 3; ++i) AddPaneFromTab(*full, MakeSingleLayoutTab(L""), ContentDrop::Right);
+            BindCurrentLayout(*src);
+            check(!MoveTabIntoPane(*src, 1, *src, ContentDrop::Right) &&
+                      src->window_tabs.items.size() == 2 && full->VisiblePanes().size() == 4,
+                  "a same-window drop retains both tabs when the destination already has four panes");
+        }
 
         // --- M6d: a pane dragged out of a split, and Esc ------------------
         Seed(src->window_tabs, 1);

@@ -1,5 +1,6 @@
 #include "app_internal.h"
 #include "context_menu.h"
+#include "sidebar_navigation.h"
 #include "../fs/fs_enum.h"
 #include "../ops/clipboard.h"
 #include "../common/localization.h"
@@ -58,7 +59,12 @@ void ShowCloudPlaceMenu(AppState& s, const std::wstring& path, POINT screen_pt) 
     s.context_menu.Close();
     const bool filesystem = !path.empty() && !fs::IsVirtualPath(path);
     std::vector<ui::FluentMenuItem> items;
-    if (!path.empty()) items = app::BuildBreadcrumbMenu(filesystem);
+    if (!path.empty()) {
+        items = app::BuildSidebarNavigationMenu();
+        for (auto item : app::BuildBreadcrumbMenu(filesystem))
+            if (item.command != app::CmdOpen && item.command != app::CmdOpenInNewTab)
+                items.push_back(std::move(item));
+    }
     if (!items.empty()) items.back().separator_after = true;
     ui::FluentMenuItem hide;
     hide.command = kHideCloud;
@@ -72,7 +78,8 @@ void ShowCloudPlaceMenu(AppState& s, const std::wstring& path, POINT screen_pt) 
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return;
     }
-    if (!path.empty()) RunPathCommand(s, path, filesystem, command);
+    if (!path.empty() && !HandleSidebarNavigationCommand(s, path, command))
+        RunPathCommand(s, path, filesystem, command);
 }
 
 } // namespace pulse

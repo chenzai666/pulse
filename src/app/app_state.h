@@ -386,10 +386,11 @@ struct AppState : AppCoreOwner {
 
     bool tabDragPending = false;
     bool tabDragging = false;
+    bool tabDropPending = false;         // captured preview; model changes only on mouse release
     int tabDragIndex = -1;               // window_tabs.items index of the dragged tab
     POINT tabDragStartPt{};
-    // A press on the header of one of several panes (M6d): dragged far
-    // enough, that pane leaves the split as a window (TryDetachDraggedPane).
+    // A pane-header press starts a captured preview once dragged far enough;
+    // TryDetachDraggedPane keeps the pane in its split until button release.
     bool paneDragPending = false;
     app::Pane* paneDragPane = nullptr;
     POINT paneDragStartPt{};

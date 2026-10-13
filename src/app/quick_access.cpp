@@ -1,6 +1,7 @@
 #include "quick_access.h"
 #include "app_commands.h"
 #include "app_navigation.h"
+#include "sidebar_navigation.h"
 #include "../common/localization.h"
 #include <algorithm>
 
@@ -55,17 +56,14 @@ bool HandleQuickAccessCommand(AppState& s, int command,
 
 void ShowQuickAccessMenu(AppState& s, const std::wstring& path, POINT point) {
     if (!EnsureMenu(s)) return;
-    ui::FluentMenuItem open;
-    open.command = app::CmdOpen;
-    open.text = l10n::Get(l10n::StringId::Open);
-    open.glyph = L"\xE8B7";
+    auto items = app::BuildSidebarNavigationMenu();
     ui::FluentMenuItem remove;
     remove.command = app::CmdUnpinQuickAccess;
     remove.text = l10n::Get(l10n::StringId::UnpinQuickAccess);
     remove.glyph = L"\xE77A";
-    const int command = s.menu->TrackPopup(point, {open, remove});
-    if (command == app::CmdOpen) NavigateTo(s, path);
-    else HandleQuickAccessCommand(s, command, {path});
+    items.push_back(std::move(remove));
+    const int command = s.menu->TrackPopup(point, std::move(items));
+    if (!HandleSidebarNavigationCommand(s, path, command)) HandleQuickAccessCommand(s, command, {path});
 }
 
 void ShowQuickAccessAddMenu(AppState& s, POINT point) {

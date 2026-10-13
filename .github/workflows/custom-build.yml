@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: pulse-custom-${{ github.ref }}
-  cancel-in-progress: true
+  group: pulse-custom-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -41,4 +41,6 @@ jobs:
           path: |
             build-custom/*.log
             bench_data/selftest_1b2_last.log
+            bench_data/tab-transfer/results.log
+            bench_data/m10005_tab_pin_boundary.log
           if-no-files-found: ignore

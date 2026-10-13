@@ -31,7 +31,8 @@ bool MoveLayoutTab(AppState& src, size_t index, AppState& dst, size_t insert_at,
 bool MoveTabIntoPane(AppState& src, size_t index, AppState& dst, app::ContentDrop edge,
                      TransferSource source = TransferSource::KeepsTabs);
 // MoveTabIntoPane with the panes going where `placement` says (M7i: the pane
-// under the cursor splits); refuses when app::CanPlacePanes says no.
+// under the cursor splits); may join a different tab in the same window.
+// Refuses when app::CanPlacePanes says no, or when incoming is the active tab.
 bool MoveTabIntoPane(AppState& src, size_t index, AppState& dst, const app::PanePlacement& placement,
                      TransferSource source = TransferSource::KeepsTabs);
 // Takes visible `pane` out of the split shown by `s`'s active tab into a tab

@@ -76,6 +76,7 @@
 #include "../ui/folder_picker_dialog.h"
 #include "app_quicklook_routing.h"
 #include "listary_integration.h"
+#include "sidebar_navigation.h"
 #include "../common/edition.h"
 #ifdef PULSE_WITH_SELFTEST
 #include "selftest_1b2.h"
@@ -627,6 +628,7 @@ static BOOL HandleInstanceCopyData(AppState& s, COPYDATASTRUCT* cds) {
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    if (s && HandleDroppedNavigationMessage(*s, msg, wParam, lParam)) return 0;
     LRESULT listary_result = 0;
     if (s && ListaryWindowMessage(*s, msg, wParam, lParam, listary_result)) return listary_result;
     if (s && msg != 0 && msg == app::UpdateShutdownMessage())
@@ -1207,6 +1209,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_CLOSE:
         if (!s) break;
+        CancelPendingTabDrop(*s);
         CloseMainWindow(*s);
         return 0;
 
@@ -1283,6 +1286,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_ACTIVATE:
+        if (s && LOWORD(wParam) == WA_INACTIVE) CancelPendingTabDrop(*s);
         if (s && LOWORD(wParam) != WA_INACTIVE) {
             s->core.windows.Touch(hwnd);
             // The session's other windows open once the first one is on screen
@@ -1716,6 +1720,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_CANCELMODE:
+        if (s) CancelPendingTabDrop(*s);
         HandleSidebarResize(s, hwnd, msg, lParam);
         if (s) s->settings.EndMenuDrag();
         if (s) { s->detailsPreviewPanning = false; s->renderer.EndDetailsPreviewPan(); }
@@ -2323,6 +2328,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_DESTROY: {
+        if (s) CancelPendingTabDrop(*s);
+        if (s) CancelDroppedNavigation(*s);
         // Closing one of several windows (M3f) tears down what the window
         // owns; services, saved state and the shared caches go with the last.
         const bool last_window = !s || s->core.windows.IsLastWindow(hwnd);

@@ -802,6 +802,7 @@ add_executable(pulse_pane_drop_test src/bench/pane_drop_test.cpp src/app/pane_dr
 target_link_libraries(pulse_pane_drop_test PRIVATE
     user32 shell32 ole32 uuid advapi32 shlwapi netapi32 secur32 pulse_localization pulse_runtime_log pulse_sqlite)
 add_executable(pulse_bundled_preview_packs_test src/bench/bundled_preview_packs_test.cpp)
+add_executable(pulse_drop_navigation_test src/bench/drop_navigation_test.cpp)
 # Multi-window M1: AppState's process-wide members alias one AppCore (compile-time checks).
 add_executable(pulse_app_core_alias_test src/bench/app_core_alias_test.cpp)
 target_include_directories(pulse_app_core_alias_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
