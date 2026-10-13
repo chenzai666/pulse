@@ -475,9 +475,9 @@ static int RunNativeImageRegression() {
         graphics.FillRectangle(&accent, 0, 0, static_cast<INT>(width / 2), static_cast<INT>(height));
         return image.Save(file.c_str(), &png_encoder, nullptr) == Gdiplus::Ok;
     };
-    const auto small = root + L"\\03-preview.png";
+    const auto preview_png = root + L"\\03-preview.png";
     const auto large = root + L"\\large.png";
-    Check(create(small, 640, 400) && create(large, 2048, 1200), L"create isolated PNG fixtures");
+    Check(create(preview_png, 640, 400) && create(large, 2048, 1200), L"create isolated PNG fixtures");
     {
         Host host;
         Check(host.Start(), L"start native preview host");
@@ -497,8 +497,8 @@ static int RunNativeImageRegression() {
             }
             return colors;
         };
-        Check(image(small, 1024, 0, 640, 400), L"PNG content returns actual colored pixels and terminates loading");
-        Check(image(L"\\\\?\\" + small, 1024, 0, 640, 400), L"extended Windows PNG path returns the same native pixels");
+        Check(image(preview_png, 1024, 0, 640, 400), L"PNG content returns actual colored pixels and terminates loading");
+        Check(image(L"\\\\?\\" + preview_png, 1024, 0, 640, 400), L"extended Windows PNG path returns the same native pixels");
         Check(image(large, 4096, 0, 2048, 1200), L"content keeps image detail above the former 1024-pixel cap");
         Check(image(large, 4096, ipc::kPreviewRequestFlagGrid, 1024, 600), L"grid thumbnails retain their bounded resource budget");
         Check(ipc::ClampPreviewPixelSize(MAXDWORD, false) == 4096 &&
@@ -506,7 +506,7 @@ static int RunNativeImageRegression() {
             ipc::BucketPreviewPixelSize(MAXDWORD, false) == 4096,
             L"oversized requests stay bounded without bucket overflow");
     }
-    DeleteFileW(small.c_str()); DeleteFileW(large.c_str()); RemoveDirectoryW(root.c_str());
+    DeleteFileW(preview_png.c_str()); DeleteFileW(large.c_str()); RemoveDirectoryW(root.c_str());
     Gdiplus::GdiplusShutdown(token);
     return failed ? 1 : 0;
 }
