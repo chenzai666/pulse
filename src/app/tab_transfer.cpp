@@ -24,6 +24,7 @@ void ReleaseLeavingTab(AppState& s, const app::LayoutTab& tab, bool active) {
         if (s.renameIndex >= 0) HideRenameOverlay(s, false);
         if (s.addressEditing) HideAddressEditor(s, false);
         if (s.filterEditing) HideFilterEditor(s, true);
+        if (s.quickLook.active()) s.quickLook.Close();
         if (s.quickPreview.visible()) s.quickPreview.Close();
     }
     if (OwnsView(tab, s.renameClickTab) || OwnsPane(tab, s.renameClickPane)) CancelRenameClick(s);

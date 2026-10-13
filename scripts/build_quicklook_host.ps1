@@ -12,7 +12,12 @@ $repo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
 $integration = Join-Path $repo 'integrations/QuickLook.FullHost'
 $upstreamInfo = Get-Content -LiteralPath (Join-Path $integration 'upstream.json') -Raw | ConvertFrom-Json
 $repoPrefix = $repo.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-$buildRoot = [IO.Path]::GetFullPath((Join-Path $repo $BuildDir))
+$buildPath = if ([IO.Path]::IsPathRooted($BuildDir)) {
+    $BuildDir
+} else {
+    Join-Path $repo $BuildDir
+}
+$buildRoot = [IO.Path]::GetFullPath($buildPath)
 if (!$buildRoot.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'BuildDir 必须位于当前仓库内的独立构建目录。'
 }
