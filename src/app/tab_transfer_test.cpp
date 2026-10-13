@@ -47,6 +47,13 @@ void Seed(WindowTabs& tabs, size_t count) {
     tabs = WindowTabs{};
     for (size_t i = 0; i < count; ++i) tabs.NewTabAtLocation(tabs.items.size(), L"");
 }
+
+LRESULT CALLBACK CaptureAwareWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* state = reinterpret_cast<AppState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (state && message == WM_CAPTURECHANGED)
+        return HandleCaptureChanged(state, hwnd, message, wparam, lparam);
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
 }  // namespace
 
 bool RunTabTransferTest() {
@@ -295,7 +302,7 @@ bool RunTabTransferTest() {
     // --- MoveLayoutTab between two windows --------------------------------
     WNDCLASSW wc{};
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpfnWndProc = DefWindowProcW;
+    wc.lpfnWndProc = CaptureAwareWndProc;
     wc.lpszClassName = L"PulseTabTransferTest";
     RegisterClassW(&wc);
     const auto make_window = [&] {
@@ -308,6 +315,8 @@ bool RunTabTransferTest() {
     src->hwnd = make_window();
     dst->hwnd = make_window();
     if (check(src->hwnd && dst->hwnd, "two hidden windows share one core")) {
+        SetWindowLongPtrW(src->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(src.get()));
+        SetWindowLongPtrW(dst->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dst.get()));
         core->windows.Add(src->hwnd, src.get());
         core->windows.Add(dst->hwnd, dst.get());
         core->windows.Touch(dst->hwnd);
@@ -325,10 +334,15 @@ bool RunTabTransferTest() {
             held_pane->ActiveTab()->selected_index = 7;
             held_pane->ActiveTab()->scroll_y = 128.0f;
             const size_t windows = core->windows.Count();
+            // Match a real tab press: capture belongs to this window before
+            // the drag leaves the strip, and capture messages reach input.
+            SetCapture(src->hwnd);
             check(BeginTabDropPreview(*src, 1, POINT{150, 20}) && src->tabDropPending &&
                       src->window_tabs.items.size() == 3 && src->window_tabs.items[1].get() == held &&
                       held->panes[0].get() == held_pane && core->windows.Count() == windows,
                   "leaving the strip starts only a captured preview, retaining the live tab and window count");
+            check(GetCapture() == src->hwnd && src->tabDragPending,
+                  "off-strip transition retains existing capture without canceling the new preview");
             HandleKeyDown(src.get(), src->hwnd, WM_KEYDOWN, VK_ESCAPE, 0);
             check(!src->tabDropPending && !src->tabDragPending && src->window_tabs.Active() == held &&
                       src->window_tabs.items.size() == 3 && held_pane->ActiveTab()->selected_index == 7 &&
@@ -465,7 +479,8 @@ bool RunTabTransferTest() {
                   "a same-window split keeps a restorable session layout");
             const auto original_shape = SplitTreeShape(*into->root);
             const auto original_ratios = saved.split_ratios;
-            check(BeginTabDropPreview(*src, 0, POINT{150, 20}, arriving) &&
+            SetCapture(src->hwnd);
+            check(BeginTabDropPreview(*src, 0, POINT{150, 20}, arriving) && src->tabDropPending &&
                       src->window_tabs.items.size() == 1 && into->VisiblePanes().size() == 2 &&
                       core->windows.Count() == 2,
                   "a pane-header preview keeps its pane in the original split without a temporary tab or window");

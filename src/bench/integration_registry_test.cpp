@@ -1,7 +1,9 @@
 #include "../app/shell_integration_registry.h"
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
+#include <cstring>
 #include <aclapi.h>
 
 namespace {
@@ -64,15 +66,150 @@ void SetLegacyOrphans() {
     Set(L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell", L"", L"open");
     Set(L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell\\open\\command", L"DelegateExecute", L"");
 }
+
+bool UseLegacyRecycleSnapshot(const std::wstring& bin) {
+    const std::wstring backup = L"Software\\Pulse\\ShellIntegration\\Backups\\v1\\RecycleBin";
+    Value snapshot = Read(backup, L"Snapshot");
+    if (!snapshot.exists || snapshot.type != REG_BINARY || snapshot.bytes.size() < 8) return false;
+    size_t offset = 8;
+    for (int i = 0; i < 6; ++i) { // Three before/written pairs in the previous release.
+        DWORD size = 0;
+        if (offset > snapshot.bytes.size() || snapshot.bytes.size() - offset < 12) return false;
+        std::memcpy(&size, snapshot.bytes.data() + offset + 8, sizeof(size));
+        offset += 12;
+        if (size > snapshot.bytes.size() - offset) return false;
+        offset += size;
+    }
+    snapshot.bytes.resize(offset);
+    const DWORD count = 3;
+    std::memcpy(snapshot.bytes.data() + 4, &count, sizeof(count));
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, backup.c_str(), 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return false;
+    const bool ok = RegSetValueExW(key, L"Snapshot", 0, REG_BINARY, snapshot.bytes.data(),
+        static_cast<DWORD>(snapshot.bytes.size())) == ERROR_SUCCESS;
+    RegCloseKey(key);
+    RegDeleteTreeW(HKEY_CURRENT_USER, (bin + L"\\explore").c_str());
+    return ok;
 }
 
-int wmain() {
+Value FixtureSnapshot(const std::vector<Value>& before, const std::vector<Value>& written) {
+    Value result; result.exists = true; result.type = REG_BINARY;
+    auto number = [&](DWORD value) {
+        const size_t offset = result.bytes.size(); result.bytes.resize(offset + sizeof(value));
+        std::memcpy(result.bytes.data() + offset, &value, sizeof(value));
+    };
+    number(0x31534950); number(static_cast<DWORD>(before.size()));
+    for (size_t i = 0; i < before.size(); ++i) {
+        for (const Value* value : {&before[i], &written[i]}) {
+            number(2u | (value->exists ? 1u : 0u)); number(value->type);
+            number(static_cast<DWORD>(value->bytes.size()));
+            result.bytes.insert(result.bytes.end(), value->bytes.begin(), value->bytes.end());
+        }
+    }
+    return result;
+}
+bool SetRaw(const std::wstring& path, const wchar_t* name, const Value& value) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return false;
+    const bool ok = RegSetValueExW(key, name, 0, value.type, value.bytes.data(), static_cast<DWORD>(value.bytes.size())) == ERROR_SUCCESS;
+    RegCloseKey(key); return ok;
+}
+
+void TestRecycleBin(const std::wstring& exe, const std::wstring& next) {
+    using namespace pulse::app;
+    const std::wstring bin = L"Software\\Classes\\CLSID\\{645FF040-5081-101B-9F08-00AA002F954E}\\shell";
+    const std::wstring open = bin + L"\\open\\command", explore = bin + L"\\explore\\command";
+    const std::wstring expected = L"\"" + exe + L"\" \"::{645FF040-5081-101B-9F08-00AA002F954E}\"";
+    Clear();
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) &&
+        ReadShellIntegration(ShellIntegrationKind::RecycleBin, exe), "Recycle Bin open and explore takeover applies");
+    Check(Read(open).exists && Read(open) == Read(explore) &&
+        std::wstring(reinterpret_cast<const wchar_t*>(Read(open).bytes.data())) == expected &&
+        Read(open, L"DelegateExecute") == Read(explore, L"DelegateExecute") && Read(bin).exists,
+        "explicit explore uses the CLSID command instead of falling back to Folder explore");
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, false) &&
+        !KeyExists(bin.substr(0, bin.find(L"\\shell"))) &&
+        !HasShellIntegrationOwnership(ShellIntegrationKind::RecycleBin, exe), "clean restore removes both Recycle Bin verbs");
+
+    for (int operation = 0; operation < 3; ++operation) {
+        Clear();
+        Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) && UseLegacyRecycleSnapshot(bin),
+            "reproduce previous release three-binding snapshot and absent explore verb");
+        Check(HasShellIntegrationOwnership(ShellIntegrationKind::RecycleBin, exe) &&
+            !ReadShellIntegration(ShellIntegrationKind::RecycleBin, exe), "old open-only state is owned but incomplete");
+        const bool migrated = operation == 0 || (operation == 1
+            ? ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true)
+            : UpgradeShellIntegration(ShellIntegrationKind::RecycleBin, exe, next));
+        const auto& owner = operation == 2 ? next : exe;
+        Check(migrated && (operation == 0 || ReadShellIntegration(ShellIntegrationKind::RecycleBin, owner)),
+            "legacy snapshot supports direct restore reapply and executable upgrade");
+        Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, owner, false) &&
+            !KeyExists(bin.substr(0, bin.find(L"\\shell"))), "legacy migration retains exact original absence for both verbs");
+    }
+    Clear();
+    Set(bin, L"", L"empty"); Set(explore, L"", L"foreign explore", REG_EXPAND_SZ);
+    Set(explore, L"DelegateExecute", L"foreign delegate");
+    const auto old_default = Read(bin), old_explore = Read(explore), old_delegate = Read(explore, L"DelegateExecute");
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) &&
+        ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, false) &&
+        Read(bin) == old_default && Read(explore) == old_explore && Read(explore, L"DelegateExecute") == old_delegate,
+        "restore preserves typed earlier default verb and third-party explore handler");
+    Clear();
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) && UseLegacyRecycleSnapshot(bin),
+        "seed old snapshot before an independent explore registration");
+    Set(explore, L"", L"later third-party explore"); const auto later = Read(explore);
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, false) && Read(explore) == later,
+        "restoring an old snapshot does not claim ownership of a later explore handler");
+    for (const bool snapshot_committed : {false, true}) {
+        for (int operation = 0; operation < 3; ++operation) {
+            Clear();
+            Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) && UseLegacyRecycleSnapshot(bin),
+                "seed old registration before interrupted old-version upgrade");
+            const std::wstring backup = L"Software\\Pulse\\ShellIntegration\\Backups\\v1\\RecycleBin";
+            const Value stored = Read(backup, L"Snapshot");
+            const std::vector<Value> previous{Read(open), Read(open, L"DelegateExecute"), Read(bin)};
+            Set(open, L"", L"\"" + next + L"\" \"::{645FF040-5081-101B-9F08-00AA002F954E}\"");
+            const std::vector<Value> wanted{Read(open), Read(open, L"DelegateExecute"), Read(bin)};
+            SetRaw(open, L"", previous[0]);
+            const Value updated = FixtureSnapshot(std::vector<Value>(3), wanted);
+            const Value journal = FixtureSnapshot({stored, FixtureSnapshot(previous, wanted)}, {stored, updated});
+            Check(SetRaw(backup, L"UpgradeJournal", journal) &&
+                (!snapshot_committed || SetRaw(backup, L"Snapshot", updated)), "seed typed three-binding durable upgrade journal");
+            const auto& owner = operation == 1 ? exe : next;
+            const bool resumed = operation == 0
+                ? UpgradeShellIntegration(ShellIntegrationKind::RecycleBin, exe, next)
+                : ApplyShellIntegration(ShellIntegrationKind::RecycleBin, owner, false);
+            Check(resumed && (operation != 0 || ReadShellIntegration(ShellIntegrationKind::RecycleBin, next)),
+                "old durable journal resumes after snapshot commit and restores from either executable");
+            Check((operation != 0 || ApplyShellIntegration(ShellIntegrationKind::RecycleBin, next, false)) &&
+                !KeyExists(bin.substr(0, bin.find(L"\\shell"))), "old journal recovery retains original absence without stale overrides");
+        }
+    }
+    Clear();
+    Set(L"Software\\Classes\\Folder\\shell\\explore\\command", L"", L"Files launcher");
+    const auto folder = Read(L"Software\\Classes\\Folder\\shell\\explore\\command");
+    Check(ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, true) &&
+        ApplyShellIntegration(ShellIntegrationKind::RecycleBin, exe, false) &&
+        Read(L"Software\\Classes\\Folder\\shell\\explore\\command") == folder,
+        "Recycle Bin registration never modifies Files Folder explore association");
+}
+}
+
+int wmain(int argc, wchar_t** argv) {
+    const bool recycle_only = argc == 2 && std::wstring_view(argv[1]) == L"--recycle-bin-only";
+    if (argc != 1 && !recycle_only) return 2;
     const std::wstring sandbox = L"Software\\PulseTest\\IntegrationRegistry-" + std::to_wstring(GetCurrentProcessId());
     HKEY root = nullptr;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, sandbox.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &root, nullptr) != ERROR_SUCCESS) return 2;
     if (RegOverridePredefKey(HKEY_CURRENT_USER, root) != ERROR_SUCCESS) { RegCloseKey(root); return 2; }
     using namespace pulse::app;
     const std::wstring exe = L"C:\\Pulse test\\pulse.exe", next = L"D:\\Pulse\\pulse.exe";
+    if (recycle_only) {
+        TestRecycleBin(exe, next);
+        RegOverridePredefKey(HKEY_CURRENT_USER, nullptr); RegCloseKey(root);
+        Check(RegDeleteTreeW(HKEY_CURRENT_USER, sandbox.c_str()) == ERROR_SUCCESS, "isolated registry fixture removed");
+        return failures ? 1 : 0;
+    }
     const std::wstring shell = L"Software\\Classes\\Directory\\shell", command = shell + L"\\open\\command";
     const std::wstring win = L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\\shell\\opennewwindow\\command";
     const std::wstring pc = L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell";
@@ -160,7 +297,8 @@ int wmain() {
         const std::wstring expected = L"\"" + exe + L"\" \"::{645FF040-5081-101B-9F08-00AA002F954E}\"";
         Check(bin_command.exists && bin_command.bytes.size() == (expected.size() + 1) * sizeof(wchar_t) &&
             std::wstring(reinterpret_cast<const wchar_t*>(bin_command.bytes.data())) == expected &&
-            Read(bin + L"\\open\\command", L"DelegateExecute").exists && Read(bin).exists,
+            Read(bin + L"\\open\\command", L"DelegateExecute").exists && Read(bin).exists &&
+            Read(bin + L"\\explore\\command") == bin_command,
             "Recycle Bin open verb runs Pulse with the parsing name and is the default verb");
         Check(!ReadShellIntegration(ShellIntegrationKind::ThisPc, exe) && !KeyExists(pc),
             "Recycle Bin takeover leaves This PC alone");

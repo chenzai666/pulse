@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       validation_scope:
-        description: '验证范围：完整集成或仅属性界面（复用固定且校验过的组件）'
+        description: '验证范围：完整集成、属性界面或标签／回收站／原生预览／搜索修复'
         type: choice
-        options: [full, properties]
+        options: [full, properties, native-fixes]
         default: full
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        if: inputs.validation_scope == 'properties'
+        if: inputs.validation_scope == 'properties' || inputs.validation_scope == 'native-fixes'
         with:
           python-version: '3.12'
       - uses: actions/setup-dotnet@v4
@@ -35,13 +35,13 @@ jobs:
             8.0.x
             10.0.x
       - uses: actions/cache/restore@v4
-        if: inputs.validation_scope != 'properties'
+        if: inputs.validation_scope != 'properties' && inputs.validation_scope != 'native-fixes'
         id: conversion_ffmpeg_cache
         with:
           path: build-custom/conversion-ffmpeg-source-runtime
           key: conversion-ffmpeg-windows-2022-v1-${{ hashFiles('scripts/build_conversion_ffmpeg.sh') }}
       - uses: msys2/setup-msys2@v2
-        if: inputs.validation_scope != 'properties' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
+        if: inputs.validation_scope != 'properties' && inputs.validation_scope != 'native-fixes' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
         with:
           msystem: UCRT64
           update: false
@@ -50,16 +50,16 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-pkgconf
       - name: 从固定源码构建常见音视频转换组件
-        if: inputs.validation_scope != 'properties' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
+        if: inputs.validation_scope != 'properties' && inputs.validation_scope != 'native-fixes' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         run: bash scripts/build_conversion_ffmpeg.sh
       - uses: actions/cache/save@v4
-        if: inputs.validation_scope != 'properties' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
+        if: inputs.validation_scope != 'properties' && inputs.validation_scope != 'native-fixes' && steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
         with:
           path: build-custom/conversion-ffmpeg-source-runtime
           key: conversion-ffmpeg-windows-2022-v1-${{ hashFiles('scripts/build_conversion_ffmpeg.sh') }}
       - name: 构建和验证完整定制版
-        if: inputs.validation_scope != 'properties'
+        if: inputs.validation_scope != 'properties' && inputs.validation_scope != 'native-fixes'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,7 +70,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/build_properties_ci.ps1
+      - name: 构建并验证原生功能修复
+        if: inputs.validation_scope == 'native-fixes'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_native_fixes_ci.ps1
       - uses: actions/upload-artifact@v4
+        # 完整运行时保留，原生修复仅执行与本次变化相关的回归。
         with:
           name: Pulse-Custom-complete
           path: |
@@ -94,4 +101,6 @@ jobs:
             build-custom/status-center-gallery/*.txt
             build-custom/properties-gallery/*.png
             build-custom/properties-gallery/*.txt
+            build-custom/native-image-ui.png
+            bench_data/listary-search-entry/*.log
           if-no-files-found: ignore

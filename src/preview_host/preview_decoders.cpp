@@ -847,7 +847,7 @@ static bool AcceptsImage(const DecodeRequest& q) { return IsDirectImage(q.extens
 static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
     uint32_t frame_count = 1, frame_delay = 0, loop_count = 0;
     const bool gif = q.extension == L".gif";
-    const UINT cap = ipc::ClampPreviewPixelSize(q.request.pixel_size, gif);
+    const UINT cap = ipc::ClampPreviewPixelSize(q.request.pixel_size, gif, q.grid);
     bool made = false;
     if (!q.offline && (q.extension == L".tif" || q.extension == L".tiff")) {
         made = DecodeImage(q.path, q.request.attrs, cap, r.pixels, r.width, r.height,

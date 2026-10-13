@@ -2310,11 +2310,6 @@ void ToggleQuickPreview(AppState& s) {
     if(DeferContentSelection(s,[](AppState& v){ToggleQuickPreview(v);},true)) return;
     ui::QuickPreviewItem item;
     if (SelectedQuickPreviewItem(s, item)) {
-        if (edition::kCustom && !s.safeMode &&
-            s.quickLook.Initialize(s.hwnd, WM_QUICKLOOK_EVENT) && s.quickLook.Toggle(item.path)) {
-            s.quickPreviewSelection.Reset(item.path);
-            return;
-        }
         ShowNativeQuickPreview(s, item);
     }
 }

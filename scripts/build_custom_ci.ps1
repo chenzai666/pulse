@@ -30,7 +30,7 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test pulse_status_center_model_test pulse_dialogs_test pulse_ops_test pulse_dialog_gallery pulse_item_properties_test pulse_properties_gallery
+cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test pulse_status_center_model_test pulse_dialogs_test pulse_ops_test pulse_dialog_gallery pulse_item_properties_test pulse_properties_gallery pulse_preview_test pulse_integration_registry_test
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
@@ -51,8 +51,20 @@ if ($LASTEXITCODE) { throw '删除确认英文画廊生成失败' }
 if ($LASTEXITCODE) { throw '状态中心画廊生成失败' }
 & (Join-Path $taskBuild 'pulse_properties_gallery.exe') (Join-Path $taskBuild 'properties-gallery')
 if ($LASTEXITCODE) { throw '属性窗口画廊生成失败' }
+& (Join-Path $taskBuild 'pulse_integration_registry_test.exe') --recycle-bin-only |
+    Tee-Object -FilePath (Join-Path $taskBuild 'recycle-bin-registry.log')
+if ($LASTEXITCODE) { throw '回收站关联定向验证失败' }
+& (Join-Path $taskBuild 'pulse_preview_test.exe') --native-image-regression |
+    Tee-Object -FilePath (Join-Path $taskBuild 'native-image-regression.log')
+if ($LASTEXITCODE) { throw '原生图片定向验证失败' }
+$env:PULSE_TEST_NATIVE_IMAGE_REGRESSION = '1'
+$imageProcess = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--quick-preview-audit' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskBuild 'native-image-ui.log') -RedirectStandardError (Join-Path $taskBuild 'native-image-ui-error.log')
+if (-not $imageProcess.WaitForExit(60000)) { $imageProcess.Kill(); throw '原生图片实际渲染超时' }
+$imageProcess.Refresh()
+if ($imageProcess.ExitCode) { throw '原生图片实际渲染失败' }
+Remove-Item Env:PULSE_TEST_NATIVE_IMAGE_REGRESSION
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui')) {
+foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui', 'listary-search-entry')) {
     $env:PULSE_SELFTEST_CASE = $testCase
     $testProcess = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
     if (-not $testProcess.WaitForExit(60000)) {

@@ -626,7 +626,9 @@ bool BeginTabDropPreview(AppState& s, size_t index, POINT grab, app::Pane* pane)
     // split previews, while ownership, ordering and all pane state stay intact.
     if (!pane && s.window_tabs.items.size() > 1)
         SwitchTab(s, index + 1 < s.window_tabs.items.size() ? index + 1 : index - 1);
-    SetCapture(s.hwnd);
+    // SetCapture on the same HWND still sends WM_CAPTURECHANGED. The press
+    // already owns capture, so repeating it would cancel this new preview.
+    if (GetCapture() != s.hwnd) SetCapture(s.hwnd);
     InvalidateRect(s.hwnd, nullptr, FALSE);
     return true;
 }

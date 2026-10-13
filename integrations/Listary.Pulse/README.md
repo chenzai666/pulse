@@ -10,7 +10,11 @@
 - Listary 的“当前打开的文件夹”和文件对话框 Quick Switch 可以读取 Pulse 当前目录。此插件将 Pulse 作为目录来源，文件对话框的自动切换由 Listary 管理。
 - “此电脑”、设置、回收站、Pulse 搜索结果等虚拟视图没有可分享的真实目录；插件返回无目录状态，仍允许用户选择实际目录后导航。
 
-Listary 原生搜索栏、索引、排序、快捷键和功能授权均由已有 Listary 管理。Pulse 原有全局搜索仍可独立使用；二者的全局快捷键应避免冲突。
+定制版已启用的全局搜索快捷键（默认 `Alt+Space`）优先通过 Listary 官方 `listary://show-launcher` 协议打开现有 Listary。此协议请求显示或激活启动器；再次按快捷键会再次发送显示请求，关闭可使用 `Esc`。本机未注册 Listary 协议、注册目标不是本地 `Listary.exe` 或系统报告启动失败时，自动使用 Pulse 原生全局搜索。系统接受协议启动不保证 Listary 一定显示窗口；若 Listary 自身无响应，应通过其原有诊断入口排查。隔离测试实例和安全模式使用 Pulse 原生搜索。
+
+Listary 原生搜索栏、索引、排序、快捷键和功能授权均由已有 Listary 管理；Pulse 不修改 Listary 的快捷键或索引设置。若两个程序已配置相同的全局快捷键，Pulse 会继续报告注册冲突，需要用户在设置中选用不同快捷键。`Ctrl+F` 当前目录筛选、`Ctrl+K` 地址搜索和 `Ctrl+Shift+F` 高级搜索继续由 Pulse 提供。此插件不将 Listary 的闭源引擎嵌入 Pulse 原生搜索结果。
+
+协议依据：[Listary 官方更新日志 6.3.0.78](https://help.listary.com/changelog)。官方公开的文件管理器 SDK 提供目录读取、导航和文件定位接口；启动器入口使用官方 URL 协议。
 
 ## 构建
 

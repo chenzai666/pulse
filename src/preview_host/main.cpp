@@ -116,7 +116,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             response.status = made ? 0 : GetLastError() == ERROR_TIMEOUT ? ERROR_TIMEOUT : 1;
         } else {
             const std::wstring extension = ExtensionOf(path);
-            const UINT cap = ipc::ClampPreviewPixelSize(req.pixel_size, false);
+            const UINT cap = ipc::ClampPreviewPixelSize(req.pixel_size, false,
+                (req.flags & ipc::kPreviewRequestFlagGrid) != 0);
             const preview::DecodeRequest decode{req, path, extension,
                 (req.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0, IsOfflinePlaceholder(req.attrs),
                 cap, (req.flags & ipc::kPreviewRequestFlagGrid) != 0 ||

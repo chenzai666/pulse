@@ -355,7 +355,7 @@ void QuickPreviewWindow::DrawPages(ID2D1DeviceContext* dc, ID2D1SolidColorBrush*
         dc->FillRectangle(rect, paper.get());
         const float edge = (std::max)(rect.right - rect.left, rect.bottom - rect.top);
         const uint32_t pixels = (std::min)(kMaxPagePixels,
-            ipc::BucketPreviewPixelSize(static_cast<uint32_t>((std::max)(1.0f, edge))));
+            ipc::BucketPreviewPixelSize(static_cast<uint32_t>((std::max)(1.0f, edge)), false));
         if (draw_page(slot.page, rect, pixels) != PreviewDrawResult::Bitmap && text_format) {
             wchar_t label[16];
             swprintf_s(label, L"%u", slot.page + 1);

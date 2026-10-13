@@ -3,6 +3,9 @@
 #include <commctrl.h>
 #include <cstdio>
 #include <thread>
+#include <filesystem>
+#include <wincodec.h>
+#include <wrl/client.h>
 namespace pulse::ui {
 struct QuickPreviewAuditTest {
     static bool Check(bool ok,const char* label){printf("[%s] %s\n",ok?"PASS":"FAIL",label);fflush(stdout);return ok;}
@@ -14,6 +17,94 @@ struct QuickPreviewAuditTest {
         std::lock_guard lock(cache.mutex_);
         if(auto it=cache.items_.find(key);it!=cache.items_.end()){cache.lru_.erase(it->second.lru_position);cache.items_.erase(it);}
         cache.pending_.erase(key);cache.queue_.clear();cache.lru_.push_front(key);item.lru_position=cache.lru_.begin();cache.items_[key]=std::move(item);
+    }
+    static bool NativeImage() {
+        OleInitialize(nullptr);
+        INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
+        InitCommonControlsEx(&controls);
+        const auto root = std::filesystem::temp_directory_path() /
+            (L"PulseNativeRenderer-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        std::filesystem::create_directory(root);
+        const auto fixture = root / L"03-preview.png";
+        const auto snapshot = root / L"native-render.png";
+        Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+        Microsoft::WRL::ComPtr<IWICStream> stream;
+        Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+        bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+            SUCCEEDED(wic->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(fixture.c_str(), GENERIC_WRITE)) &&
+            SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+            SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) &&
+            SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) &&
+            SUCCEEDED(frame->SetSize(640, 400));
+        WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
+        if (ok) ok = SUCCEEDED(frame->SetPixelFormat(&format)) && format == GUID_WICPixelFormat24bppBGR;
+        std::vector<BYTE> pixels(640 * 400 * 3);
+        for (size_t pixel = 0; pixel < 640 * 400; ++pixel) {
+            const bool left = pixel % 640 < 320;
+            pixels[pixel * 3] = left ? 10 : 200;
+            pixels[pixel * 3 + 1] = left ? 40 : 80;
+            pixels[pixel * 3 + 2] = left ? 220 : 20;
+        }
+        if (ok) ok = SUCCEEDED(frame->WritePixels(400, 640 * 3, static_cast<UINT>(pixels.size()), pixels.data())) &&
+            SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+        frame.Reset(); encoder.Reset(); stream.Reset();
+        ok = Check(ok, "create isolated native PNG renderer fixture") && ok;
+        HWND owner = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 1000, 750,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        {
+            QuickPreviewWindow q;
+            const bool initialized = owner && q.Initialize(owner, WM_APP + 201, WM_APP + 202);
+            ok = Check(initialized, "initialize real native preview renderer") && ok;
+            if (ok) {
+                QuickPreviewItem item;
+                item.path = L"\\\\?\\" + fixture.wstring(); item.name = L"03-preview.png";
+                item.attrs = GetFileAttributesW(item.path.c_str()); item.size = std::filesystem::file_size(fixture);
+                q.Show(item, false, WindowEffect::None, false);
+                const auto deadline = GetTickCount64() + 8000;
+                while (q.native_kind_ != QuickPreviewWindow::NativeKind::Bitmap && GetTickCount64() < deadline) Pump(20);
+                ok = Check(q.visible() && q.native_kind_ == QuickPreviewWindow::NativeKind::Bitmap &&
+                    q.decoded_w_ == 640 && q.decoded_h_ == 400 && q.preview_notice_.empty(),
+                    "native PNG transitions from pending to visible bitmap through production message loop") && ok;
+                if (ok) {
+                    q.Render(false);
+                    ok = Check(q.compositor_.SaveSnapshot(snapshot.c_str()), "save actual native preview render before present") && ok;
+                    if (ok) {
+                        wchar_t executable[32768]{};
+                        const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+                        ok = Check(length && length < ARRAYSIZE(executable) &&
+                            CopyFileW(snapshot.c_str(), (std::filesystem::path(executable).parent_path() /
+                                L"native-image-ui.png").c_str(), FALSE), "copy native preview snapshot next to the build artifact") && ok;
+                    }
+                }
+                if (ok) {
+                    Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+                    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> decoded;
+                    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+                    UINT width = 0, height = 0;
+                    bool read = SUCCEEDED(wic->CreateDecoderFromFilename(snapshot.c_str(), nullptr, GENERIC_READ,
+                        WICDecodeMetadataCacheOnLoad, &decoder)) && SUCCEEDED(decoder->GetFrame(0, &decoded)) &&
+                        SUCCEEDED(decoded->GetSize(&width, &height)) && SUCCEEDED(wic->CreateFormatConverter(&converter)) &&
+                        SUCCEEDED(converter->Initialize(decoded.Get(), GUID_WICPixelFormat32bppBGRA,
+                            WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom));
+                    std::vector<BYTE> rendered(static_cast<size_t>(width) * height * 4);
+                    if (read) read = SUCCEEDED(converter->CopyPixels(nullptr, width * 4,
+                        static_cast<UINT>(rendered.size()), rendered.data()));
+                    size_t red = 0, blue = 0;
+                    if (read) for (size_t at = 0; at + 3 < rendered.size(); at += 4) {
+                        red += rendered[at + 2] > 180 && rendered[at] < 40 && rendered[at + 1] < 100;
+                        blue += rendered[at] > 180 && rendered[at + 2] < 40 && rendered[at + 1] < 120;
+                    }
+                    ok = Check(read && red > 1000 && blue > 1000,
+                        "actual preview snapshot contains both PNG colors, not only loading chrome") && ok;
+                    std::wprintf(L"native_snapshot=%ls\n", snapshot.c_str());
+                }
+                q.Close();
+            }
+        }
+        if (owner) DestroyWindow(owner);
+        wic.Reset(); OleUninitialize();
+        return ok;
     }
     static bool Run(){
         OleInitialize(nullptr);INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES};InitCommonControlsEx(&controls);
@@ -102,5 +193,7 @@ struct QuickPreviewAuditTest {
 int RunQuickPreviewAuditTest(){
     const auto name=L"PulseQuickPreviewAudit-"+std::to_wstring(GetCurrentProcessId());
     HDESK desktop=CreateDesktopW(name.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);if(!desktop)return 1;
-    bool ok=false;std::thread worker([&]{if(SetThreadDesktop(desktop))ok=pulse::ui::QuickPreviewAuditTest::Run();});worker.join();CloseDesktop(desktop);return ok?0:1;
+    const bool native_only = GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_IMAGE_REGRESSION", nullptr, 0) != 0;
+    bool ok=false;std::thread worker([&]{if(SetThreadDesktop(desktop))ok=native_only ?
+        pulse::ui::QuickPreviewAuditTest::NativeImage() : pulse::ui::QuickPreviewAuditTest::Run();});worker.join();CloseDesktop(desktop);return ok?0:1;
 }

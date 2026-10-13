@@ -1777,6 +1777,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s && HandleBrowserNavigation(*s, lParam)) return TRUE;
         break;
 
+    case kListarySearchResultMessage:
+        if (s) HandleGlobalSearchResult(*s, wParam);
+        return 0;
+
     case WM_HOTKEY:
         if (s && wParam == GlobalSearchHotkey::kId) {
             if (s->settings.global_search_hotkey_capturing() && IsSettingsTab(ActiveTab(*s))) {
@@ -2336,6 +2340,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_DESTROY: {
+        if (s) CancelGlobalSearchForWindow(*s);
         if (s) CancelPendingTabDrop(*s);
         if (s) CancelDroppedNavigation(*s);
         // Closing one of several windows (M3f) tears down what the window

@@ -148,15 +148,18 @@ Value Encode(const Snapshot& snapshot) {
     }
     return encoded;
 }
-bool Decode(const Value& encoded, size_t count, Snapshot& snapshot) {
+bool Decode(const Value& encoded, size_t count, Snapshot& snapshot, bool legacy_recycle = false) {
     if (!encoded.exists || encoded.type != REG_BINARY) return false;
     size_t offset = 0;
     DWORD magic = 0, stored_count = 0;
     if (!Take(encoded.bytes, offset, magic) || magic != kSnapshotMagic ||
-        !Take(encoded.bytes, offset, stored_count) || stored_count != count) return false;
+        !Take(encoded.bytes, offset, stored_count) ||
+        (stored_count != count && !(legacy_recycle && count == 5 && stored_count == 3))) return false;
     snapshot.before.resize(count);
     snapshot.written.resize(count);
-    for (size_t i = 0; i < count; ++i) {
+    // Older Recycle Bin snapshots only recorded open. Its new explore bindings
+    // were absent from that registration, so they carry no ownership proof.
+    for (size_t i = 0; i < stored_count; ++i) {
         for (Value* value : {&snapshot.before[i], &snapshot.written[i]}) {
             DWORD flags = 0, size = 0;
             if (!Take(encoded.bytes, offset, flags) || flags > 3 ||
@@ -196,6 +199,13 @@ std::vector<Binding> Bindings(const std::wstring& group, const std::wstring& exe
     if (group != L"WinE") result.push_back({shell, L"", String(L"open")});
     if (group == L"Directory" || group == L"Drive")
         result.push_back({verb, L"DelegateExecute", String(L"")}); // compatibility with old Pulse values
+    if (group == L"RecycleBin") {
+        // Desktop/Shell callers can request explore explicitly. Without this
+        // CLSID verb Windows falls back to Folder\shell\explore, which may be
+        // owned by another file manager even when our open verb works.
+        result.push_back({shell + L"\\explore\\command", L"", String(line)});
+        result.push_back({shell + L"\\explore\\command", L"DelegateExecute", String(L"")});
+    }
     return result;
 }
 
@@ -303,6 +313,8 @@ bool ReadLegacyRepair(std::vector<Binding>& bindings, Snapshot& journal, bool& e
 
 struct UpgradeJournal {
     Value stored;
+    Value proof;
+    Value recorded_next;
     Snapshot original;
     Snapshot changes;
     Snapshot next;
@@ -313,13 +325,15 @@ Value EncodeUpgrade(const UpgradeJournal& journal) {
                            {Encode(journal.original), Encode(journal.next)}});
 }
 
-bool DecodeUpgrade(const Value& encoded, size_t count, UpgradeJournal& journal) {
+bool DecodeUpgrade(const Value& encoded, size_t count, UpgradeJournal& journal, bool legacy_recycle = false) {
     Snapshot envelope;
     if (!Decode(encoded, 2, envelope)) return false;
     journal.stored = envelope.before[0];
-    return Decode(envelope.before[1], count, journal.changes) &&
-        Decode(envelope.written[0], count, journal.original) &&
-        Decode(envelope.written[1], count, journal.next);
+    journal.proof = encoded;
+    journal.recorded_next = envelope.written[1];
+    return Decode(envelope.before[1], count, journal.changes, legacy_recycle) &&
+        Decode(envelope.written[0], count, journal.original, legacy_recycle) &&
+        Decode(envelope.written[1], count, journal.next, legacy_recycle);
 }
 
 bool JournalForExecutable(const UpgradeJournal& journal, const std::wstring& exe) {
@@ -333,10 +347,12 @@ bool FinishUpgrade(const std::wstring& group, const UpgradeJournal& journal, boo
     // A previous journal write may have failed to flush. Never mutate Classes
     // until this invocation has confirmed that the recovery proof is durable.
     Value proof;
-    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, EncodeUpgrade(journal)) || !Flush(key)) return false;
+    const Value expected_proof = journal.proof.exists ? journal.proof : EncodeUpgrade(journal);
+    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, expected_proof) || !Flush(key)) return false;
     Value stored;
     if (!Read(key, L"Snapshot", stored) ||
         (!SameValue(stored, journal.stored) && !SameValue(stored, Encode(journal.next)) &&
+         !(journal.recorded_next.exists && SameValue(stored, journal.recorded_next)) &&
          !(restore && !stored.exists))) return false;
     std::vector<Value> target = journal.changes.written;
     bool exact = true;
@@ -380,7 +396,8 @@ void RollbackUpgrade(const std::wstring& group, const UpgradeJournal& journal) {
     Value proof;
     // Once the journal has been removed, the new Snapshot is already durable.
     // A failing final flush must not start a fresh, unjournaled compensation.
-    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, EncodeUpgrade(journal))) return;
+    const Value expected_proof = journal.proof.exists ? journal.proof : EncodeUpgrade(journal);
+    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, expected_proof)) return;
     bool restored = true;
     for (size_t i = bindings.size(); i-- > 0;) {
         if (i == 0 && !restored) break;
@@ -403,7 +420,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
     if (!Read(journal_key, L"UpgradeJournal", pending_journal)) return false;
     if (pending_journal.exists) {
         UpgradeJournal journal;
-        if (!DecodeUpgrade(pending_journal, Bindings(group, exe).size(), journal) ||
+        if (!DecodeUpgrade(pending_journal, Bindings(group, exe).size(), journal, group == L"RecycleBin") ||
             !JournalForExecutable(journal, exe) ||
             (on && !ShellCommandTargetsExecutable(Text(journal.next.written[0]), exe))) {
             Fail(ShellIntegrationFailureKind::PendingUpgrade, journal_key, L"UpgradeJournal");
@@ -423,7 +440,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
     Value stored;
     if (!Read(backup_key, L"Snapshot", stored)) return false;
     Snapshot previous;
-    const bool valid = Decode(stored, bindings.size(), previous);
+    const bool valid = Decode(stored, bindings.size(), previous, group == L"RecycleBin");
     const bool command_ours = ShellCommandTargetsExecutable(Text(current[0]), exe);
     const bool owned = valid && command_ours && SameValue(current[0], previous.written[0]);
     // Older restores removed the command before clearing the other overrides.
@@ -598,7 +615,7 @@ bool HasShellIntegrationOwnership(ShellIntegrationKind kind, const std::wstring&
         Value pending;
         UpgradeJournal journal;
         if (Read(std::wstring(kBackupRoot) + group, L"UpgradeJournal", pending) && pending.exists &&
-            DecodeUpgrade(pending, bindings.size(), journal) && JournalForExecutable(journal, exe)) return true;
+            DecodeUpgrade(pending, bindings.size(), journal, group == L"RecycleBin") && JournalForExecutable(journal, exe)) return true;
         const auto& binding = bindings.front();
         Value actual;
         if (!Read(binding.key, binding.name, actual)) continue;
@@ -607,7 +624,7 @@ bool HasShellIntegrationOwnership(ShellIntegrationKind kind, const std::wstring&
         Value stored;
         Snapshot snapshot;
         if (!Read(std::wstring(kBackupRoot) + group, L"Snapshot", stored) ||
-            !Decode(stored, bindings.size(), snapshot) || snapshot.before[0].exists ||
+            !Decode(stored, bindings.size(), snapshot, group == L"RecycleBin") || snapshot.before[0].exists ||
             !ShellCommandTargetsExecutable(Text(snapshot.written[0]), exe)) continue;
         // A previous restore may have removed the command first. Keep repair
         // available while a snapshot-proven override still masks Explorer.
@@ -695,7 +712,7 @@ bool PrepareShellIntegrationUpgrade(ShellIntegrationKind kind, const std::wstrin
         Value stored;
         if (!Read(key, L"Snapshot", stored)) { ok = false; continue; }
         Snapshot snapshot;
-        const bool valid = Decode(stored, bindings.size(), snapshot);
+        const bool valid = Decode(stored, bindings.size(), snapshot, group == L"RecycleBin");
         if (stored.exists && (!valid || !SameValue(current[0], snapshot.written[0]))) { ok = false; continue; }
         if (!valid) {
             snapshot.before = current;
@@ -731,10 +748,12 @@ bool UpgradeShellIntegration(ShellIntegrationKind kind, const std::wstring& prev
         if (!Read(backup_key, L"UpgradeJournal", pending_journal)) { ok = false; continue; }
         if (pending_journal.exists) {
             UpgradeJournal journal;
-            if (!DecodeUpgrade(pending_journal, old.size(), journal) ||
+            if (!DecodeUpgrade(pending_journal, old.size(), journal, group == L"RecycleBin") ||
                 !ShellCommandTargetsExecutable(Text(journal.original.written[0]), previous_exe) ||
                 !ShellCommandTargetsExecutable(Text(journal.next.written[0]), exe)) { ok = false; continue; }
-            ok = FinishUpgrade(group, journal, false) && ok;
+            const bool add_recycle_explore = group == L"RecycleBin" && !journal.next.written[3].exists;
+            const bool finished = FinishUpgrade(group, journal, false);
+            ok = finished && (!add_recycle_explore || ApplyGroup(group, exe, true)) && ok;
             continue;
         }
         std::vector<Value> current(old.size());
@@ -745,7 +764,7 @@ bool UpgradeShellIntegration(ShellIntegrationKind kind, const std::wstring& prev
         Value stored;
         if (!Read(backup_key, L"Snapshot", stored)) { ok = false; continue; }
         Snapshot snapshot;
-        const bool valid = Decode(stored, old.size(), snapshot);
+        const bool valid = Decode(stored, old.size(), snapshot, group == L"RecycleBin");
         if (stored.exists && !valid) { ok = false; continue; }
         Value pending;
         if (!Read(backup_key, L"PendingUpgrade", pending)) { ok = false; continue; }

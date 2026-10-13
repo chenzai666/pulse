@@ -56,21 +56,27 @@ constexpr uint32_t kPreviewMaxTableChars = 2u * 1024u * 1024u;
 constexpr uint32_t kPreviewMinPixelSize = 32;
 constexpr uint32_t kPreviewDefaultPixelSize = 512;
 constexpr uint32_t kPreviewMaxPixelSize = 1024;
+// Content is bounded to 64 MiB of BGRA pixels; list thumbnails keep their
+// smaller budget. Animation keeps its separate cache budget.
+constexpr uint32_t kPreviewContentMaxPixelSize = 4096;
 constexpr uint32_t kPreviewGifMaxPixelSize = 512;
 constexpr uint32_t kPreviewPixelBucket = 128;
 
-inline uint32_t ClampPreviewPixelSize(uint32_t requested, bool gif) noexcept {
-    const uint32_t cap = gif ? kPreviewGifMaxPixelSize : kPreviewMaxPixelSize;
+inline uint32_t ClampPreviewPixelSize(uint32_t requested, bool gif, bool grid = false) noexcept {
+    const uint32_t cap = gif ? kPreviewGifMaxPixelSize :
+        grid ? kPreviewMaxPixelSize : kPreviewContentMaxPixelSize;
     if (requested < kPreviewMinPixelSize) return kPreviewMinPixelSize;
     if (requested > cap) return cap;
     return requested;
 }
 
-inline uint32_t BucketPreviewPixelSize(uint32_t longest_edge) noexcept {
+inline uint32_t BucketPreviewPixelSize(uint32_t longest_edge, bool grid = true) noexcept {
+    const uint32_t cap = grid ? kPreviewMaxPixelSize : kPreviewContentMaxPixelSize;
+    if (longest_edge >= cap) return cap;
     if (longest_edge <= kPreviewDefaultPixelSize) return kPreviewDefaultPixelSize;
     const uint32_t bucket = ((longest_edge + kPreviewPixelBucket - 1u) /
                              kPreviewPixelBucket) * kPreviewPixelBucket;
-    return bucket > kPreviewMaxPixelSize ? kPreviewMaxPixelSize : bucket;
+    return bucket > cap ? cap : bucket;
 }
 struct PreviewRequest {
     uint32_t magic = kPreviewMagic;

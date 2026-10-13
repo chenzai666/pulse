@@ -2,6 +2,8 @@
 #include "global_search_handoff.h"
 #include "app_internal.h"
 #include "tray_reveal.h"
+#include "listary_search_entry.h"
+#include "../common/edition.h"
 #include "../common/localization.h"
 
 namespace pulse {
@@ -27,7 +29,10 @@ void ApplyGlobalSearchSettings(AppState& s) {
     s.settings.SetGlobalSearchError(ok ? std::wstring{} : l10n::Get(
         s.globalSearchHotkey.Error() == ERROR_HOTKEY_ALREADY_REGISTERED
             ? l10n::StringId::GlobalSearchConflict : l10n::StringId::GlobalSearchRegisterFailed));
-    if (!enabled || !ok) s.globalSearchWindow.Hide();
+    if (!enabled || !ok) {
+        CancelGlobalSearchForWindow(s);
+        s.globalSearchWindow.Hide();
+    }
     s.tray_controller.SetVisible(WantsTrayIcon(s, s.hidden_to_tray));
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
@@ -48,8 +53,8 @@ bool HandleGlobalSearchHotkeyCapture(AppState& s, unsigned key) {
     return consumed;
 }
 
-void ToggleGlobalSearch(AppState& s) {
-    if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
+namespace {
+void ToggleNativeGlobalSearch(AppState& s) {
     if (s.globalSearchWindow.Visible()) {
         s.globalSearchWindow.Hide();
         return;
@@ -69,8 +74,29 @@ void ToggleGlobalSearch(AppState& s) {
             l10n::Get(l10n::StringId::GlobalSearchOpenFailed));
     }
 }
+}
+
+void ToggleGlobalSearch(AppState& s) {
+    if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
+    if (edition::kCustom && !s.isolatedTest && !s.safeMode && QueueListaryGlobalSearch(s.worker, s.hwnd))
+        return;
+    ToggleNativeGlobalSearch(s);
+}
+
+void HandleGlobalSearchResult(AppState& s, WPARAM token) {
+    bool opened = false;
+    if (!TakeListaryGlobalSearchResult(s.hwnd, token, opened) ||
+        !s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
+    if (opened) s.globalSearchWindow.Hide();
+    else ToggleNativeGlobalSearch(s);
+}
+
+void CancelGlobalSearchForWindow(AppState& s) {
+    CancelListaryGlobalSearch(s.hwnd);
+}
 
 void ShutdownGlobalSearch(AppState& s) {
+    CancelGlobalSearchForWindow(s);
     s.globalSearchHotkey.Reset();
     s.globalSearchWindow.Shutdown();
 }

@@ -24,24 +24,27 @@ int wmain(int argc, wchar_t** argv) {
     if (exe.empty() || (!restore && !folders && !win_e && !this_pc && !directory && !drive && !recycle_bin) ||
         (restore && !previous_exe.empty())) return 2;
     using namespace pulse::app;
+    const bool all = restore && !folders && !win_e && !this_pc && !directory && !drive && !recycle_bin;
     bool ok = true;
     auto apply = [&](ShellIntegrationKind kind) {
         if (prepare) return PrepareShellIntegrationUpgrade(kind, exe);
         return previous_exe.empty() ? ApplyShellIntegration(kind, exe, !restore)
                                    : UpgradeShellIntegration(kind, previous_exe, exe);
     };
-    if (restore || folders) ok = apply(ShellIntegrationKind::Folders) && ok;
-    if (restore || win_e) ok = apply(ShellIntegrationKind::WinE) && ok;
-    if (restore || this_pc) ok = apply(ShellIntegrationKind::ThisPc) && ok;
-    if (restore || recycle_bin) ok = apply(ShellIntegrationKind::RecycleBin) && ok;
+    if (all || folders) ok = apply(ShellIntegrationKind::Folders) && ok;
+    if (all || win_e) ok = apply(ShellIntegrationKind::WinE) && ok;
+    if (all || this_pc) ok = apply(ShellIntegrationKind::ThisPc) && ok;
+    if (all || recycle_bin) ok = apply(ShellIntegrationKind::RecycleBin) && ok;
     if (directory) ok = apply(ShellIntegrationKind::Directory) && ok;
     if (drive) ok = apply(ShellIntegrationKind::Drive) && ok;
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     std::printf("Shell integration %s: %s\n", restore ? "restore" : "apply",
                 ok ? "complete" : "incomplete; unknown legacy values or write failures were preserved");
-    if (restore && (HasShellIntegrationOwnership(ShellIntegrationKind::Folders, exe) ||
-        HasShellIntegrationOwnership(ShellIntegrationKind::WinE, exe) ||
-        HasShellIntegrationOwnership(ShellIntegrationKind::ThisPc, exe) ||
-        HasShellIntegrationOwnership(ShellIntegrationKind::RecycleBin, exe))) return 3;
+    if (restore && (((all || folders) && HasShellIntegrationOwnership(ShellIntegrationKind::Folders, exe)) ||
+        ((all || win_e) && HasShellIntegrationOwnership(ShellIntegrationKind::WinE, exe)) ||
+        ((all || this_pc) && HasShellIntegrationOwnership(ShellIntegrationKind::ThisPc, exe)) ||
+        ((all || recycle_bin) && HasShellIntegrationOwnership(ShellIntegrationKind::RecycleBin, exe)) ||
+        (directory && HasShellIntegrationOwnership(ShellIntegrationKind::Directory, exe)) ||
+        (drive && HasShellIntegrationOwnership(ShellIntegrationKind::Drive, exe)))) return 3;
     return ok ? 0 : 1;
 }

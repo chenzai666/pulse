@@ -457,7 +457,63 @@ bool RunThumbnailCacheTests();
 bool RunThumbnailPropertiesRegression();
 bool RunThumbnailSheetRegression();
 
+static int RunNativeImageRegression() {
+    Gdiplus::GdiplusStartupInput startup;
+    ULONG_PTR token = 0;
+    if (Gdiplus::GdiplusStartup(&token, &startup, nullptr) != Gdiplus::Ok) return 2;
+    wchar_t temp[32768]{};
+    if (!GetTempPathW(ARRAYSIZE(temp), temp)) { Gdiplus::GdiplusShutdown(token); return 2; }
+    const auto root = std::wstring(temp) + L"PulseNativeImage-" +
+        std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    if (!CreateDirectoryW(root.c_str(), nullptr)) { Gdiplus::GdiplusShutdown(token); return 2; }
+    const CLSID png_encoder{0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
+    const auto create = [&](const std::wstring& file, UINT width, UINT height) {
+        Gdiplus::Bitmap image(width, height, PixelFormat32bppARGB);
+        Gdiplus::Graphics graphics(&image);
+        graphics.Clear(Gdiplus::Color(255, 20, 80, 200));
+        Gdiplus::SolidBrush accent(Gdiplus::Color(255, 220, 40, 10));
+        graphics.FillRectangle(&accent, 0, 0, static_cast<INT>(width / 2), static_cast<INT>(height));
+        return image.Save(file.c_str(), &png_encoder, nullptr) == Gdiplus::Ok;
+    };
+    const auto small = root + L"\\03-preview.png";
+    const auto large = root + L"\\large.png";
+    Check(create(small, 640, 400) && create(large, 2048, 1200), L"create isolated PNG fixtures");
+    {
+        Host host;
+        Check(host.Start(), L"start native preview host");
+        const auto image = [&](const std::wstring& file, UINT pixels, UINT flags, UINT width, UINT height) {
+            Result result;
+            const bool received = host.Request(file, result, MAXDWORD, pixels,
+                ipc::PreviewRequestKind::Content, flags);
+            bool colors = received && result.response.status == 0 &&
+                result.response.kind == ipc::PreviewContentKind::Bitmap &&
+                result.response.width == width && result.response.height == height &&
+                result.pixels.size() == static_cast<size_t>(width) * height * 4;
+            if (colors) {
+                const size_t left = static_cast<size_t>(height / 2) * result.response.stride + width;
+                const size_t right = static_cast<size_t>(height / 2) * result.response.stride + width * 3;
+                colors = result.pixels[left + 2] > 180 && result.pixels[left] < 40 &&
+                    result.pixels[right] > 180 && result.pixels[right + 2] < 40;
+            }
+            return colors;
+        };
+        Check(image(small, 1024, 0, 640, 400), L"PNG content returns actual colored pixels and terminates loading");
+        Check(image(L"\\\\?\\" + small, 1024, 0, 640, 400), L"extended Windows PNG path returns the same native pixels");
+        Check(image(large, 4096, 0, 2048, 1200), L"content keeps image detail above the former 1024-pixel cap");
+        Check(image(large, 4096, ipc::kPreviewRequestFlagGrid, 1024, 600), L"grid thumbnails retain their bounded resource budget");
+        Check(ipc::ClampPreviewPixelSize(MAXDWORD, false) == 4096 &&
+            ipc::ClampPreviewPixelSize(MAXDWORD, true) == 512 &&
+            ipc::BucketPreviewPixelSize(MAXDWORD, false) == 4096,
+            L"oversized requests stay bounded without bucket overflow");
+    }
+    DeleteFileW(small.c_str()); DeleteFileW(large.c_str()); RemoveDirectoryW(root.c_str());
+    Gdiplus::GdiplusShutdown(token);
+    return failed ? 1 : 0;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && wcscmp(argv[1], L"--native-image-regression") == 0)
+        return RunNativeImageRegression();
     if (argc == 2 && wcscmp(argv[1], L"--sheet-regression") == 0)
         return RunThumbnailSheetRegression() ? 0 : 1;
     if (argc == 2 && wcscmp(argv[1], L"--properties-regression") == 0)

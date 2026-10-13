@@ -61,7 +61,7 @@ private:
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
-    void Render();
+    void Render(bool present = true);
     void SchedulePreviewDeadline();
     uint64_t preview_deadline_ = 0;
     void Resize();
@@ -222,7 +222,9 @@ private:
     Compositor compositor_;
     // Room for every visible PDF page at full size plus the thumbnail strip;
     // a smaller budget would evict an on-screen page and re-request it forever.
-    ThumbnailCache thumbnails_{48ull * 1024ull * 1024ull, 192};
+    // A 4096-square raster costs 128 MiB with its CPU recovery copy and GPU
+    // bitmap. Keep it resident instead of evicting it before the next paint.
+    ThumbnailCache thumbnails_{192ull * 1024ull * 1024ull, 192};
     PreviewHandlerHost handler_;
     VideoPreview video_;
     AudioWaveform waveform_;

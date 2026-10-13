@@ -682,7 +682,7 @@ D2D1_RECT_F QuickPreviewWindow::ImageDest(const D2D1_RECT_F& content) const {
 
 uint32_t QuickPreviewWindow::RequestedPixelSize(const D2D1_RECT_F& content) const {
     const float longest = (std::max)(content.right - content.left, content.bottom - content.top);
-    return ipc::BucketPreviewPixelSize(static_cast<uint32_t>((std::max)(1.0f, longest)));
+    return ipc::BucketPreviewPixelSize(static_cast<uint32_t>((std::max)(1.0f, longest)), false);
 }
 
 // PULSEICO payload from the host (preview_host/image_frames.h).
@@ -1670,7 +1670,7 @@ void QuickPreviewWindow::SchedulePreviewDeadline() {
     }
 }
 
-void QuickPreviewWindow::Render() {
+void QuickPreviewWindow::Render(bool present) {
     thumbnails_.BeginFrame();
     if (!compositor_.Dc()) return;
     if (compositor_.NeedsRecovery()) {
@@ -2137,7 +2137,7 @@ void QuickPreviewWindow::Render() {
     if (result == D2DERR_RECREATE_TARGET || result == DXGI_ERROR_DEVICE_REMOVED ||
         result == DXGI_ERROR_DEVICE_RESET) compositor_.NotifyDeviceLost(result);
     else {
-        compositor_.Present();
+        if (present) compositor_.Present();
         if (zoom_pending_) {
             // Start after the first frame of the new item is on screen.
             zoom_pending_ = false;
