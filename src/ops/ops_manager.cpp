@@ -1069,14 +1069,16 @@ OpsManager::QueueItem* OpsManager::CurrentTransferLocked() {
         (item->req.type == OpType::Copy || item->req.type == OpType::Move) ? item : nullptr;
 }
 
-void OpsManager::CancelCurrent() {
+void OpsManager::CancelCurrent(uint64_t expected_task_id) {
     bool transfer = false;
     uint64_t task = 0;
+    uint32_t request_id = 0;
     {
         // The same locks protect request-owned state, engine initialization and
         // pause wait predicates. No startup store can erase an accepted command.
         std::scoped_lock lock(mutex_, transfer_control_mutex_);
         auto* current = active_item_ ? &*active_item_ : queue_.empty() ? nullptr : &queue_.front();
+        if (expected_task_id && (!current || current->seq != expected_task_id)) return;
         if (current) {
             current->cancel_requested = true;
             shell_cancel_requested_ = true;
@@ -1087,6 +1089,7 @@ void OpsManager::CancelCurrent() {
             task = item->seq;
             transfer = true;
         }
+        request_id = current_req_id_.load();
         if (transfer_active_.load()) {
             transfer_cancel_.store(true);
             transfer_pause_.store(false);
@@ -1100,8 +1103,7 @@ void OpsManager::CancelCurrent() {
             if (status.active && status.task_id == task) status.phase = OpPhase::Cancelling;
         });
     }
-    uint32_t id = current_req_id_.load();
-    if (id != 0) ipc::ShellClient::Instance().Cancel(id);
+    if (request_id != 0) ipc::ShellClient::Instance().Cancel(request_id);
 }
 
 void OpsManager::PauseCurrent() {
@@ -1767,6 +1769,7 @@ void OpsManager::WorkerThread() {
             finished.type = item.req.type;
             finished.sources = item.req.sources;
             finished.success = diagnostic_status.phase == OpPhase::Completed;
+            finished.last_error = diagnostic_status.last_error;
             for (const auto& source : item.req.sources)
                 if (std::any_of(moved_sources_.begin(), moved_sources_.end(), [&](const auto& moved) {
                     return _wcsicmp(source.c_str(), moved.c_str()) == 0;

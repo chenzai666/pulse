@@ -5,6 +5,7 @@
 #include "bloom_accent_picker.h"
 #include "../common/localization.h"
 #include "typography.h"
+#include "title_chrome_layout.h"
 #include "name_highlight.h"
 #include "../app/places.h"
 #include "../app/builtin_menu_items.h"
@@ -1783,40 +1784,6 @@ void MakeBrush(ID2D1DeviceContext* dc, const D2D1_COLOR_F& c, ComPtr<ID2D1SolidC
     if (!br.get()) dc->CreateSolidColorBrush(c, &br);
     else br->SetColor(c);
 }
-struct TitleChrome {
-    float chrome_left = 0.0f;
-    float settings_left = 0.0f;
-    float settings_w = 0.0f;
-    float theme_left = 0.0f;
-    float theme_w = 0.0f;
-    // Settings + theme share one pill, kept apart from the window controls.
-    float group_left = 0.0f;
-    float group_right = 0.0f;
-    float cmd_left = 0.0f;
-    float cmd_w = 0.0f;
-    float cmd_top = 0.0f;
-    float cmd_h = 0.0f;
-};
-
-TitleChrome MakeTitleChrome(float window_w, float scale, float title_h) {
-    TitleChrome c;
-    const float ctrl_w = 46.0f * scale;
-    c.chrome_left = window_w - ctrl_w * 3.0f;
-    c.theme_w = 36.0f * scale;
-    c.settings_w = 36.0f * scale;
-    const float group_pad = 2.0f * scale;
-    c.group_right = c.chrome_left - 14.0f * scale;
-    c.theme_left = c.group_right - group_pad - c.theme_w;
-    c.settings_left = c.theme_left - 1.0f * scale - c.settings_w;   // 1 DIP divider
-    c.group_left = c.settings_left - group_pad;
-    c.cmd_w = 0.0f;
-    c.cmd_left = c.settings_left;
-    const float cmd_pad = 8.0f * scale;
-    c.cmd_top = cmd_pad;
-    c.cmd_h = std::max(0.0f, title_h - cmd_pad * 2.0f);
-    return c;
-}
-
 constexpr float kSettingsNavW = 200.0f;
 constexpr int kSettingsNavCount = 6;  // 5: 预览增强包
 

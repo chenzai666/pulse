@@ -9,6 +9,7 @@
 #include "app_internal.h"
 #include "sidebar_navigation.h"
 #include "app_file_conversion.h"
+#include "app_status_center.h"
 #include "app_sidebar_refresh.h"
 #include "tray_reveal.h"
 #include "group_wheel_ui.h"
@@ -730,6 +731,9 @@ void DispatchMenuCommand(AppState& s, int cmd) {
     switch (cmd) {
     case app::CmdApplyViewToAllFolders:
         ApplyViewToAllFolders(s);
+        break;
+    case app::CmdStatusCenter:
+        ShowStatusCenter(s);
         break;
     case app::CmdApplyGroupToAllFolders:
         if (const app::Tab* tab = ActiveTab(s)) ApplyGroupToAllFolders(s, tab->group_by);
@@ -1878,6 +1882,14 @@ void ShowToolbarMore(AppState& s) {
     }
     items.back().separator_after=true;
     ui::FluentMenuItem split;
+    ui::FluentMenuItem properties;
+    properties.command = tab->SelectedCount() > 0 ? app::CmdProperties : app::CmdFolderProperties;
+    properties.text = l10n::Get(l10n::StringId::Properties);
+    properties.glyph = L"\xE946";
+    properties.shortcut = L"Alt+Enter";
+    properties.enabled = tab->SelectedCount() > 0 || (!tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path));
+    properties.separator_after = true;
+    items.push_back(std::move(properties));
     split.text=l10n::Get(l10n::StringId::SplitLayout);
     split.children=app::BuildSplitMenu(-1);
     items.push_back(std::move(split));
@@ -1894,6 +1906,11 @@ void ShowToolbarMore(AppState& s) {
     items.push_back(std::move(column));
     items.push_back(app::BuildShortcutHints());
     const float width=static_cast<float>(s.compositor.Width());
+    ui::FluentMenuItem status_center;
+    status_center.command = app::CmdStatusCenter;
+    status_center.text = l10n::Pick(L"状态中心", L"Status center");
+    status_center.glyph = L"\xE9D9";
+    items.push_back(std::move(status_center));
     const float left=s.renderer.EffectiveSidebarWidth(width);
     const auto layout=s.renderer.ToolbarLayoutAt(width,s.renderer.NewButtonWidthPx(true));
     (void)left;

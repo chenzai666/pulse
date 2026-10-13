@@ -43,6 +43,7 @@ FFmpeg 从 9.0.2 上游源码和 LAME 3.100 固定源码在 CI 构建，禁用 G
 4. 只从运行时旁的 `engines` 目录定位外部引擎。
 5. Pandoc 使用 `--sandbox`，固定参数，不接受过滤器、Lua 或 defaults。
 6. MP4/MKV/MOV 重编码默认使用 MPEG-4，沿用 `-q:v` 参数；仅 AVI 使用 XVID tag，不对其他容器添加 x264 的 CRF/preset。
+7. 外部引擎取消后有界等待原始进程退出；宿主终结前按 Windows Job 成员身份清理并确认子树，保存最小进程诊断。
 
 ## 从随包源码重建宿主
 

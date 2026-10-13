@@ -4,7 +4,7 @@ using Filee.Core.Presets;
 
 namespace Pulse.FileConversion;
 
-internal sealed class ConversionHost(EngineSet engines, string sessionRoot, CancellationToken lifetime)
+internal sealed class ConversionHost(EngineSet engines, string sessionRoot, CancellationToken lifetime, WindowsJob processJob)
 {
     private readonly object gate = new();
     private ConversionJob? active;
@@ -166,6 +166,10 @@ internal sealed class ConversionHost(EngineSet engines, string sessionRoot, Canc
         {
             watchdog.Cancel();
             await quota;
+            // Converter cancellation can finish before a native child has
+            // exited. Confirm our actual Windows Job is empty before terminal.
+            var drained = await processJob.DrainChildrenAsync();
+            if (!drained) job.Cancel();
             foreach (var file in job.Files.Skip(results.Count))
                 results.Add(new(file.SourcePath, job.CancellationToken.IsCancellationRequested ? "cancelled" : "failed", [],
                     "error.conversion_failed", fatal ?? "The conversion did not finish."));
@@ -183,6 +187,7 @@ internal sealed class ConversionHost(EngineSet engines, string sessionRoot, Canc
             }
             try { SafePaths.RejectLinks(stage); Directory.Delete(stage, true); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            if (!drained) Environment.Exit(3);
         }
     }
 

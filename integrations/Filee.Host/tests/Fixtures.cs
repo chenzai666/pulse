@@ -90,6 +90,7 @@ internal static class Fixtures
 
     internal sealed class OwnedProcess(Process process) : IDisposable
     {
+        public Process Process => process;
         public int Id => process.Id;
         public void Kill() => process.Kill();
         public Task WaitForExitAsync() => process.WaitForExitAsync();

@@ -806,6 +806,8 @@ add_executable(pulse_drop_navigation_test src/bench/drop_navigation_test.cpp)
 add_executable(pulse_file_conversion_protocol_test src/bench/file_conversion_protocol_test.cpp
     src/app/file_conversion_protocol.cpp src/app/file_conversion_integration.cpp)
 target_link_libraries(pulse_file_conversion_protocol_test PRIVATE advapi32 user32)
+add_executable(pulse_status_center_model_test src/bench/status_center_model_test.cpp src/app/status_center_model.cpp)
+target_sources(pulse_dialog_gallery PRIVATE src/ui/status_center_window.cpp src/app/status_center_model.cpp)
 # Multi-window M1: AppState's process-wide members alias one AppCore (compile-time checks).
 add_executable(pulse_app_core_alias_test src/bench/app_core_alias_test.cpp)
 target_include_directories(pulse_app_core_alias_test PRIVATE "${CMAKE_BINARY_DIR}/generated")

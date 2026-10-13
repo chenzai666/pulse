@@ -19,9 +19,6 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild -VerifyOnly
 & "$PSScriptRoot/build_filee_host.ps1" -BuildDir $taskBuild
-& dotnet run --project "$taskRepo/integrations/Filee.Host/tests/Pulse.Filee.Host.Tests.csproj" -c Release -- --runtime (Join-Path $taskBuild 'conversion/Pulse.Filee.Host.exe') |
-    Tee-Object -FilePath (Join-Path $taskBuild 'filee-conversion-smoke.log')
-if ($LASTEXITCODE) { throw 'Filee 与 Pandoc 定向转换验证失败' }
 $buildBatch = Join-Path $taskBuild 'compile-custom.bat'
 @"
 @echo off
@@ -30,15 +27,25 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test
+cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test pulse_status_center_model_test pulse_dialogs_test pulse_ops_test pulse_dialog_gallery
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw 'Pulse 定制版原生编译失败' }
-foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test', 'pulse_drop_navigation_test', 'pulse_file_conversion_protocol_test')) {
+foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test', 'pulse_drop_navigation_test', 'pulse_file_conversion_protocol_test', 'pulse_status_center_model_test')) {
     & (Join-Path $taskBuild "$testName.exe") | Tee-Object -FilePath (Join-Path $taskBuild "$testName.log")
     if ($LASTEXITCODE) { throw "定向回归失败：$testName" }
 }
+foreach ($testName in @('pulse_dialogs_test', 'pulse_ops_test')) {
+    & (Join-Path $taskBuild "$testName.exe") --delete-confirmation | Tee-Object -FilePath (Join-Path $taskBuild "$testName-delete.log")
+    if ($LASTEXITCODE) { throw "删除确认定向验证失败：$testName" }
+}
+& (Join-Path $taskBuild 'pulse_dialog_gallery.exe') --delete-confirmation (Join-Path $taskBuild 'delete-confirmation-zh')
+if ($LASTEXITCODE) { throw '删除确认中文画廊生成失败' }
+& (Join-Path $taskBuild 'pulse_dialog_gallery.exe') --lang en-US --delete-confirmation (Join-Path $taskBuild 'delete-confirmation-en')
+if ($LASTEXITCODE) { throw '删除确认英文画廊生成失败' }
+& (Join-Path $taskBuild 'pulse_dialog_gallery.exe') --status-center (Join-Path $taskBuild 'status-center-gallery')
+if ($LASTEXITCODE) { throw '状态中心画廊生成失败' }
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui')) {
     $env:PULSE_SELFTEST_CASE = $testCase
@@ -52,6 +59,9 @@ foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui'
     if ($testProcess.ExitCode) { throw "标签定向回归失败：$testCase" }
 }
 Remove-Item Env:PULSE_SELFTEST_CASE -ErrorAction SilentlyContinue
+& dotnet run --project "$taskRepo/integrations/Filee.Host/tests/Pulse.Filee.Host.Tests.csproj" -c Release -- --runtime (Join-Path $taskBuild 'conversion/Pulse.Filee.Host.exe') |
+    Tee-Object -FilePath (Join-Path $taskBuild 'filee-conversion-smoke.log')
+if ($LASTEXITCODE) { throw 'Filee 与 Pandoc 定向转换验证失败' }
 $productionBatch = Join-Path $taskBuild 'compile-production.bat'
 @"
 @echo off

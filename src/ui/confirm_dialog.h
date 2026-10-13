@@ -14,6 +14,15 @@ enum class ConfirmTone { Auto, Info, Question, Warning, Danger };
 
 enum class ConfirmChoice { Cancel, Confirm, Secondary };
 
+struct ConfirmCheckboxSpec {
+    std::wstring text; // empty: no checkbox
+    bool checked = false;
+    bool danger_when_checked = false;
+    std::wstring checked_message;
+    std::wstring checked_confirm_text;
+    std::wstring checked_note;
+};
+
 struct ConfirmDialogSpec {
     std::wstring title;
     std::wstring message;
@@ -32,7 +41,17 @@ struct ConfirmDialogSpec {
     // The button Enter presses at first. Destructive questions start on
     // Cancel, like MB_DEFBUTTON2, so Enter alone never confirms them.
     ConfirmChoice default_choice = ConfirmChoice::Confirm;
+    ConfirmCheckboxSpec checkbox;
 };
+
+struct ConfirmDialogResult {
+    ConfirmChoice choice = ConfirmChoice::Cancel;
+    bool checkbox_checked = false;
+};
+
+// Returns the checkbox choice for this invocation; no preference is persisted.
+ConfirmDialogResult ShowConfirmDialogWithOptions(HWND owner, const ConfirmDialogSpec& spec,
+                                                 bool dark, D2D1_COLOR_F accent);
 
 ConfirmChoice ShowConfirmDialogEx(HWND owner, const ConfirmDialogSpec& spec, bool dark,
                                   D2D1_COLOR_F accent);

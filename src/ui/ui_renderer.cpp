@@ -243,9 +243,9 @@ ToolbarLayout MainRenderer::ToolbarLayoutAt(float w, float create_width, float f
     ToolbarLayout out = MakeToolbarLayout(w, scale_, title_bar_height_ - 46.0f * scale_, margin_,
                                           create_width, left, filter_expand, 0.0f, group_width, sort_width,
                                           filter_width);
-    const TitleChrome chrome = MakeTitleChrome(w, scale_, title_bar_height_);
+    const TitleChrome chrome = MakeTitleChrome(w, scale_, title_bar_height_, left);
     const float row_top = (title_bar_height_ - 36.0f * scale_) * 0.5f - 4.0f * scale_;
-    const ToolbarLayout row = MakeToolbarLayout(chrome.settings_left - 4.0f * scale_, scale_, row_top,
+    const ToolbarLayout row = MakeToolbarLayout(chrome.group_left - 4.0f * scale_, scale_, row_top,
                                                 margin_, create_width, left, 0.0f, search_min_dip_);
     out.navigation = row.navigation;
     out.address = row.address;
@@ -1008,7 +1008,7 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         dc->FillEllipse(D2D1::Ellipse(identity.dot, identity.dot_radius, identity.dot_radius), brAccent_.get());
     }
     const float ctrlW = 46.0f * scale_;
-    const TitleChrome chrome = MakeTitleChrome(right, scale_, h);
+    const TitleChrome chrome = MakeTitleChrome(right, scale_, h, EffectiveSidebarWidth(right));
 
     const TabStripMetrics strip = ComputeTabStrip(vm, rect.right);
     const float tabH = strip.h;
@@ -1288,7 +1288,7 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         // separates it from the command row.
         FillRect(dc, brStrokeDivider_.get(), 0.0f, h - 1.0f, right, 1.0f);
     }
-    // Settings + theme: one quiet pill with a hairline between the two, so
+    // App actions share one quiet pill with hairlines between them, so
     // they read as app actions rather than two more caption buttons.
     const float groupTop = h * 0.5f - 18.0f * scale_;
     const float groupBottom = h * 0.5f + 18.0f * scale_;
@@ -1303,6 +1303,17 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     MakeBrush(dc, theme.stroke_divider, brStrokeDivider_);
     const float buttonTop = groupTop + 2.0f * scale_;
     const float buttonBottom = groupBottom - 2.0f * scale_;
+    if (chrome.status_w > 0) {
+        const D2D1_RECT_F statusRc = D2D1::RectF(chrome.status_left, buttonTop, chrome.status_left + chrome.status_w, buttonBottom);
+        DrawButton(statusRc, theme, IsHovered(vm, HitTestResult::StatusCenterButton) ? theme.fill_hover : kTransparent,
+            L"\xE9D9", L"", vm.status_center_active ? theme.accent : theme.text, true, true);
+        MakeBrush(dc, IsHighContrast() ? theme.stroke_divider : WithAlpha(theme.text, 0.12f), brStrokeDivider_);
+        FillRect(dc, brStrokeDivider_.get(), chrome.settings_left - scale_, h * 0.5f - 8 * scale_, scale_, 16 * scale_);
+        if (vm.status_center_active) {
+            MakeBrush(dc, theme.accent, brAccent_);
+            dc->FillEllipse(D2D1::Ellipse({statusRc.right - 7 * scale_, statusRc.top + 7 * scale_}, 3 * scale_, 3 * scale_), brAccent_.get());
+        }
+    }
     const D2D1_RECT_F settingsRc = D2D1::RectF(chrome.settings_left, buttonTop,
         chrome.settings_left + chrome.settings_w, buttonBottom);
     DrawButton(settingsRc, theme,
@@ -1626,9 +1637,9 @@ MainRenderer::TabStripMetrics MainRenderer::ComputeTabStrip(
     const WindowViewModel& vm, float window_w) const {
     TabStripMetrics m;
 
-    const TitleChrome chrome = MakeTitleChrome(window_w, scale_, title_bar_height_);
+    const TitleChrome chrome = MakeTitleChrome(window_w, scale_, title_bar_height_, EffectiveSidebarWidth(window_w));
     m.x0 = EffectiveSidebarWidth(window_w) + margin_;
-    const float tabsRight = chrome.settings_left - 8.0f * scale_;
+    const float tabsRight = chrome.group_left - 8.0f * scale_;
 
     // Group chips: one at the start of each consecutive same-group run. Their
     // widths come out of the strip budget before tabs are sized; positions

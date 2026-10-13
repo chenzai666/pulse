@@ -89,6 +89,21 @@ ConfirmDialogSpec NormalizeConfirmSpec(ConfirmDialogSpec spec) {
     return spec;
 }
 
+ConfirmDialogSpec ConfirmSpecForCheckbox(ConfirmDialogSpec spec, bool checked) {
+    spec.checkbox.checked = !spec.checkbox.text.empty() && checked;
+    if (spec.checkbox.checked) {
+        if (!spec.checkbox.checked_message.empty()) spec.message = spec.checkbox.checked_message;
+        if (!spec.checkbox.checked_confirm_text.empty()) spec.confirm_text = spec.checkbox.checked_confirm_text;
+        if (!spec.checkbox.checked_note.empty()) spec.note = spec.checkbox.checked_note;
+        if (spec.checkbox.danger_when_checked) {
+            spec.danger = true;
+            spec.tone = ConfirmTone::Danger;
+            spec.default_choice = ConfirmChoice::Cancel;
+        }
+    }
+    return NormalizeConfirmSpec(std::move(spec));
+}
+
 ConfirmTone ResolveConfirmTone(const ConfirmDialogSpec& spec) {
     if (spec.tone != ConfirmTone::Auto) return spec.tone;
     return spec.danger ? ConfirmTone::Danger : ConfirmTone::Question;
@@ -111,8 +126,12 @@ std::wstring FitConfirmItemText(const std::wstring& text, float width,
 }
 
 std::vector<int> ConfirmFocusOrder(const ConfirmDialogSpec& spec) {
-    if (spec.secondary_text.empty()) return {kConfirmCancel, kConfirmPrimary};
-    return {kConfirmCancel, kConfirmSecondary, kConfirmPrimary};
+    std::vector<int> order;
+    if (!spec.checkbox.text.empty()) order.push_back(kConfirmCheckbox);
+    order.push_back(kConfirmCancel);
+    if (!spec.secondary_text.empty()) order.push_back(kConfirmSecondary);
+    order.push_back(kConfirmPrimary);
+    return order;
 }
 
 int ConfirmControlFor(ConfirmChoice choice, bool has_secondary) {
@@ -127,6 +146,8 @@ std::wstring ConfirmClipboardText(const ConfirmDialogSpec& spec) {
     std::wstring text = spec.title;
     if (!spec.message.empty()) text += L"\r\n\r\n" + spec.message;
     for (const std::wstring& item : spec.items) text += L"\r\n  " + item;
+    if (!spec.checkbox.text.empty())
+        text += std::wstring(L"\r\n\r\n") + (spec.checkbox.checked ? L"[x] " : L"[ ] ") + spec.checkbox.text;
     if (!spec.note.empty()) text += L"\r\n\r\n" + spec.note;
     return text;
 }
@@ -189,6 +210,11 @@ ConfirmDialogLayout LayoutConfirmDialog(const ConfirmDialogSpec& spec,
         }
         y = l.card.bottom;
     }
+    if (!spec.checkbox.text.empty()) {
+        y += Dip(scale, 14.0f);
+        l.checkbox = D2D1::RectF(text_x, y, width - pad, y + Dip(scale, 32.0f));
+        y = l.checkbox.bottom;
+    }
     if (!spec.note.empty()) {
         y += Dip(scale, 12.0f);
         const float note_h = Wrapped(factory, formats.note.get(), spec.note, text_w);
@@ -219,6 +245,7 @@ int HitTestConfirmDialog(const ConfirmDialogLayout& layout, bool has_secondary,
     if (ContainsRect(layout.primary, x, y)) return kConfirmPrimary;
     if (has_secondary && ContainsRect(layout.secondary, x, y)) return kConfirmSecondary;
     if (ContainsRect(layout.cancel, x, y)) return kConfirmCancel;
+    if (ContainsRect(layout.checkbox, x, y)) return kConfirmCheckbox;
     return kConfirmNone;
 }
 
@@ -303,7 +330,15 @@ void DrawConfirmDialog(Compositor& compositor, fluent::Painter& painter, const T
         }
     }
     DrawDialogParagraph(compositor, formats.note.get(), l.note, spec.note,
-                        high_contrast ? theme.text : theme.text_secondary);
+                        high_contrast ? theme.text : spec.danger ? theme.danger : theme.text_secondary);
+    if (!spec.checkbox.text.empty()) {
+        fluent::ControlState check{};
+        check.checked = spec.checkbox.checked;
+        check.hovered = visual.hover == kConfirmCheckbox;
+        check.pressed = visual.pressed == kConfirmCheckbox;
+        check.keyboard_focus = visual.show_focus && visual.focus == kConfirmCheckbox;
+        painter.DrawCheckBox(l.checkbox, spec.checkbox.text, check);
+    }
 
     // Footer band: one layer up from the body, like the main window's sheet.
     painter.FillRoundedRect(l.footer, 0, theme.surface_sheet);

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Pulse.FileConversion;
 
@@ -23,10 +24,16 @@ internal sealed class WindowsJob : IDisposable
         public IoCounters Io;
         public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
-    [DllImport("kernel32.dll")] private static extern bool SetInformationJobObject(IntPtr job, int kind, ref Limits data, uint size);
-    [DllImport("kernel32.dll")] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int kind, ref Limits data, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(IntPtr job, int kind, IntPtr data, uint length, out uint returned);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(SafeProcessHandle process, IntPtr job, out bool member);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(SafeProcessHandle process, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(SafeProcessHandle process, out long created, out long exited, out long kernel, out long user);
 
     public WindowsJob()
     {
@@ -44,6 +51,69 @@ internal sealed class WindowsJob : IDisposable
             throw new InvalidOperationException("Cannot isolate the conversion process tree.");
         }
         assigned = true;
+    }
+
+    public async Task<bool> DrainChildrenAsync()
+    {
+        var deadline = Stopwatch.StartNew();
+        try
+        {
+            while (deadline.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                var alive = 0;
+                foreach (var pid in Members())
+                {
+                    if (pid == Environment.ProcessId) continue;
+                    using var process = OpenProcess(0x1000 | 0x100000 | 0x1, false, pid);
+                    if (process.IsInvalid)
+                    {
+                        var error = Marshal.GetLastWin32Error();
+                        if (error == 87) continue; // the process exited before OpenProcess
+                        Console.Error.WriteLine($"PULSE_JOB_STOP pid={pid} phase=open_failed win32={error}");
+                        return false;
+                    }
+                    // A PID might have been reused between querying the job and
+                    // opening the process. Never terminate a nonmember.
+                    if (!IsProcessInJob(process, handle, out var member))
+                    {
+                        Console.Error.WriteLine($"PULSE_JOB_STOP pid={pid} phase=membership_failed win32={Marshal.GetLastWin32Error()}");
+                        return false;
+                    }
+                    if (!member || WaitForSingleObject(process, 0) == 0) continue;
+                    alive++;
+                    GetProcessTimes(process, out var created, out _, out _, out _);
+                    Console.Error.WriteLine($"PULSE_JOB_STOP pid={pid} created={created} phase=terminate_member");
+                    if (!TerminateProcess(process, 3))
+                    {
+                        var error = Marshal.GetLastWin32Error();
+                        if (WaitForSingleObject(process, 0) != 0)
+                            Console.Error.WriteLine($"PULSE_JOB_STOP pid={pid} phase=terminate_failed win32={error}");
+                    }
+                }
+                if (alive == 0) return true;
+                await Task.Delay(25);
+            }
+        }
+        catch (IOException) { Console.Error.WriteLine("PULSE_JOB_STOP phase=query_failed"); }
+        Console.Error.WriteLine("PULSE_JOB_STOP phase=drain_timeout");
+        return false;
+    }
+
+    private int[] Members()
+    {
+        var bytes = 8 + 64 * IntPtr.Size;
+        var buffer = Marshal.AllocHGlobal(bytes);
+        try
+        {
+            if (!QueryInformationJobObject(handle, 3, buffer, (uint)bytes, out _))
+                throw new IOException("Cannot inspect the conversion job process list.");
+            var count = Marshal.ReadInt32(buffer, 4);
+            if (count is < 0 or > 64) throw new IOException("Invalid conversion job process count.");
+            var result = new int[count];
+            for (var i = 0; i < count; i++) result[i] = checked((int)Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size).ToInt64());
+            return result;
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
     }
 
     // The OS closes the job handle on host termination, killing its engine children.

@@ -6,6 +6,7 @@
 // line per check; exit code 0 iff all checks pass.
 #include "../ops/ops_manager.h"
 #include "../app/update_shutdown.h"
+#include "../app/delete_confirmation.h"
 #include "../ops/clipboard.h"
 #include "../ipc/shell_client.h"
 #include "../common/localization.h"
@@ -333,6 +334,79 @@ int wmain(int argc, wchar_t** argv) {
     // English forms are checked separately.
     l10n::SetLanguage(L"zh-CN");
     fprintf(stderr, "[test] start\n");
+
+    if (argc > 1 && std::wstring_view(argv[1]) == L"--delete-confirmation") {
+        const auto sandbox = std::filesystem::path(SandboxRoot());
+        if (sandbox.empty() || !sandbox.is_absolute()) {
+            Check(false, L"deletion fixture requires an absolute executable workspace");
+            return 1;
+        }
+        const auto base = sandbox.parent_path();
+        const auto root = base / (L"delete-confirmation-" + std::to_wstring(GetCurrentProcessId()) +
+                                  L"-" + std::to_wstring(GetTickCount64()));
+        std::error_code error;
+        std::filesystem::create_directories(base, error);
+        const bool created = !error && std::filesystem::create_directory(root, error);
+        Check(created && !error, L"delete confirmation uses a freshly created isolated fixture");
+        if (!created || error) return 1;
+        const auto recycle = root / L"recycle.txt";
+        const auto permanent = root / L"permanent.txt";
+        const auto shift = root / L"shift.txt";
+        const auto cancelled = root / L"cancelled.txt";
+        const char payload[] = "isolated delete confirmation fixture";
+        bool ready = true;
+        for (const auto& file : {recycle, permanent, shift, cancelled})
+            ready = MakeFile(file.wstring(), payload, sizeof(payload)) && ready;
+        Check(ready, L"create only disposable deletion fixtures");
+        g_ops.SetJournalPath((root / L"journal.json").wstring());
+        g_ops.Start([] {});
+        using app::DeleteDisposition;
+        using ui::ConfirmChoice;
+        const auto toolbar = app::PlanDeleteConfirmation(false, true, false);
+        const auto resolve = [&](const app::DeleteConfirmationPlan& plan,
+                                 const ui::ConfirmDialogResult& choice, const std::filesystem::path& file) {
+            const auto disposition = app::ResolveDeleteConfirmation(plan, choice);
+            if (disposition == DeleteDisposition::Cancel) return g_ops.Status();
+            return RunOp(SimpleOp(disposition == DeleteDisposition::Permanent ? ops::OpType::RealDelete
+                                                                              : ops::OpType::RecycleDelete,
+                                  {file.c_str()}));
+        };
+        if (ready) {
+            const auto before_cancel = g_ops.Status().completed_ops;
+            resolve(toolbar, {ConfirmChoice::Cancel, true}, cancelled);
+            Check(Exists(cancelled.wstring()) && g_ops.Status().completed_ops == before_cancel,
+                  L"cancel leaves the checked fixture intact and submits no operation");
+
+            const auto recycled = resolve(toolbar, {ConfirmChoice::Confirm, false}, recycle);
+            Check(recycled.type == ops::OpType::RecycleDelete && recycled.phase == ops::OpPhase::Completed &&
+                      recycled.last_error.empty() && !Exists(recycle.wstring()) && g_ops.CanUndo(),
+                  L"unchecked toolbar deletion moves its fixture to the Recycle Bin and remains undoable");
+            if (g_ops.CanUndo()) {
+                const auto completed = g_ops.Status().completed_ops;
+                g_ops.Undo();
+                Check(WaitOpDone(completed) && Exists(recycle.wstring()) &&
+                          FileSize(recycle.wstring()) == sizeof(payload),
+                      L"undo restores only the recycled fixture");
+            }
+
+            const auto deleted = resolve(toolbar, {ConfirmChoice::Confirm, true}, permanent);
+            Check(deleted.type == ops::OpType::RealDelete && deleted.phase == ops::OpPhase::Completed &&
+                      deleted.last_error.empty() && !Exists(permanent.wstring()) && !g_ops.CanUndo(),
+                  L"checked toolbar deletion permanently removes its fixture and cannot be undone");
+            const auto shifted = resolve(app::PlanDeleteConfirmation(true, false, false),
+                                         {ConfirmChoice::Confirm, false}, shift);
+            Check(shifted.type == ops::OpType::RealDelete && shifted.phase == ops::OpPhase::Completed &&
+                      shifted.last_error.empty() && !Exists(shift.wstring()),
+                  L"Shift+Delete retains the permanent-delete operation after explicit confirmation");
+        }
+        g_ops.Stop();
+        for (const auto& file : {recycle, permanent, shift, cancelled, root / L"journal.json"})
+            std::filesystem::remove(file, error);
+        std::filesystem::remove(root, error);
+        Check(!std::filesystem::exists(root), L"isolated deletion fixture and journal cleaned");
+        wprintf(L"Delete confirmation: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     if (argc > 1 && std::wstring_view(argv[1]) == L"--transfer-routing") {
         const auto root = std::filesystem::path(SandboxRoot()).parent_path() /

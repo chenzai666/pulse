@@ -18,6 +18,7 @@ internal static class Program
         try
         {
             SafetyChecks(root);
+            await ProcessChecks();
             if (args.Length == 2 && args[0] == "--runtime") await RuntimeChecks(Path.GetFullPath(args[1]), root);
             else if (args.Length != 0) throw new ArgumentException("用法：--runtime <Pulse.Filee.Host.exe>");
             Console.WriteLine($"通过 {passed} 项定向检查；" + (args.Length == 0 ? "本次仅检查 BCL 安全逻辑，未验证转换引擎。" : "已运行真实预置引擎与生命周期检查。"));
@@ -124,6 +125,24 @@ internal static class Program
         File.WriteAllText(marker, "Pulse.Filee.Host temporary session v1", Encoding.ASCII);
         File.SetLastWriteTimeUtc(marker, DateTime.UtcNow.AddMinutes(-6));
         return path;
+    }
+
+    private static async Task ProcessChecks()
+    {
+        using var job = new WindowsJob();
+        using (var engine = Fixtures.Owner())
+        {
+            var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe");
+            await Filee.Engines.Infrastructure.ProcessTermination.KillAndWaitAsync(engine.Process, "fixture");
+            await NativeTree.WaitGone(tracked);
+        }
+        using (var leftover = Fixtures.Owner())
+        {
+            var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe");
+            Check(await job.DrainChildrenAsync(), "Windows Job 未能清理真实成员子进程。");
+            await NativeTree.WaitGone(tracked);
+        }
+        Pass("取消等待原始进程句柄退出；Windows Job 清理并确认真实成员子进程");
     }
 
     private static async Task RuntimeChecks(string executable, string root)

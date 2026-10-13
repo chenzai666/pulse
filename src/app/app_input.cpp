@@ -12,6 +12,7 @@
 #include "app_updates.h"
 #include "app_internal.h"
 #include "app_input.h"
+#include "app_status_center.h"
 #include "app_hover.h"
 #include "app_column_view.h"
 #include "details_column_menu.h"
@@ -2488,6 +2489,8 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             ToggleTheme(*s);
         } else if (hit.region == ui::HitTestResult::SettingsButton) {
             OpenSettingsTab(*s, 0);
+        } else if (hit.region == ui::HitTestResult::StatusCenterButton) {
+            ShowStatusCenter(*s);
         } else if (hit.region == ui::HitTestResult::SettingsNav) {
             OpenSettingsTab(*s, hit.index);
         } else if (HandleSettingsControl(*s, hit)) {
@@ -2655,8 +2658,10 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             PasteIntoCurrent(*s);
         } else if (hit.region == ui::HitTestResult::Rename) {
             ShowRenameOverlay(*s);
+        } else if (hit.region == ui::HitTestResult::Properties) {
+            ShowToolbarProperties(*s);
         } else if (hit.region == ui::HitTestResult::Delete) {
-            DeleteSelected(*s, (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+            DeleteSelected(*s, (GetKeyState(VK_SHIFT) & 0x8000) != 0, true);
         } else if (hit.region == ui::HitTestResult::GroupHeader ||
                    hit.region == ui::HitTestResult::GroupSelect) {
             ClickGroupHeader(*s, hit.pane_index, hit.index,

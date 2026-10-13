@@ -1935,6 +1935,11 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         s.sidebarHiddenMask, s.starredExpanded, &s.sidebarOrder,
         s.sidebarQuickAccessHiddenMask);
     app::FillWindowTabStrip(vm, s.window_tabs);
+    vm.status_center_active = s.core.statusCenter.ActiveCount();
+    vm.status_center_history = s.core.statusCenter.HistoryCount();
+    if (const auto* properties_tab = ActiveTab(s))
+        vm.toolbar_properties_enabled = properties_tab->SelectedCount() > 0 ||
+            (!properties_tab->current_path.empty() && !fs::IsVirtualPath(properties_tab->current_path));
     if (WindowIdentityShown(s) && app::ValidWindowColor(s.identity.color)) {  // M7c
         vm.window_identity = true;
         vm.window_identity_name = WindowDisplayName(s);
@@ -2561,6 +2566,9 @@ std::wstring TooltipForHover(AppState& s) {
     case R::TabNew: return text(s.appPrefs.show_hints ? I::TipxNewTab : I::TooltipNewTab);
     case R::ThemeToggle: return text(I::TooltipToggleTheme);
     case R::SettingsButton: return text(I::Settings);
+    case R::StatusCenterButton:
+        return l10n::Pick(L"状态中心", L"Status center") + L" · " + std::to_wstring(s.core.statusCenter.ActiveCount()) +
+            l10n::Pick(L" 个进行中", L" active");
     case R::SettingsFind: return text(I::SettingsFind);
     case R::SettingsNav: {
         if (s.hoverControlIndex == 5) return l10n::Pick(L"快速预览", L"Quick Look");
@@ -2628,6 +2636,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::Paste: return text(I::PasteShortcut);
     case R::Rename: return text(I::RenameShortcut);
     case R::Delete: return text(I::DeleteShortcut);
+    case R::Properties: return text(I::Properties) + L" (Alt+Enter)";
     case R::SplitButton: return text(s.appPrefs.show_hints ? I::TipxSplit : I::SplitLayout);
     case R::DetailsToggle: return text(s.showDetailsPanel ? I::CollapseDetails : I::ExpandDetails);
     case R::PaneMediumIcons: return text(I::MediumIcons);

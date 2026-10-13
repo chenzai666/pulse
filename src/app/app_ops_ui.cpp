@@ -18,6 +18,8 @@
 #include "batch_rename.h"
 #include "link_resolve.h"
 #include "locked_item_prompt.h"
+#include "delete_confirmation.h"
+#include "window_factory.h"
 #include "paste_source.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
@@ -240,11 +242,24 @@ ui::ConfirmDialogSpec BuildRecycleDeleteConfirm(const std::vector<std::wstring>&
     // The dialog shows the first few and collapses the rest.
     for (const std::wstring& path : paths) confirm.items.push_back(ClipboardPath(path));
     confirm.confirm_text = l10n::Get(l10n::StringId::Delete);
+    confirm.default_choice = ui::ConfirmChoice::Cancel;
+    confirm.checkbox.text = l10n::Pick(L"永久删除，不放入回收站", L"Permanently delete (skip Recycle Bin)");
+    confirm.checkbox.danger_when_checked = true;
+    if (paths.size() == 1) {
+        confirm.checkbox.checked_message = l10n::Get(l10n::StringId::PermanentDeleteOne);
+    } else {
+        wchar_t buf[256]{};
+        swprintf_s(buf, l10n::Get(l10n::StringId::PermanentDeleteManyFormat).c_str(), paths.size());
+        confirm.checkbox.checked_message = buf;
+    }
+    confirm.checkbox.checked_confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
+    confirm.checkbox.checked_note = l10n::Pick(L"文件不会进入回收站，无法通过回收站还原。",
+                                              L"Files skip the Recycle Bin and cannot be restored from it.");
     return confirm;
 }
 
-void DeleteSelected(AppState& s, bool permanent) {
-    if(DeferContentSelection(s,[=](AppState& v){DeleteSelected(v,permanent);})) return;
+void DeleteSelected(AppState& s, bool permanent, bool force_confirm) {
+    if(DeferContentSelection(s,[=](AppState& v){DeleteSelected(v,permanent,force_confirm);})) return;
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
     if (IsRecycleTab(tab)) {
@@ -270,7 +285,11 @@ void DeleteSelected(AppState& s, bool permanent) {
         confirm.message = message;
         confirm.confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
         confirm.danger = true;
+        confirm.default_choice = ui::ConfirmChoice::Cancel;
+        const HWND owner = s.hwnd;
+        WindowStateLease lease(s);
         if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
+        if (GetAppState(owner) != &s) return;
         ops::OpRequest req;
         req.type = ops::OpType::RealDelete;
         req.sources = std::move(paths);
@@ -278,11 +297,15 @@ void DeleteSelected(AppState& s, bool permanent) {
         return;
     }
     std::vector<std::wstring> paths = SelectedFullPaths(*tab);
-    DeletePaths(s, std::move(paths), permanent);
+    DeletePaths(s, std::move(paths), permanent, force_confirm);
 }
 
-void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent) {
+void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent, bool force_confirm) {
     if (paths.empty()) return;
+    const HWND owner = s.hwnd;
+    WindowStateLease lease(s);
+    const auto plan = app::PlanDeleteConfirmation(permanent, force_confirm, s.appPrefs.confirm_recycle_delete);
+    ui::ConfirmDialogResult result{ui::ConfirmChoice::Confirm, false};
     if (permanent) {
         ui::ConfirmDialogSpec confirm;
         confirm.title = l10n::Get(l10n::StringId::PermanentDelete);
@@ -298,13 +321,18 @@ void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent) {
         for (const std::wstring& path : paths) confirm.items.push_back(ClipboardPath(path));
         confirm.confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
         confirm.danger = true;
-        if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
-    } else if (s.appPrefs.confirm_recycle_delete) {
+        confirm.default_choice = ui::ConfirmChoice::Cancel;
+        result = ui::ShowConfirmDialogWithOptions(owner, confirm, s.darkMode, s.accentColor);
+    } else if (plan.show_dialog) {
         const ui::ConfirmDialogSpec confirm = BuildRecycleDeleteConfirm(paths);
-        if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
+        result = ui::ShowConfirmDialogWithOptions(owner, confirm, s.darkMode, s.accentColor);
     }
+    if (GetAppState(owner) != &s) return;
+    const auto disposition = app::ResolveDeleteConfirmation(plan, result);
+    if (disposition == app::DeleteDisposition::Cancel) return;
     ops::OpRequest req;
-    req.type = permanent ? ops::OpType::RealDelete : ops::OpType::RecycleDelete;
+    req.type = disposition == app::DeleteDisposition::Permanent ? ops::OpType::RealDelete
+                                                               : ops::OpType::RecycleDelete;
     req.sources = std::move(paths);
     s.ops.Submit(std::move(req));
 }

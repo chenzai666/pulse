@@ -650,6 +650,9 @@ struct WindowViewModel {
     int layout_preset = 0;          // app::LayoutPreset of the active tab (toolbar split icon)
     DetailsPanelView details;
     StatusBarView status;
+    size_t status_center_active = 0;
+    size_t status_center_history = 0;
+    bool toolbar_properties_enabled = false;
 
     // OLE drag feedback (1B-2). Indices follow HitTestResult indexing.
     int breadcrumb_hover = -1;    // placed segment under the mouse
@@ -893,6 +896,7 @@ struct HitTestResult {
         TabGroup,
         ThemeToggle,
         SettingsButton,
+        StatusCenterButton,
         Minimize,
         Maximize,
         Close,
@@ -906,6 +910,7 @@ struct HitTestResult {
         Paste,
         Rename,
         Delete,
+        Properties,
         SplitButton,
         DetailsToggle,
         PaneMediumIcons,

@@ -23,7 +23,13 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
+      - uses: actions/cache/restore@v4
+        id: conversion_ffmpeg_cache
+        with:
+          path: build-custom/conversion-ffmpeg-source-runtime
+          key: conversion-ffmpeg-windows-2022-v1-${{ hashFiles('scripts/build_conversion_ffmpeg.sh') }}
       - uses: msys2/setup-msys2@v2
+        if: steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
         with:
           msystem: UCRT64
           update: false
@@ -32,8 +38,14 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-pkgconf
       - name: 从固定源码构建常见音视频转换组件
+        if: steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         run: bash scripts/build_conversion_ffmpeg.sh
+      - uses: actions/cache/save@v4
+        if: steps.conversion_ffmpeg_cache.outputs.cache-hit != 'true'
+        with:
+          path: build-custom/conversion-ffmpeg-source-runtime
+          key: conversion-ffmpeg-windows-2022-v1-${{ hashFiles('scripts/build_conversion_ffmpeg.sh') }}
       - name: 构建和验证完整定制版
         shell: pwsh
         env:
@@ -57,4 +69,8 @@ jobs:
             bench_data/tab-transfer/results.log
             bench_data/m10005_tab_pin_boundary.log
             bench_data/file-conversion-ui.log
+            build-custom/delete-confirmation-zh/*.png
+            build-custom/delete-confirmation-en/*.png
+            build-custom/status-center-gallery/*.png
+            build-custom/status-center-gallery/*.txt
           if-no-files-found: ignore

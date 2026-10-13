@@ -22,6 +22,7 @@ enum ConfirmControl : int {
     kConfirmCancel = 2,
     kConfirmClose = 3,
     kConfirmSecondary = 4,
+    kConfirmCheckbox = 5,
 };
 
 // Item rows beyond this collapse into one "N more" row.
@@ -45,6 +46,7 @@ struct ConfirmDialogLayout {
     D2D1_RECT_F card{};
     std::vector<D2D1_RECT_F> rows;
     D2D1_RECT_F note{};
+    D2D1_RECT_F checkbox{};
     D2D1_RECT_F footer{};
     D2D1_RECT_F primary{};
     D2D1_RECT_F secondary{};
@@ -60,6 +62,8 @@ struct ConfirmDialogVisual {
 
 // Fills default button texts and turns raw paths into friendly text.
 ConfirmDialogSpec NormalizeConfirmSpec(ConfirmDialogSpec spec);
+// Applies the checkbox's optional warning copy without changing the base spec.
+ConfirmDialogSpec ConfirmSpecForCheckbox(ConfirmDialogSpec spec, bool checked);
 ConfirmTone ResolveConfirmTone(const ConfirmDialogSpec& spec);
 // Rows actually drawn: the items, or the first ones plus an "N more" row.
 std::vector<std::wstring> ConfirmItemRows(const ConfirmDialogSpec& spec);
@@ -67,7 +71,7 @@ std::vector<std::wstring> ConfirmItemRows(const ConfirmDialogSpec& spec);
 // ("C:\\…\\fx\\notes.txt"), other text gets a trailing ellipsis.
 std::wstring FitConfirmItemText(const std::wstring& text, float width,
                                 const std::function<float(std::wstring_view)>& measure);
-// Keyboard order of the footer buttons, left to right.
+// Keyboard order: the optional checkbox, then the footer buttons left to right.
 std::vector<int> ConfirmFocusOrder(const ConfirmDialogSpec& spec);
 // The footer button for a choice; Secondary falls back to Cancel without one.
 int ConfirmControlFor(ConfirmChoice choice, bool has_secondary);

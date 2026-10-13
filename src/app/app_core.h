@@ -38,6 +38,8 @@
 #include "shell_window_plan.h"
 #include "shell_window_registry.h"
 #include "single_instance_coordinator.h"
+#include "status_center_model.h"
+#include "../ui/status_center_window.h"
 #include "tray_controller.h"
 #include "unc_probe_scheduler.h"
 #include "update_checker.h"
@@ -182,6 +184,8 @@ struct AppCore {
 
     // Stage 1B-1: ops layer (queue + undo), inline rename overlay.
     ops::OpsManager ops;
+    app::StatusCenterModel statusCenter;
+    std::unique_ptr<ui::StatusCenterWindow> statusCenterWindow;
 
     // Panes as shell windows for "open file location" (shell_window_sync.h).
     std::unique_ptr<app::ShellWindowRegistry> shell_windows;

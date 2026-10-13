@@ -145,6 +145,7 @@ struct FinishedTask {
     OpType type = OpType::Copy;
     bool success = false;
     std::vector<std::wstring> sources;
+    std::wstring last_error;
 };
 
 using TaskResult = FinishedTask;
@@ -206,7 +207,7 @@ public:
     // Atomically reject shutdown when work is queued/running and stop new submissions.
     bool TryPrepareForUpdate();
     void CancelUpdatePreparation();
-    void CancelCurrent();
+    void CancelCurrent(uint64_t expected_task_id = 0);
     void PauseCurrent();
     void ResumeCurrent();
     std::optional<ConflictItemInfo> PendingConflict() const;

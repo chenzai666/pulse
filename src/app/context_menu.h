@@ -116,6 +116,7 @@ enum MenuCmd : int {
     CmdFileConversion = 198,
     CmdFileConversionCancel = 199,
     CmdRecentBase = 200,
+    CmdStatusCenter = 600,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
     // current selection (+index into the StaticVerb list) and pulse_shell

@@ -11,5 +11,7 @@
     <Compile Include="../SafePaths.cs" Link="Host/SafePaths.cs" />
     <Compile Include="../RuntimePackage.cs" Link="Host/RuntimePackage.cs" />
     <Compile Include="../SessionTemp.cs" Link="Host/SessionTemp.cs" />
+    <Compile Include="../WindowsJob.cs" Link="Host/WindowsJob.cs" />
+    <Compile Include="../patches/ProcessTermination.cs" Link="Host/ProcessTermination.cs" />
   </ItemGroup>
 </Project>

@@ -7,9 +7,10 @@ namespace pulse {
 bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request, uint64_t* task_id = nullptr);
 void ReleaseTrayBatch(AppState& s, size_t idx);
 void PasteIntoCurrent(AppState& s);
-void DeleteSelected(AppState& s, bool permanent);
-void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent);
-// Confirmation shown before Delete moves items to the Recycle Bin (opt-in setting).
+void DeleteSelected(AppState& s, bool permanent, bool force_confirm = false);
+void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent,
+                 bool force_confirm = false);
+// Toolbar deletion always confirms; other ordinary deletion follows the setting.
 ui::ConfirmDialogSpec BuildRecycleDeleteConfirm(const std::vector<std::wstring>& paths);
 void RestoreSelected(AppState& s);
 // Restores every listed recycle-bin item (the filtered view when a filter is on).

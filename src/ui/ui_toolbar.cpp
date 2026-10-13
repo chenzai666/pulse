@@ -120,6 +120,11 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
         }
         if (i==7) DrawPaneHeaderIcon(layout.commands[i],PaneHeaderIcon::Columns,selected ? theme.accent : theme.text_secondary);
     }
+    if (layout.properties.right > layout.properties.left) {
+        DrawButton(layout.properties, theme,
+            vm.toolbar_properties_enabled && IsHovered(vm, HitTestResult::Properties) ? theme.fill_hover : kTransparent,
+            kIconInfo, L"", vm.toolbar_properties_enabled ? theme.text_secondary : theme.text_disabled, true, true);
+    }
     if (layout.overflow.right > layout.overflow.left) {
         DrawButton(layout.overflow,theme,IsHovered(vm,HitTestResult::ToolbarMore) ? theme.fill_hover : kTransparent,
             L"\xE712",L"",theme.text_secondary,true,true);

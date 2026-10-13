@@ -78,6 +78,7 @@
 #include "listary_integration.h"
 #include "sidebar_navigation.h"
 #include "app_file_conversion.h"
+#include "app_status_center.h"
 #include "../common/edition.h"
 #ifdef PULSE_WITH_SELFTEST
 #include "selftest_1b2.h"
@@ -1875,6 +1876,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_OPS_NOTIFY: {
         if (s) {
             ops::OpStatus st = s->ops.Status();
+            RecordOperationStatus(*s, st);
             UpdateOperationWindow(*s, true);
             if (s->ops.TakeCtxInvokeDone()) {
                 if (app::Tab* tab = ActiveTab(*s)) s->store.MarkDirty(tab->current_path);
@@ -1987,7 +1989,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 }
                 if (!tag_metadata_paths.empty())
                     QueueTagAds(*s, BuildTagAdsUpdates(s->places, tag_metadata_paths, true));
-                for (const auto& finished : finished_tasks) FinishOperationIntents(*s, finished);
+                for (const auto& finished : finished_tasks) {
+                    RecordFinishedOperation(*s, finished);
+                    FinishOperationIntents(*s, finished);
+                }
                 // An op finished: refresh the view (watcher also fires, this is immediate).
                 app::Tab* tab = ActiveTab(*s);
                 if (tab && refresh) {
@@ -2338,6 +2343,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (last_window) app::shell_tags::RevokeCommandServer();
         if (s) {
             DetachListaryWindow(*s);
+            RetireStatusCenterOwner(*s);
             s->quickLook.Shutdown();
             ShutdownFileConversion(*s);
             s->framePump.Stop();

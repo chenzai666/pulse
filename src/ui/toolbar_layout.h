@@ -12,7 +12,7 @@ inline D2D1_RECT_F NavigationButtonAt(float x, float y, float scale, float step)
 }
 struct ToolbarLayout {
     std::array<D2D1_RECT_F, 4> navigation{};
-    D2D1_RECT_F address{}, search{}, create{};
+    D2D1_RECT_F address{}, search{}, create{}, properties{};
     D2D1_RECT_F sort{}, filter{}, overflow{};
     D2D1_RECT_F group{};   // "Group" button / active chip (empty when not offered)
     std::array<D2D1_RECT_F, 8> commands{};
@@ -42,45 +42,58 @@ inline ToolbarLayout MakeToolbarLayout(float width, float scale, float top, floa
     }
     out.search = {width-margin-search_width,top+4*scale,width-margin,top+40*scale};
     out.address = {x+margin,top+4*scale,std::max(x+margin+60*scale,out.search.left-margin),top+40*scale};
-    const bool overflow = available < 540*scale;
     if (available < 480*scale) {
         out.search.left=out.search.right-32*scale;
     }
     out.navigation[3] = NavigationButtonAt(out.search.left - margin - nav_step, top + 6 * scale, scale, nav_step);
     out.address.right = out.navigation[3].left-margin;
-    out.create = {left+margin,top+50*scale,left+margin+create_width,top+82*scale};
-    x = out.create.right + 12*scale;
-    for (int i=0;i<5;++i) {
-        out.commands[i] = {x,top+50*scale,x+30*scale,top+82*scale};
-        x += 34*scale;
+    const float row_left = left + margin;
+    const float row_right = (std::max)(row_left, width - margin);
+    const float budget = row_right - row_left;
+    float create_w = create_width;
+    bool edits = available >= 540 * scale;
+    bool views = edits;
+    float sort_w = available >= 700*scale ? (sort_width > 0.0f ? sort_width : 88*scale) : 32*scale;
+    float filter_base = available >= 700*scale
+        ? (filter_width > 0.0f ? (std::max)(filter_width, 64*scale) : 88*scale) : 32*scale;
+    float group_w = group_width;
+    const auto required = [&] {
+        return create_w + (edits ? 12 * scale + 6 * 34 * scale : 0) + 8 * scale + sort_w + 6 * scale +
+            filter_base + (group_w > 0 ? 6 * scale + group_w : 0) + 12 * scale + (views ? 3 * 34 * scale + 6 * scale : 0) + 32 * scale;
+    };
+    // Reserve More first, then compact labels and move commands into it. Never
+    // let an expanded filter/group chip push a trailing button outside the row.
+    if (required() > budget && group_w > 0) group_w = 32 * scale;
+    if (required() > budget) { sort_w = 32 * scale; filter_base = 32 * scale; }
+    if (required() > budget) edits = false;
+    if (required() > budget) views = false;
+    if (required() > budget) create_w = (std::min)(create_w, 32 * scale);
+    if (required() > budget) group_w = 0;
+    out.create = {row_left,top+50*scale,row_left+create_w,top+82*scale};
+    x = out.create.right;
+    if (edits) {
+        x += 12 * scale;
+        for (int i = 0; i < 5; ++i) {
+            out.commands[i] = {x, top + 50 * scale, x + 30 * scale, top + 82 * scale};
+            x += 34 * scale;
+        }
+        out.properties = {x, top + 50 * scale, x + 30 * scale, top + 82 * scale};
+        x += 34 * scale;
     }
-    if (overflow) { for (auto& command : out.commands) command = {}; x = out.create.right; }
-    x += 8*scale;
-    // sort_width: measured "icon + label + chevron" width (0 = legacy 88 DIP).
-    const float sort_w = available >= 700*scale ? (sort_width > 0.0f ? sort_width : 88*scale) : 32*scale;
+    x += 8 * scale;
     out.sort = {x,top+50*scale,x+sort_w,top+82*scale};
     x = out.sort.right + 6*scale;
-    // filter_width: measured "icon + label" width (0 = legacy 88 DIP); kept above the
-    // 60 DIP icon-only threshold. Expanding grows the field from here.
-    const float filter_base = available >= 700*scale
-        ? (filter_width > 0.0f ? std::max(filter_width, 64*scale) : 88*scale) : 32*scale;
-    const float group_room = group_width > 0.0f ? group_width + 6*scale : 0.0f;
-    const float filter_max = std::clamp(width-margin-(overflow ? 44 : 114)*scale-x-group_room,filter_base,220*scale);
+    out.overflow = {row_right - 32*scale,top+50*scale,row_right,top+82*scale};
+    const float right_group = out.overflow.left - (views ? 3 * 34 * scale + 6 * scale : 0);
+    const float group_room = group_w > 0.0f ? group_w + 6*scale : 0.0f;
+    const float filter_max = std::clamp(right_group-12*scale-x-group_room,filter_base,(std::max)(filter_base,220*scale));
     const float filter_w = filter_base + (filter_max-filter_base)*std::clamp(filter_expand,0.0f,1.0f);
     out.filter = {x,top+50*scale,x+filter_w,top+82*scale};
     float tail = out.filter.right;
-    if (group_width > 0.0f) {
-        out.group = {tail+6*scale,top+50*scale,tail+6*scale+group_width,top+82*scale};
-        tail = out.group.right;
-    }
-    const float right_group = std::max(tail+12*scale,width-margin-102*scale);
-    for (int i=5;i<8;++i) {
+    if (group_w > 0.0f) out.group = {tail+6*scale,top+50*scale,tail+6*scale+group_w,top+82*scale};
+    if (views) for (int i=5;i<8;++i) {
         x = right_group+(i-5)*34*scale;
         out.commands[i] = {x,top+50*scale,x+30*scale,top+82*scale};
-    }
-    if (overflow) {
-        out.commands[5] = out.commands[6] = out.commands[7] = {};
-        out.overflow = {width-margin-32*scale,top+50*scale,width-margin,top+82*scale};
     }
     return out;
 }

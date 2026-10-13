@@ -1,6 +1,7 @@
 #include "app_file_conversion.h"
 #include "app_commands.h"
 #include "app_internal.h"
+#include "app_status_center.h"
 #include "sidebar_navigation.h"
 #include "window_factory.h"
 #include "../common/edition.h"
@@ -130,8 +131,12 @@ void ChooseTarget(AppState& state, app::FileConversionEvent event) {
     ui_state.progress_percent = 0;
     ui_state.last_progress_tick = 0;
     ui_state.completed_outputs.clear();
+    const auto conversion_inputs = event.inputs;
     ui_state.job_generation = state.fileConversion.Start(std::move(event.inputs), target.id, std::move(output));
-    if (ui_state.job_generation) ShowProgress(state, 0.0, true);
+    if (ui_state.job_generation) {
+        RecordFileConversionQueued(state, ui_state.job_generation, conversion_inputs, target.id);
+        ShowProgress(state, 0.0, true);
+    }
     else ShowFailure(state, l10n::Pick(L"无法启动转换任务。", L"Unable to start conversion."));
 }
 
@@ -254,6 +259,7 @@ bool HandleFileConversionMessage(AppState& state, UINT message, WPARAM wparam, L
     if (message != WM_FILE_CONVERSION_EVENT) return false;
     app::FileConversionEvent event;
     if (!state.fileConversion.TakeEvent(static_cast<UINT_PTR>(token), event)) return true;
+    RecordFileConversionStatus(state, event);
     if (event.kind == app::FileConversionEventKind::Capabilities) {
         if (event.generation == state.fileConversionUi.capabilities_generation && state.fileConversionUi.choosing) {
             state.fileConversionUi.pending_choice = std::move(event);

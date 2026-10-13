@@ -126,7 +126,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
     }
     if (y < title_bar_height_ && !titleToolbar) {
         const float ctrlW = 46.0f * scale_;
-        const TitleChrome chrome = MakeTitleChrome(rect.right, scale_, title_bar_height_);
+        const TitleChrome chrome = MakeTitleChrome(rect.right, scale_, title_bar_height_, EffectiveSidebarWidth(rect.right));
         // Before the toggle: on the rail the window dot sits on its corner (M7c).
         if (ContainsPt(WindowIdentityRect(vm, rect.right), x, y)) {
             r.region = HitTestResult::WindowIdentity;
@@ -201,6 +201,10 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             r.region = HitTestResult::TabNew;
             return r;
         }
+        }
+        if (chrome.status_w > 0 && x >= chrome.status_left && x < chrome.status_left + chrome.status_w) {
+            r.region = HitTestResult::StatusCenterButton;
+            return r;
         }
         if (x >= chrome.settings_left && x < chrome.settings_left + chrome.settings_w) {
             r.region = HitTestResult::SettingsButton;
@@ -744,6 +748,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             return r;
         }
         if (ContainsPt(toolbar.create,x,y)) {r.region=HitTestResult::NewButton; return r;}
+        if (ContainsPt(toolbar.properties,x,y)) {r.region=HitTestResult::Properties; return r;}
         const HitTestResult::Region commands[]={HitTestResult::Cut,HitTestResult::Copy,HitTestResult::Paste,
             HitTestResult::Rename,HitTestResult::Delete,HitTestResult::SplitButton,HitTestResult::DetailsToggle,HitTestResult::PaneColumnLayout};
         for(int i=0;i<8;++i) if(ContainsPt(toolbar.commands[i],x,y)) {r.region=commands[i]; return r;}

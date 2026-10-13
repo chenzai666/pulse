@@ -142,8 +142,20 @@ $1
 Update-Source 'src/Filee.Engines/Infrastructure/ProcessRunner.cs' {
     param($text)
     $text = $text.Replace('stdout.AppendLine(e.Data);', 'if (stdout.Length < 2 * 1024 * 1024) stdout.AppendLine(e.Data[..Math.Min(e.Data.Length, 65536)]);')
-    $text.Replace('stderr.AppendLine(e.Data);', 'if (stderr.Length < 2 * 1024 * 1024) stderr.AppendLine(e.Data[..Math.Min(e.Data.Length, 65536)]);')
+    $text = $text.Replace('stderr.AppendLine(e.Data);', 'if (stderr.Length < 2 * 1024 * 1024) stderr.AppendLine(e.Data[..Math.Min(e.Data.Length, 65536)]);')
+    $text = $text.Replace('TryKill(process);', 'await ProcessTermination.KillAndWaitAsync(process, Path.GetFileName(executable));')
+    $start = $text.IndexOf('    private static void TryKill(Process process)')
+    if ($start -lt 0) { throw '找不到外部进程终止适配点。' }
+    $text.Substring(0, $start) + "}`r`n"
 }
+Update-Source 'src/Filee.Engines/Media/FfmpegRunner.cs' {
+    param($text)
+    $text = $text.Replace('Kill(process);', 'await ProcessTermination.KillAndWaitAsync(process, "ffmpeg.exe");')
+    $start = $text.IndexOf('    private static void Kill(Process process)')
+    if ($start -lt 0) { throw '找不到 FFmpeg 终止适配点。' }
+    $text.Substring(0, $start) + "}`r`n"
+}
+Copy-Item -LiteralPath (Join-Path $integration 'patches/ProcessTermination.cs') -Destination (Join-Path $source 'src/Filee.Engines/Infrastructure/ProcessTermination.cs')
 Update-Source 'src/Filee.Engines/Infrastructure/EngineEnvironment.cs' {
     param($text)
     $start = $text.IndexOf('    public static string? FindBundled(string name)')

@@ -44,7 +44,7 @@ internal static class Program
             _ = Task.Run(async () => { try { await owner.WaitForExitAsync(); lifetime.Cancel(); if (host is not null) await host.StopAsync(); temporary.Dispose(); Environment.Exit(0); } catch (Exception) { lifetime.Cancel(); } });
             RuntimePackage.Verify();
             var engines = await EngineSet.CreateAsync(profile, lifetime.Token);
-            host = new ConversionHost(engines, session, lifetime.Token);
+            host = new ConversionHost(engines, session, lifetime.Token, job);
             Protocol.Send(new { id = "", type = "ready", protocol = 1, version = "1.10.2" });
             using var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false, true), false, 4096);
             string? line;

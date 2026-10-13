@@ -34,10 +34,11 @@ bool CopyTextToClipboard(HWND hwnd, const std::wstring& text) {
 
 class ConfirmWindow {
 public:
-    ConfirmChoice Show(HWND owner, const ConfirmDialogSpec& spec, bool dark,
-                       D2D1_COLOR_F accent) {
+    ConfirmDialogResult Show(HWND owner, const ConfirmDialogSpec& spec, bool dark,
+                             D2D1_COLOR_F accent) {
         owner_ = owner;
-        spec_ = NormalizeConfirmSpec(spec);
+        base_spec_ = NormalizeConfirmSpec(spec);
+        spec_ = ConfirmSpecForCheckbox(base_spec_, base_spec_.checkbox.checked);
         dark_ = dark;
         accent_ = accent;
         choice_ = ConfirmChoice::Cancel;
@@ -59,7 +60,7 @@ public:
             spec_.title.c_str(), WS_POPUP | WS_THICKFRAME | WS_SYSMENU,
             CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(420.0f * scale_),
             static_cast<int>(200.0f * scale_), owner, nullptr, wc.hInstance, this);
-        if (!hwnd_) return ConfirmChoice::Cancel;
+        if (!hwnd_) return {};
         RECT placed{};
         GetWindowRect(hwnd_, &placed);
         CenterOwnedWindow(hwnd_, owner_, placed.right - placed.left,
@@ -69,7 +70,12 @@ public:
         SetForegroundWindow(hwnd_);
 
         MSG message{};
-        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        while (!done_) {
+            const BOOL got = GetMessageW(&message, nullptr, 0, 0);
+            if (got <= 0) {
+                if (got == 0) PostQuitMessage(static_cast<int>(message.wParam));
+                break;
+            }
             RedirectStrayModalKey(message, hwnd_);
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -77,7 +83,7 @@ public:
         if (IsWindow(hwnd_)) { HideComposedDialog(hwnd_, owner_); DestroyWindow(hwnd_); }
         hwnd_ = nullptr;
         if (owner_) EnableWindow(owner_, TRUE);
-        return choice_;
+        return {choice_, spec_.checkbox.checked};
     }
 
 private:
@@ -119,6 +125,13 @@ private:
         if (id == kConfirmPrimary) Complete(ConfirmChoice::Confirm);
         else if (id == kConfirmSecondary) Complete(ConfirmChoice::Secondary);
         else if (id == kConfirmCancel || id == kConfirmClose) Complete(ConfirmChoice::Cancel);
+        else if (id == kConfirmCheckbox && !base_spec_.checkbox.text.empty()) {
+            spec_ = ConfirmSpecForCheckbox(base_spec_, !spec_.checkbox.checked);
+            visual_.focus = kConfirmCheckbox;
+            visual_.show_focus = true;
+            SizeToContent();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
     }
 
     void MoveFocus(int direction) {
@@ -264,6 +277,7 @@ private:
     ConfirmDialogFormats formats_;
     ConfirmDialogLayout layout_;
     ConfirmDialogVisual visual_;
+    ConfirmDialogSpec base_spec_;
     ConfirmDialogSpec spec_;
     D2D1_COLOR_F accent_ = HexColor(0x0078D4);
     ConfirmChoice choice_ = ConfirmChoice::Cancel;
@@ -276,10 +290,15 @@ private:
 
 } // namespace
 
-ConfirmChoice ShowConfirmDialogEx(HWND owner, const ConfirmDialogSpec& spec, bool dark,
-                                  D2D1_COLOR_F accent) {
+ConfirmDialogResult ShowConfirmDialogWithOptions(HWND owner, const ConfirmDialogSpec& spec,
+                                                 bool dark, D2D1_COLOR_F accent) {
     ConfirmWindow window;
     return window.Show(owner, spec, dark, accent);
+}
+
+ConfirmChoice ShowConfirmDialogEx(HWND owner, const ConfirmDialogSpec& spec, bool dark,
+                                  D2D1_COLOR_F accent) {
+    return ShowConfirmDialogWithOptions(owner, spec, dark, accent).choice;
 }
 
 bool ShowConfirmDialog(HWND owner, const ConfirmDialogSpec& spec, bool dark,

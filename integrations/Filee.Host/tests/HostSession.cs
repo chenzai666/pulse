@@ -15,7 +15,17 @@ internal sealed class HostSession : IAsyncDisposable
     private HostSession(Process process)
     {
         Process = process;
-        errors = process.StandardError.ReadToEndAsync();
+        errors = Task.Run(async () =>
+        {
+            var output = new StringBuilder();
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync()) is not null)
+            {
+                Console.Error.WriteLine("PULSE_TEST_HOST " + line);
+                if (output.Length < 128 * 1024) output.AppendLine(line);
+            }
+            return output.ToString();
+        });
         reader = Task.Run(async () =>
         {
             try
@@ -73,6 +83,7 @@ internal sealed class HostSession : IAsyncDisposable
                 await Process.WaitForExitAsync();
             }
             await reader;
+            await errors;
         }
         finally { Process.Dispose(); }
     }

@@ -4,6 +4,10 @@
 //   pulse_dialog_gallery.exe [--lang zh-CN|en-US] [out_dir]
 //       Renders every scene offscreen in light, dark and high contrast at 100%
 //       and 150% scale into out_dir (default build-dialog-verify).
+//   pulse_dialog_gallery.exe --delete-confirmation <out_dir>
+//       Renders only deletion checkbox states at 100%, 150% and 200% scale.
+//   pulse_dialog_gallery.exe --status-center <out_dir>
+//       Renders the actual status flyout's empty/task fixtures at the same scales.
 //   pulse_dialog_gallery.exe --live <kind> [--dark] [--out <file>]
 //       Opens the real window. kind: confirm-warning, confirm-danger,
 //       confirm-three, confirm-items. The choice is written to --out (UTF-8).
@@ -13,6 +17,7 @@
 #include "../ui/confirm_dialog.h"
 #include "../ui/confirm_dialog_view.h"
 #include "../ui/fluent_components.h"
+#include "../ui/status_center_window.h"
 
 #include <shellapi.h>
 #include <windows.h>
@@ -21,6 +26,27 @@
 #include <functional>
 #include <string>
 #include <vector>
+
+namespace pulse::ui {
+
+struct StatusCenterWindowTestAccess {
+    static bool Snapshot(StatusCenterWindow& window, const std::vector<app::StatusTaskRecord>& records,
+                         float scale, bool dark, const std::wstring& output) {
+        window.scale_ = scale;
+        window.dark_ = dark;
+        window.backdrop_ = false;
+        window.compositor_.Resize(static_cast<int>(464 * scale), static_cast<int>(520 * scale));
+        window.compositor_.RecreateTextFormats(scale);
+        window.painter_.SetCompositor(&window.compositor_);
+        window.painter_.SetScale(scale);
+        window.Update(records);
+        if (!window.compositor_.Dc()) return false;
+        window.Render();
+        return !window.compositor_.NeedsRecovery() && window.compositor_.SaveSnapshot(output.c_str());
+    }
+};
+
+} // namespace pulse::ui
 
 namespace {
 
@@ -126,10 +152,28 @@ std::vector<ConfirmScene> ConfirmScenes() {
         s.spec.tone = ConfirmTone::Warning;
         scenes.push_back(std::move(s));
     }
+    for (const bool checked : {false, true}) {
+        ConfirmScene s{checked ? L"confirm_delete_checked" : L"confirm_delete_unchecked", {}, {}};
+        s.spec.title = pulse::l10n::Get(StringId::Delete);
+        s.spec.message = pulse::l10n::Get(StringId::RecycleConfirmOne);
+        s.spec.confirm_text = pulse::l10n::Get(StringId::Delete);
+        s.spec.items = {L"C:\\Users\\Example\\Desktop\\报告 2026.docx"};
+        s.spec.default_choice = ConfirmChoice::Cancel;
+        s.spec.checkbox.text = pulse::l10n::Pick(L"永久删除，不放入回收站", L"Permanently delete (skip Recycle Bin)");
+        s.spec.checkbox.checked = checked;
+        s.spec.checkbox.danger_when_checked = true;
+        s.spec.checkbox.checked_message = pulse::l10n::Get(StringId::PermanentDeleteOne);
+        s.spec.checkbox.checked_confirm_text = pulse::l10n::Get(StringId::PermanentDelete);
+        s.spec.checkbox.checked_note = pulse::l10n::Pick(L"文件不会进入回收站，无法通过回收站还原。",
+                                                      L"Files skip the Recycle Bin and cannot be restored from it.");
+        s.visual.focus = checked ? kConfirmCheckbox : kConfirmCancel;
+        s.visual.show_focus = true;
+        scenes.push_back(std::move(s));
+    }
     return scenes;
 }
 
-int RunGallery(const std::wstring& out_dir) {
+int RunGallery(const std::wstring& out_dir, bool delete_only = false) {
     CreateDirectoryW(out_dir.c_str(), nullptr);
     WNDCLASSW window_class{};
     window_class.hInstance = GetModuleHandleW(nullptr);
@@ -147,16 +191,18 @@ int RunGallery(const std::wstring& out_dir) {
     }
     int failures = 0;
     int written = 0;
-    const float scales[] = {1.0f, 1.5f};
+    const float scales[] = {1.0f, 1.5f, 2.0f};
     for (const float scale : scales) {
+        if (!delete_only && scale > 1.5f) continue;
         compositor.RecreateTextFormats(scale);
         fluent::Painter painter(&compositor);
         painter.SetScale(scale);
-        const std::wstring suffix = scale > 1.0f ? L"_150" : L"";
+        const std::wstring suffix = scale > 1.5f ? L"_200" : scale > 1.0f ? L"_150" : L"";
         for (const Variant& variant : kVariants) {
             const Theme theme = ThemeFor(variant);
             for (const ConfirmScene& scene : ConfirmScenes()) {
-                const ConfirmDialogSpec spec = NormalizeConfirmSpec(scene.spec);
+                if (delete_only && std::wstring(scene.name).find(L"confirm_delete_") != 0) continue;
+                const ConfirmDialogSpec spec = ConfirmSpecForCheckbox(scene.spec, scene.spec.checkbox.checked);
                 ConfirmDialogFormats formats;
                 formats.Create(compositor.DwriteFactory(), scale);
                 const ConfirmDialogLayout layout = LayoutConfirmDialog(
@@ -183,6 +229,72 @@ int RunGallery(const std::wstring& out_dir) {
         fclose(f);
     }
     return failures == 0 ? 0 : 4;
+}
+
+int RunStatusCenterGallery(const std::wstring& out_dir) {
+    CreateDirectoryW(out_dir.c_str(), nullptr);
+    WNDCLASSW window_class{};
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.lpfnWndProc = GalleryWndProc;
+    window_class.lpszClassName = L"PulseStatusCenterGallery";
+    RegisterClassW(&window_class);
+    HWND owner = CreateWindowExW(0, window_class.lpszClassName, L"Pulse Status Center Gallery",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+        nullptr, nullptr, window_class.hInstance, nullptr);
+    if (!owner) return 1;
+    StatusCenterWindow window;
+    if (!window.Create(owner, {})) { DestroyWindow(owner); return 2; }
+    std::vector<pulse::app::StatusTaskRecord> tasks;
+    pulse::app::StatusTaskRecord copying;
+    copying.key = {pulse::app::StatusTaskSource::Operation, 1, nullptr};
+    copying.operation = pulse::ops::OpType::Copy;
+    copying.state = pulse::app::StatusTaskState::Running;
+    copying.progress = 0.42;
+    copying.cancellable = true;
+    copying.source = L"季度报告与附件";
+    copying.item_count = 14;
+    copying.detail = L"正在复制：报告 2026.docx";
+    tasks.push_back(copying);
+    pulse::app::StatusTaskRecord converted;
+    converted.key = {pulse::app::StatusTaskSource::FileConversion, 2, owner};
+    converted.state = pulse::app::StatusTaskState::Completed;
+    converted.progress = 1.0;
+    converted.target = L"png";
+    converted.source = L"旅行照片.jpg";
+    converted.destination = L"D:\\导出\\旅行照片.png";
+    tasks.push_back(converted);
+    pulse::app::StatusTaskRecord failed;
+    failed.key = {pulse::app::StatusTaskSource::Operation, 3, nullptr};
+    failed.operation = pulse::ops::OpType::RecycleDelete;
+    failed.state = pulse::app::StatusTaskState::Failed;
+    failed.source = L"共享文档.docx";
+    failed.detail = L"文件正在被其他程序使用，请关闭后重试。";
+    tasks.push_back(failed);
+    int written = 0;
+    int failures = 0;
+    for (float scale : {1.0f, 1.5f, 2.0f}) {
+        const std::wstring suffix = L"_" + std::to_wstring(static_cast<int>(scale * 100));
+        for (const Variant& variant : kVariants) {
+            if (variant.high_contrast) continue;
+            for (bool empty : {true, false}) {
+                const std::wstring name = empty ? L"status_center_empty_" : L"status_center_tasks_";
+                const std::wstring output = out_dir + L"\\" + name + variant.name + suffix + L".png";
+                const bool ok = StatusCenterWindowTestAccess::Snapshot(window,
+                    empty ? std::vector<pulse::app::StatusTaskRecord>{} : tasks, scale, variant.dark, output);
+                ok ? ++written : ++failures;
+            }
+        }
+    }
+    window.Destroy();
+    DestroyWindow(owner);
+    UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
+    FILE* log = nullptr;
+    if (_wfopen_s(&log, (out_dir + L"\\status-center-gallery.txt").c_str(), L"wb") == 0 && log) {
+        std::fprintf(log, "written=%d failed=%d\r\n", written, failures);
+        fclose(log);
+    }
+    std::printf("status-center gallery: written=%d failed=%d\n", written, failures);
+    return failures ? 4 : 0;
 }
 
 void WriteResult(const std::wstring& file, const std::wstring& text) {
@@ -232,7 +344,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     pulse::l10n::Initialize(GetModuleHandleW(nullptr), language);
 
     int result = 0;
-    if (!args.empty() && args[0] == L"--live" && args.size() >= 2) {
+    if (!args.empty() && args[0] == L"--delete-confirmation") {
+        result = RunGallery(args.size() > 1 ? args[1] : L"build-delete-confirmation-verify", true);
+    } else if (!args.empty() && args[0] == L"--status-center") {
+        pulse::l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
+        result = RunStatusCenterGallery(args.size() > 1 ? args[1] : L"build-status-center-verify");
+    } else if (!args.empty() && args[0] == L"--live" && args.size() >= 2) {
         bool dark = false;
         std::wstring out;
         for (size_t i = 2; i < args.size(); ++i) {

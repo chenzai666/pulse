@@ -3,6 +3,7 @@
 
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
+#include "../app/delete_confirmation.h"
 #include "../ui/confirm_dialog_view.h"
 #include "../ui/folder_picker_loader.h"
 #include "../ui/folder_picker_model.h"
@@ -101,6 +102,81 @@ void TestConfirm() {
     clip.items = {L"a"};
     clip.note = L"N";
     Check(ConfirmClipboardText(clip) == L"T\r\n\r\nM\r\n  a\r\n\r\nN", "Ctrl+C text lists every part");
+
+    ConfirmDialogSpec optional;
+    optional.message = L"Move this item to the Recycle Bin?";
+    optional.confirm_text = L"Delete";
+    optional.checkbox.text = L"Permanently delete (skip Recycle Bin)";
+    optional.checkbox.danger_when_checked = true;
+    optional.checkbox.checked_message = L"Permanently delete this item?";
+    optional.checkbox.checked_confirm_text = L"Permanently delete";
+    optional.checkbox.checked_note = L"This item cannot be restored from the Recycle Bin.";
+    const auto unchecked = ConfirmSpecForCheckbox(optional, false);
+    const auto checked = ConfirmSpecForCheckbox(optional, true);
+    Check(!unchecked.checkbox.checked && !unchecked.danger && unchecked.message == optional.message,
+          "ordinary delete starts unchecked and describes the Recycle Bin");
+    Check(checked.checkbox.checked && checked.danger && checked.message == optional.checkbox.checked_message &&
+              checked.confirm_text == optional.checkbox.checked_confirm_text && !checked.note.empty() &&
+              checked.default_choice == ConfirmChoice::Cancel && ResolveConfirmTone(checked) == ConfirmTone::Danger,
+          "checked delete explicitly warns about permanent deletion and uses a danger button");
+    const auto reset = ConfirmSpecForCheckbox(optional, false);
+    Check(!optional.checkbox.checked && reset.message == unchecked.message && reset.note.empty() && !reset.danger,
+          "unchecking and reopening do not retain a permanent-delete choice");
+    Check(ConfirmFocusOrder(optional) == std::vector<int>{kConfirmCheckbox, kConfirmCancel, kConfirmPrimary},
+          "the checkbox participates in keyboard focus before the buttons");
+    Check(ConfirmClipboardText(checked).find(L"[x] Permanently delete") != std::wstring::npos,
+          "copied confirmation text includes the selected deletion mode");
+    ConfirmDialogSpec hidden;
+    hidden.checkbox.checked = true;
+    Check(!ConfirmSpecForCheckbox(hidden, true).checkbox.checked,
+          "a hidden checkbox cannot silently select permanent deletion");
+
+    using namespace pulse::app;
+    const auto toolbar = PlanDeleteConfirmation(false, true, false);
+    const auto keyboard = PlanDeleteConfirmation(false, false, false);
+    const auto configured = PlanDeleteConfirmation(false, false, true);
+    const auto shift = PlanDeleteConfirmation(true, false, false);
+    Check(toolbar.show_dialog && !toolbar.permanent && !keyboard.show_dialog && configured.show_dialog,
+          "toolbar confirms while Delete and context commands retain the existing preference");
+    Check(ResolveDeleteConfirmation(toolbar, {ConfirmChoice::Confirm, false}) == DeleteDisposition::Recycle &&
+              ResolveDeleteConfirmation(toolbar, {ConfirmChoice::Confirm, true}) == DeleteDisposition::Permanent,
+          "confirmed checkbox choice selects exactly the recycle or permanent operation");
+    Check(ResolveDeleteConfirmation(toolbar, {ConfirmChoice::Cancel, true}) == DeleteDisposition::Cancel &&
+              ResolveDeleteConfirmation(toolbar, {ConfirmChoice::Secondary, true}) == DeleteDisposition::Cancel,
+          "cancelled or non-confirmed checkbox choice never submits deletion");
+    Check(shift.show_dialog && shift.permanent &&
+              ResolveDeleteConfirmation(shift, {ConfirmChoice::Confirm, false}) == DeleteDisposition::Permanent &&
+              ResolveDeleteConfirmation(shift, {ConfirmChoice::Cancel, false}) == DeleteDisposition::Cancel,
+          "Shift+Delete always requires a confirmation and retains permanent semantics");
+    Check(ResolveDeleteConfirmation(keyboard, {ConfirmChoice::Confirm, true}) == DeleteDisposition::Recycle,
+          "disabled confirmation never reuses a checkbox choice from an earlier operation");
+
+    ComPtr<IDWriteFactory2> factory;
+    const HRESULT created = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2),
+                                                reinterpret_cast<IUnknown**>(&factory));
+    Check(SUCCEEDED(created) && factory.get(), "create DirectWrite factory for checkbox layout verification");
+    if (factory.get()) {
+        for (const float scale : {1.0f, 1.5f, 2.0f}) {
+            ConfirmDialogFormats formats;
+            Check(formats.Create(factory.get(), scale), "create checkbox dialog formats at tested DPI");
+            fluent::Painter painter;
+            painter.SetScale(scale);
+            for (const auto& shown : {unchecked, checked}) {
+                const auto layout = LayoutConfirmDialog(shown, painter, factory.get(), formats, scale);
+                Check(layout.checkbox.right > layout.checkbox.left &&
+                          layout.checkbox.bottom > layout.checkbox.top &&
+                          layout.checkbox.top >= layout.message.bottom &&
+                          layout.checkbox.bottom < layout.footer.top &&
+                          (shown.note.empty() || (layout.note.top > layout.checkbox.bottom &&
+                                                  layout.note.bottom < layout.footer.top)),
+                      "checkbox and warning remain separate from the message and footer at tested DPI");
+                const float x = (layout.checkbox.left + layout.checkbox.right) * 0.5f;
+                const float y = (layout.checkbox.top + layout.checkbox.bottom) * 0.5f;
+                Check(HitTestConfirmDialog(layout, false, x, y) == kConfirmCheckbox,
+                      "the entire checkbox row is clickable");
+            }
+        }
+    }
 }
 
 void TestPickerModel() {
@@ -288,6 +364,11 @@ void TestReader() {
 
 int main(int argc, char** argv) {
     pulse::l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
+    if (argc == 2 && std::string(argv[1]) == "--delete-confirmation") {
+        TestConfirm();
+        std::printf("%s (%d failures)\n", g_failures ? "FAILED" : "OK", g_failures);
+        return g_failures ? 1 : 0;
+    }
     if (!(argc == 2 && std::string(argv[1]) == "--picker")) TestConfirm();
     TestPickerModel();
     TestReader();
