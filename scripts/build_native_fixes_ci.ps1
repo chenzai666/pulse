@@ -83,32 +83,34 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
+$testFailures = [System.Collections.Generic.List[string]]::new()
 foreach ($test in @('pulse_open_handoff_test', 'pulse_pane_drop_test', 'pulse_session_window_test')) {
     & (Join-Path $taskBuild "$test.exe") | Tee-Object -FilePath (Join-Path $taskBuild "$test.log")
-    if ($LASTEXITCODE) { throw "标签与入口定向验证失败：$test" }
+    if ($LASTEXITCODE) { $testFailures.Add($test) }
 }
 & (Join-Path $taskBuild 'pulse_integration_registry_test.exe') --recycle-bin-only |
     Tee-Object -FilePath (Join-Path $taskBuild 'recycle-bin-registry.log')
-if ($LASTEXITCODE) { throw '回收站注册与恢复定向验证失败' }
+if ($LASTEXITCODE) { $testFailures.Add('recycle-bin-registry') }
 & (Join-Path $taskBuild 'pulse_preview_test.exe') --native-image-regression |
     Tee-Object -FilePath (Join-Path $taskBuild 'native-image-regression.log')
-if ($LASTEXITCODE) { throw '原生图片解码与像素边界验证失败' }
+if ($LASTEXITCODE) { $testFailures.Add('native-image-regression') }
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'listary-search-entry')) {
     $env:PULSE_SELFTEST_CASE = $testCase
     $process = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
-    if (-not $process.WaitForExit(60000)) { $process.Kill(); throw "定向用例超时：$testCase" }
+    if (-not $process.WaitForExit(60000)) { $process.Kill(); $process.WaitForExit(); $testFailures.Add("timeout: $testCase") }
     Copy-Item -LiteralPath 'bench_data/selftest_1b2_last.log' -Destination (Join-Path $taskBuild "selftest-$testCase.log") -ErrorAction SilentlyContinue
     $process.Refresh()
-    if ($process.ExitCode) { throw "定向用例失败：$testCase" }
+    if ($process.ExitCode) { $testFailures.Add($testCase) }
 }
 Remove-Item Env:PULSE_SELFTEST_CASE
 $env:PULSE_TEST_NATIVE_IMAGE_REGRESSION = '1'
 $imageProcess = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--quick-preview-audit' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskBuild 'native-image-ui.log') -RedirectStandardError (Join-Path $taskBuild 'native-image-ui-error.log')
-if (-not $imageProcess.WaitForExit(60000)) { $imageProcess.Kill(); throw '原生图片实际窗口渲染超时' }
+if (-not $imageProcess.WaitForExit(60000)) { $imageProcess.Kill(); $imageProcess.WaitForExit(); $testFailures.Add('timeout: native-image-ui') }
 $imageProcess.Refresh()
-if ($imageProcess.ExitCode) { throw '原生图片实际窗口渲染失败' }
+if ($imageProcess.ExitCode) { $testFailures.Add('native-image-ui') }
 Remove-Item Env:PULSE_TEST_NATIVE_IMAGE_REGRESSION
+if ($testFailures.Count) { throw ('定向验证未通过，停止打包：' + ($testFailures -join ', ')) }
 # 测试入口移除后再生成用户使用的主程序。
 $productionBatch = Join-Path $taskBuild 'compile-native-production.bat'
 @"

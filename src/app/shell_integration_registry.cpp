@@ -387,6 +387,10 @@ bool FinishUpgrade(const std::wstring& group, const UpgradeJournal& journal, boo
     if (restore && !WriteDurable(key, L"Snapshot", Value{})) return false;
     if (!WriteDurable(key, L"PendingUpgrade", Value{})) return false;
     if (!WriteDurable(key, L"UpgradeJournal", Value{})) return false;
+    // ApplyGroup returns immediately after restoring a pending journal. Match
+    // its ordinary restore cleanup so empty CLSID keys do not shadow Explorer.
+    if (restore)
+        for (const auto& binding : bindings) DropEmptyKeys(binding.key);
     return exact;
 }
 
