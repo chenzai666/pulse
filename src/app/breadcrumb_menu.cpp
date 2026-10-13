@@ -1,4 +1,5 @@
 #include "app_internal.h"
+#include "app_properties.h"
 #include "context_menu.h"
 #include "sidebar_navigation.h"
 #include "../fs/fs_enum.h"
@@ -31,7 +32,7 @@ void RunPathCommand(AppState& s, const std::wstring& path, bool filesystem, int 
         if (filesystem) s.ops.OpenTerminal(shell_path);
         break;
     case app::CmdProperties:
-        if (filesystem) s.ops.ShowProperties(shell_path);
+        if (filesystem) ShowItemProperties(s, {shell_path});
         break;
     default:
         break;

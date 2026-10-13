@@ -10,6 +10,7 @@
 #include "sidebar_navigation.h"
 #include "app_file_conversion.h"
 #include "app_status_center.h"
+#include "app_properties.h"
 #include "app_sidebar_refresh.h"
 #include "tray_reveal.h"
 #include "group_wheel_ui.h"
@@ -749,7 +750,7 @@ void DispatchMenuCommand(AppState& s, int cmd) {
     case app::CmdFolderProperties:
         if (const auto* tab = ActiveTab(s); tab && !tab->current_path.empty() &&
             !fs::IsVirtualPath(tab->current_path))
-            s.ops.ShowProperties(ClipboardPath(tab->current_path));
+            ShowItemProperties(s, {ClipboardPath(tab->current_path)});
         break;
     case app::CmdSortName:
     case app::CmdSortModified:
@@ -875,8 +876,7 @@ void DispatchMenuCommand(AppState& s, int cmd) {
         ShowWildcardSelect(s);
         break;
     case app::CmdProperties: {
-        // Shell properties on the ops open thread. A multi-selection opens one
-        // merged sheet (like Explorer) instead of the focused item's sheet.
+        // Capture the selection; later tab switches must not retarget this window.
         std::vector<std::wstring> paths;
         if (const app::Tab* tab = ActiveTab(s); IsRecycleTab(tab) && tab->snapshot) {
             for (int index : tab->SelectedIndices()) {
@@ -893,7 +893,7 @@ void DispatchMenuCommand(AppState& s, int cmd) {
                 if (full != focused) paths.push_back(ClipboardPath(full));
             }
         }
-        if (!paths.empty()) s.ops.ShowProperties(paths);
+        if (!paths.empty()) ShowItemProperties(s, paths);
         break;
     }
     case app::CmdOpenTerminal: {
@@ -2193,6 +2193,7 @@ void ShowRecyclePlaceMenu(AppState& s, POINT screen_pt) {
 }
 void ApplyAppWindowChrome(AppState& s) {
     if (!s.hwnd) return;
+    RefreshPropertiesTheme(s);
     const auto effect = ui::WindowEffectFromId(s.appPrefs.window_effect);
     s.globalSearchWindow.SetAppearance(s.darkMode, effect, s.appPrefs.background_image, s.accentColor);
     // Any selected image takes over the window base: sampled as material for

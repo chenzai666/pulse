@@ -79,6 +79,7 @@
 #include "sidebar_navigation.h"
 #include "app_file_conversion.h"
 #include "app_status_center.h"
+#include "app_properties.h"
 #include "../common/edition.h"
 #ifdef PULSE_WITH_SELFTEST
 #include "selftest_1b2.h"
@@ -2344,6 +2345,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) {
             DetachListaryWindow(*s);
             RetireStatusCenterOwner(*s);
+            RetirePropertiesOwner(*s);
             s->quickLook.Shutdown();
             ShutdownFileConversion(*s);
             s->framePump.Stop();

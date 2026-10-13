@@ -30,12 +30,12 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test pulse_status_center_model_test pulse_dialogs_test pulse_ops_test pulse_dialog_gallery
+cmake --build "$taskBuild" --parallel 4 --target pulse pulse_session_window_test pulse_pane_drop_test pulse_bundled_preview_packs_test pulse_drop_navigation_test pulse_file_conversion_protocol_test pulse_status_center_model_test pulse_dialogs_test pulse_ops_test pulse_dialog_gallery pulse_item_properties_test pulse_properties_gallery
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw 'Pulse 定制版原生编译失败' }
-foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test', 'pulse_drop_navigation_test', 'pulse_file_conversion_protocol_test', 'pulse_status_center_model_test')) {
+foreach ($testName in @('pulse_session_window_test', 'pulse_pane_drop_test', 'pulse_bundled_preview_packs_test', 'pulse_drop_navigation_test', 'pulse_file_conversion_protocol_test', 'pulse_status_center_model_test', 'pulse_item_properties_test')) {
     & (Join-Path $taskBuild "$testName.exe") | Tee-Object -FilePath (Join-Path $taskBuild "$testName.log")
     if ($LASTEXITCODE) { throw "定向回归失败：$testName" }
 }
@@ -49,6 +49,8 @@ if ($LASTEXITCODE) { throw '删除确认中文画廊生成失败' }
 if ($LASTEXITCODE) { throw '删除确认英文画廊生成失败' }
 & (Join-Path $taskBuild 'pulse_dialog_gallery.exe') --status-center (Join-Path $taskBuild 'status-center-gallery')
 if ($LASTEXITCODE) { throw '状态中心画廊生成失败' }
+& (Join-Path $taskBuild 'pulse_properties_gallery.exe') (Join-Path $taskBuild 'properties-gallery')
+if ($LASTEXITCODE) { throw '属性窗口画廊生成失败' }
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui')) {
     $env:PULSE_SELFTEST_CASE = $testCase

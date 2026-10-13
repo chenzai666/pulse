@@ -1,4 +1,5 @@
 #include "app_internal.h"
+#include "app_properties.h"
 #include "../ops/clipboard.h"
 #include "../ui/quick_preview_command.h"
 
@@ -36,7 +37,7 @@ void HandleQuickPreviewCommand(AppState& s, const ui::QuickPreviewCommand& comma
             ToggleStarred(s, target.path, target.attrs & FILE_ATTRIBUTE_DIRECTORY
                 ? app::PlaceItemKind::Folder : app::PlaceItemKind::File);
             break;
-        case ui::QuickPreviewAction::Properties: s.ops.ShowProperties(target.path); break;
+        case ui::QuickPreviewAction::Properties: ShowItemProperties(s, {target.path}); break;
         case ui::QuickPreviewAction::Delete:
             DeletePaths(s, {target.path}, command.shift);
             break;
@@ -95,7 +96,7 @@ void HandleQuickPreviewCommand(AppState& s, const ui::QuickPreviewCommand& comma
         s.quickPreviewAnchorView = BuildVm(s).pane.ViewIndex(index);
         DeleteSelected(s, command.shift);
         break;
-    case ui::QuickPreviewAction::Properties: s.ops.ShowProperties(target.path); break;
+    case ui::QuickPreviewAction::Properties: ShowItemProperties(s, {target.path}); break;
     default: break;
     }
     InvalidateRect(s.hwnd, nullptr, FALSE);

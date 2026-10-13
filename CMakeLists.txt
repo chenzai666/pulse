@@ -338,6 +338,23 @@ target_link_options(pulse_dialog_gallery PRIVATE /MANIFEST:NO)
 pulse_enable_lumatext(pulse_dialog_gallery)
 
 target_link_libraries(pulse_dialog_gallery PRIVATE shlwapi uuid)
+
+# 属性窗口独立画廊：真实绘制、DPI/主题场景与后台读取生命周期。
+add_executable(pulse_properties_gallery WIN32
+    src/bench/properties_gallery.cpp
+    src/ui/properties_window.cpp
+    src/fs/item_properties.cpp
+    src/ui/dialog_lifecycle.cpp
+    src/ui/fluent_components.cpp
+    src/ui/tab_shape.cpp
+    src/ui/typography.cpp
+    src/ui/ui_compositor.cpp
+    src/ui/window_helpers.cpp)
+target_link_libraries(pulse_properties_gallery PRIVATE
+    d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme shell32
+    pulse_localization)
+pulse_enable_lumatext(pulse_properties_gallery)
+
 # The open dialog's own chrome (title strip and footer): layout and hit tests.
 add_executable(pulse_file_picker_view_test src/bench/file_picker_view_test.cpp
     src/bench/dialog_gallery.rc
@@ -1776,3 +1793,8 @@ endforeach()
 
 add_executable(pulse_support_report_test src/bench/support_report_test.cpp)
 target_link_libraries(pulse_support_report_test PRIVATE pulse_crash_reporter)
+
+add_executable(pulse_item_properties_test
+    src/bench/item_properties_test.cpp
+    src/fs/item_properties.cpp)
+target_link_libraries(pulse_item_properties_test PRIVATE advapi32)
