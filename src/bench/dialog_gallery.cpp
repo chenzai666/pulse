@@ -30,6 +30,31 @@
 namespace pulse::ui {
 
 struct StatusCenterWindowTestAccess {
+    static bool HeaderHasContent(const std::wstring& output, float scale) {
+        ComPtr<IWICImagingFactory> factory;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&factory)))) return false;
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (FAILED(factory->CreateDecoderFromFilename(output.c_str(), nullptr, GENERIC_READ,
+                                                       WICDecodeMetadataCacheOnLoad, &decoder))) return false;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder->GetFrame(0, &frame))) return false;
+        ComPtr<IWICFormatConverter> converter;
+        if (FAILED(factory->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) return false;
+        const WICRect title{static_cast<INT>(18 * scale), static_cast<INT>(10 * scale),
+                            static_cast<INT>(340 * scale), static_cast<INT>(26 * scale)};
+        const UINT stride = static_cast<UINT>(title.Width) * 4;
+        std::vector<BYTE> pixels(static_cast<size_t>(stride) * title.Height);
+        if (FAILED(converter->CopyPixels(&title, stride, static_cast<UINT>(pixels.size()), pixels.data()))) return false;
+        // A successful PNG write alone also accepts a blank swap-chain buffer.
+        // The title rectangle is inside the flat background, away from borders.
+        for (size_t index = 4; index < pixels.size(); index += 4)
+            if (pixels[index] != pixels[0] || pixels[index + 1] != pixels[1] || pixels[index + 2] != pixels[2]) return true;
+        return false;
+    }
+
     static bool Snapshot(StatusCenterWindow& window, const std::vector<app::StatusTaskRecord>& records,
                          float scale, bool dark, const std::wstring& output) {
         window.scale_ = scale;
@@ -41,8 +66,10 @@ struct StatusCenterWindowTestAccess {
         window.painter_.SetScale(scale);
         window.Update(records);
         if (!window.compositor_.Dc()) return false;
-        window.Render();
-        return !window.compositor_.NeedsRecovery() && window.compositor_.SaveSnapshot(output.c_str());
+        // Capture the rendered back buffer before Present rotates it.
+        window.Render(false);
+        return !window.compositor_.NeedsRecovery() && window.compositor_.SaveSnapshot(output.c_str()) &&
+            HeaderHasContent(output, scale);
     }
 };
 

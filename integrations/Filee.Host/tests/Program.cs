@@ -130,19 +130,31 @@ internal static class Program
     private static async Task ProcessChecks()
     {
         using var job = new WindowsJob();
-        using (var engine = Fixtures.Owner())
+        using (var baseline = Fixtures.Owner())
         {
-            var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe");
-            await Filee.Engines.Infrastructure.ProcessTermination.KillAndWaitAsync(engine.Process, "fixture");
-            await NativeTree.WaitGone(tracked);
+            var started = NativeTree.BeginOperation();
+            using (var engine = Fixtures.Owner())
+            {
+                var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe", started);
+                Check(tracked.Any(p => p.Pid == engine.Id) && tracked.All(p => p.Pid != baseline.Id), "引擎捕获混入请求之前的同名长期进程。");
+                await Filee.Engines.Infrastructure.ProcessTermination.KillAndWaitAsync(engine.Process, "fixture");
+                await NativeTree.WaitGone(tracked);
+                Check(!baseline.Process.HasExited, "取消本次引擎误杀了宿主生命周期中的独立进程。");
+            }
+            var complete = NativeTree.CaptureTree(baseline.Id);
+            NativeTree.TraceTree(complete, "fixture_shutdown");
+            baseline.Process.Kill(entireProcessTree: true);
+            await baseline.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await NativeTree.WaitGone(complete);
         }
+        var leftoverStarted = NativeTree.BeginOperation();
         using (var leftover = Fixtures.Owner())
         {
-            var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe");
+            var tracked = await NativeTree.WaitForEngine(Environment.ProcessId, "powershell.exe", leftoverStarted);
             Check(await job.DrainChildrenAsync(), "Windows Job 未能清理真实成员子进程。");
             await NativeTree.WaitGone(tracked);
         }
-        Pass("取消等待原始进程句柄退出；Windows Job 清理并确认真实成员子进程");
+        Pass("按请求时间与结构捕获真实引擎树；同名长期进程保留；完整退出及Job清理均确认原句柄退出");
     }
 
     private static async Task RuntimeChecks(string executable, string root)
@@ -219,25 +231,44 @@ internal static class Program
         var longVideo = Path.Combine(samples, "取消与父进程退出.mp4");
         await Fixtures.Run(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "30", "-an", "-c:v", "mpeg4", "-q:v", "7", "-y", longVideo], 120);
         var jobId = Next();
+        var conversionStarted = NativeTree.BeginOperation();
         host.Send(new { id = jobId, action = "convert", inputs = new[] { longVideo }, target = "mkv", outputDirectory = output });
-        var children = await NativeTree.WaitForEngine(host.Process.Id, "ffmpeg.exe");
+        var children = await NativeTree.WaitForEngine(host.Process.Id, "ffmpeg.exe", conversionStarted);
         var cancelId = Next();
         host.Send(new { id = cancelId, action = "cancel", jobId });
         var done = await host.Read("completed", jobId, 10);
         Check(done.GetProperty("state").GetString() == "cancelled", "真实转换取消后没有取消终态。");
         await NativeTree.WaitGone(children);
         Check(host.History.Count(m => m.GetProperty("type").GetString() == "completed" && m.GetProperty("id").GetString() == jobId) == 1, "取消收到多个终结事件。");
-        Pass("真实 FFmpeg 转换取消，单次终结且子进程退出");
+        Check(!host.Process.HasExited, "取消本次转换导致可复用宿主退出。");
+        var reusablePid = host.Process.Id;
+        _ = await Convert(host, markdown, "html", output);
+        Check(!host.Process.HasExited && host.Process.Id == reusablePid, "取消后未复用同一宿主完成下一转换。");
+        Pass("真实 FFmpeg 取消：引擎树5秒内退出、单次终结，同PID宿主复用完成Markdown→HTML");
+
+        var shutdownStarted = NativeTree.BeginOperation();
+        host.Send(new { id = Next(), action = "convert", inputs = new[] { longVideo }, target = "mkv", outputDirectory = output });
+        var shutdownEngine = await NativeTree.WaitForEngine(host.Process.Id, "ffmpeg.exe", shutdownStarted);
+        var shutdownTree = NativeTree.CaptureTree(host.Process.Id);
+        NativeTree.TraceTree(shutdownTree, "host_shutdown");
+        await host.Shutdown();
+        await NativeTree.WaitGone(shutdownEngine);
+        await NativeTree.WaitGone(shutdownTree);
+        Pass("活动转换shutdown后：宿主、启动时子进程及引擎完整树5秒内全部退出");
 
         using var owner = Fixtures.Owner();
         await using var ownedHost = await HostSession.Start(executable, owner.Id);
+        var ownedStarted = NativeTree.BeginOperation();
         ownedHost.Send(new { id = Next(), action = "convert", inputs = new[] { longVideo }, target = "mkv", outputDirectory = output });
-        var ownedChildren = await NativeTree.WaitForEngine(ownedHost.Process.Id, "ffmpeg.exe");
+        var ownedChildren = await NativeTree.WaitForEngine(ownedHost.Process.Id, "ffmpeg.exe", ownedStarted);
+        var ownedTree = NativeTree.CaptureTree(ownedHost.Process.Id);
+        NativeTree.TraceTree(ownedTree, "owner_exit");
         owner.Kill();
         await owner.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
         await ownedHost.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
         await NativeTree.WaitGone(ownedChildren);
-        Pass("父进程退出后宿主和真实引擎子树无残留");
+        await NativeTree.WaitGone(ownedTree);
+        Pass("父进程退出后：宿主、启动时子进程及真实引擎完整树5秒内全部退出");
     }
 
     private static string Next() => "t" + Interlocked.Increment(ref request);

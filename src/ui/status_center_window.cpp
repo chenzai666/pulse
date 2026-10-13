@@ -194,7 +194,7 @@ void StatusCenterWindow::FocusNext(bool backwards) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void StatusCenterWindow::Render() {
+void StatusCenterWindow::Render(bool present) {
     if (compositor_.NeedsRecovery()) {
         if (!compositor_.Recover()) return;
         compositor_.RecreateTextFormats(scale_);
@@ -268,7 +268,11 @@ void StatusCenterWindow::Render() {
         scrollbar.offset = scroll_ * scale_;
         painter_.DrawScrollbar(scrollbar);
     }
-    EndSurface(compositor_);
+    if (present) EndSurface(compositor_);
+    else {
+        const HRESULT result = compositor_.Dc()->EndDraw();
+        if (FAILED(result)) compositor_.NotifyDeviceLost(result);
+    }
 }
 
 LRESULT CALLBACK StatusCenterWindow::WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {

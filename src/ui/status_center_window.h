@@ -31,7 +31,7 @@ private:
     friend struct StatusCenterWindowTestAccess;
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
-    void Render();
+    void Render(bool present = true);
     int HitTest(float x, float y) const;
     void Activate(int control);
     void Scroll(float amount);

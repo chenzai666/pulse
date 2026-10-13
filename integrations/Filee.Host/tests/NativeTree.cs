@@ -21,6 +21,7 @@ internal static class NativeTree
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(SafeProcessHandle process, out long created, out long exited, out long kernel, out long user);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(SafeProcessHandle process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
+    [DllImport("kernel32.dll")] private static extern void GetSystemTimePreciseAsFileTime(out long time);
 
     internal sealed record Identity(int Pid, int Parent, string Name, long Created, SafeProcessHandle Handle) : IDisposable
     {
@@ -67,54 +68,96 @@ internal static class NativeTree
         return processes;
     }
 
-    public static async Task<Identity[]> WaitForEngine(int owner, string engine)
+    public static long BeginOperation()
     {
-        using var ownerIdentity = Open(owner, 0) ?? throw new IOException("测试宿主已经退出。");
+        GetSystemTimePreciseAsFileTime(out var time);
+        return time;
+    }
+
+    public static Identity[] CaptureTree(int owner)
+    {
+        var ownerIdentity = Open(owner, 0) ?? throw new IOException("测试宿主已经退出。");
+        var processes = Snapshot();
+        var tracked = new Dictionary<int, Identity> { [owner] = ownerIdentity };
+        var rejected = new HashSet<int>();
+        try
+        {
+            bool changed;
+            do
+            {
+                changed = false;
+                foreach (var item in processes)
+                {
+                    if (tracked.ContainsKey(item.Key) || rejected.Contains(item.Key) || !tracked.TryGetValue(item.Value.Parent, out var parent)) continue;
+                    var identity = Open(item.Key, item.Value.Parent);
+                    if (identity is null) { rejected.Add(item.Key); continue; }
+                    // PPID alone can point at a reused PID. Verify each current
+                    // parent/child relationship with held handles and birth times.
+                    if (identity.Created < parent.Created || !identity.Name.Equals(item.Value.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=stale_snapshot pid={identity.Pid} ppid={identity.Parent} name={identity.Name} created={identity.Created} parent_created={parent.Created}");
+                        identity.Dispose(); rejected.Add(item.Key); continue;
+                    }
+                    if (identity.Exited) { identity.Dispose(); rejected.Add(item.Key); continue; }
+                    tracked.Add(item.Key, identity);
+                    changed = true;
+                }
+            } while (changed);
+            return tracked.Values.ToArray();
+        }
+        catch
+        {
+            foreach (var item in tracked.Values) item.Dispose();
+            throw;
+        }
+    }
+
+    public static void TraceTree(Identity[] processes, string scope)
+    {
+        foreach (var item in processes)
+            Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=captured scope={scope} pid={item.Pid} ppid={item.Parent} name={item.Name} created={item.Created}");
+    }
+
+    public static async Task<Identity[]> WaitForEngine(int owner, string engine, long operationStarted = 0)
+    {
         var deadline = Stopwatch.StartNew();
         while (deadline.Elapsed < TimeSpan.FromSeconds(30))
         {
-            var processes = Snapshot();
-            var ancestors = new Dictionary<int, long> { [owner] = ownerIdentity.Created };
-            var tracked = new Dictionary<int, Identity>();
-            var rejected = new HashSet<int>();
+            var hostTree = CaptureTree(owner);
+            var selected = new HashSet<int>();
             var transferred = false;
             try
             {
-                bool changed;
-                do
+                // A running host may retain startup/console siblings. A cancel
+                // only ends the observed roots created for this conversion and
+                // their structural descendants, regardless of descendant names.
+                foreach (var item in hostTree)
+                    if (item.Parent == owner && item.Name.Equals(engine, StringComparison.OrdinalIgnoreCase) &&
+                        item.Created >= operationStarted && !item.Exited) selected.Add(item.Pid);
+                if (selected.Count > 0)
                 {
-                    changed = false;
-                    foreach (var item in processes)
+                    bool changed;
+                    do
                     {
-                        if (item.Key == owner || tracked.ContainsKey(item.Key) || rejected.Contains(item.Key) || !ancestors.TryGetValue(item.Value.Parent, out var parentCreated)) continue;
-                        var identity = Open(item.Key, item.Value.Parent);
-                        if (identity is null) { rejected.Add(item.Key); continue; }
-                        // ToolHelp retains the numeric parent PID after that
-                        // parent exits. A child older than its alleged current
-                        // parent cannot belong to this host's process tree.
-                        if (identity.Created < parentCreated || !identity.Name.Equals(item.Value.Name, StringComparison.OrdinalIgnoreCase))
-                        {
-                            Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=stale_snapshot pid={identity.Pid} ppid={identity.Parent} name={identity.Name} created={identity.Created} parent_created={parentCreated}");
-                            identity.Dispose(); rejected.Add(item.Key); continue;
-                        }
-                        if (identity.Exited) { identity.Dispose(); rejected.Add(item.Key); continue; }
-                        tracked.Add(item.Key, identity);
-                        ancestors.Add(item.Key, identity.Created);
-                        changed = true;
+                        changed = false;
+                        foreach (var item in hostTree)
+                            if (selected.Contains(item.Parent)) changed |= selected.Add(item.Pid);
+                    } while (changed);
+                    var result = hostTree.Where(item => selected.Contains(item.Pid)).ToArray();
+                    TraceTree(result, "engine");
+                    foreach (var item in hostTree.Where(item => !selected.Contains(item.Pid)))
+                    {
+                        Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=host_lifetime pid={item.Pid} ppid={item.Parent} name={item.Name} created={item.Created}");
+                        item.Dispose();
                     }
-                } while (changed);
-                if (tracked.Values.Any(item => item.Name.Equals(engine, StringComparison.OrdinalIgnoreCase) && !item.Exited))
-                {
-                    foreach (var item in tracked.Values)
-                        Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=captured pid={item.Pid} ppid={item.Parent} name={item.Name} created={item.Created}");
                     transferred = true;
-                    return tracked.Values.ToArray();
+                    return result;
                 }
             }
             finally
             {
                 if (!transferred)
-                    foreach (var item in tracked.Values) item.Dispose();
+                    foreach (var item in hostTree) item.Dispose();
             }
             await Task.Delay(20);
         }
@@ -152,7 +195,7 @@ internal static class NativeTree
             }
             foreach (var item in processes.Where(item => !item.Exited))
                 Console.Error.WriteLine($"PULSE_TEST_PROCESS phase=still_alive pid={item.Pid} ppid={item.Parent} name={item.Name} created={item.Created}");
-            throw new IOException("宿主留下了活动引擎子进程。");
+            throw new IOException("生命周期结束后仍有捕获进程存活。");
         }
         finally { foreach (var item in processes) item.Dispose(); }
     }

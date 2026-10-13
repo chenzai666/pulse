@@ -60,6 +60,17 @@ internal sealed class HostSession : IAsyncDisposable
     public void Send(object message)
     { Process.StandardInput.WriteLine(JsonSerializer.Serialize(message)); Process.StandardInput.Flush(); }
 
+    public async Task Shutdown()
+    {
+        const string id = "verified_shutdown";
+        Send(new { id, action = "shutdown" });
+        await Read("stopping", id);
+        Process.StandardInput.Close();
+        await Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await reader.WaitAsync(TimeSpan.FromSeconds(5));
+        await errors.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     public async Task<JsonElement> Read(string type, string id, int seconds = 30)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));

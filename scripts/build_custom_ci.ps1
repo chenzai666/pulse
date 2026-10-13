@@ -19,6 +19,9 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild -VerifyOnly
 & "$PSScriptRoot/build_filee_host.ps1" -BuildDir $taskBuild
+& dotnet run --project "$taskRepo/integrations/Filee.Host/tests/Pulse.Filee.Host.Tests.csproj" -c Release -- --runtime (Join-Path $taskBuild 'conversion/Pulse.Filee.Host.exe') |
+    Tee-Object -FilePath (Join-Path $taskBuild 'filee-conversion-smoke.log')
+if ($LASTEXITCODE) { throw 'Filee 与 Pandoc 定向转换验证失败' }
 $buildBatch = Join-Path $taskBuild 'compile-custom.bat'
 @"
 @echo off
@@ -59,9 +62,6 @@ foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui'
     if ($testProcess.ExitCode) { throw "标签定向回归失败：$testCase" }
 }
 Remove-Item Env:PULSE_SELFTEST_CASE -ErrorAction SilentlyContinue
-& dotnet run --project "$taskRepo/integrations/Filee.Host/tests/Pulse.Filee.Host.Tests.csproj" -c Release -- --runtime (Join-Path $taskBuild 'conversion/Pulse.Filee.Host.exe') |
-    Tee-Object -FilePath (Join-Path $taskBuild 'filee-conversion-smoke.log')
-if ($LASTEXITCODE) { throw 'Filee 与 Pandoc 定向转换验证失败' }
 $productionBatch = Join-Path $taskBuild 'compile-production.bat'
 @"
 @echo off
