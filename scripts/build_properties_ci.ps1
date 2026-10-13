@@ -1,5 +1,7 @@
 #requires -Version 7.2
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
 Set-Location $taskRepo
 $baseCommit = '9817d635b69e9e94b1c8a472c3644ffbfd9801c9'
