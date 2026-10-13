@@ -67,7 +67,7 @@ bool StatusCenterWindow::Create(HWND owner, StatusCenterCallbacks callbacks) {
     if (!GetClassInfoExW(wc.hInstance, kClass, &wc) && !RegisterClassExW(&wc)) return false;
     const UINT dpi = compat::WindowDpi(owner);
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP, kClass,
-        l10n::Pick(L"状态中心", L"Status center").c_str(), WS_POPUP | WS_THICKFRAME,
+        l10n::Pick(L"状态中心", L"Status center"), WS_POPUP | WS_THICKFRAME,
         CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(464, dpi, 96), MulDiv(520, dpi, 96),
         owner, nullptr, wc.hInstance, this);
     return hwnd_ != nullptr;
