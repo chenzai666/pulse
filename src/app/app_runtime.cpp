@@ -2567,7 +2567,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::ThemeToggle: return text(I::TooltipToggleTheme);
     case R::SettingsButton: return text(I::Settings);
     case R::StatusCenterButton:
-        return l10n::Pick(L"状态中心", L"Status center") + L" · " + std::to_wstring(s.core.statusCenter.ActiveCount()) +
+        return std::wstring(l10n::Pick(L"状态中心", L"Status center")) + L" · " + std::to_wstring(s.core.statusCenter.ActiveCount()) +
             l10n::Pick(L" 个进行中", L" active");
     case R::SettingsFind: return text(I::SettingsFind);
     case R::SettingsNav: {
