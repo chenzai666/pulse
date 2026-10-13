@@ -332,28 +332,32 @@ inline std::wstring Found(const std::wstring& path) {
     return std::wstring(l10n::Pick(L"检测到：", L"Found: ")) + path;
 }
 struct Badge { std::wstring text; fluent::BadgeKind kind = fluent::BadgeKind::Neutral; };
-inline const wchar_t* PrimaryLabel(bool available, bool installed, bool installing) {
+inline bool Bundled(const WindowViewModel& vm, uint32_t index) {
+    return (vm.settings_pack_bundled_mask & (1u << index)) != 0;
+}
+inline const wchar_t* PrimaryLabel(bool available, bool installed, bool installing, bool bundled = false) {
     if (installing) return l10n::Pick(L"取消", L"Cancel");
+    if (installed && bundled) return l10n::Pick(L"已内置", L"Bundled");
     if (installed) return Remove();
     return available ? Install() : l10n::Pick(L"尚未发布", L"Not published");
 }
-inline bool PrimaryEnabled(bool available, bool installed, bool installing) {
-    return available || installed || installing;
+inline bool PrimaryEnabled(bool available, bool installed, bool installing, bool bundled = false) {
+    return (!bundled || installing) && (available || installed || installing);
 }
-inline Badge PackBadge(bool available, bool installed, bool installing, bool enabled, const std::wstring& version) {
+inline Badge PackBadge(bool available, bool installed, bool installing, bool enabled, const std::wstring& version, bool bundled = false) {
     if (installing) return {l10n::Pick(L"正在安装", L"Installing"), fluent::BadgeKind::Accent};
     if (!installed) return {l10n::Pick(available ? L"未安装" : L"尚未发布", available ? L"Not installed" : L"Not published"), fluent::BadgeKind::Neutral};
-    if (!enabled) return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
-    std::wstring text = l10n::Pick(L"已安装", L"Installed");
+    if (!enabled) return {bundled ? l10n::Pick(L"内置 · 已停用", L"Bundled · Off") : l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
+    std::wstring text = bundled ? l10n::Pick(L"已内置", L"Bundled") : l10n::Pick(L"已安装", L"Installed");
     if (!version.empty()) text += L" " + version;
     return {text, fluent::BadgeKind::Success};
 }
 inline Badge MediaBadge(const WindowViewModel& vm) {
     return PackBadge(vm.settings_pack_media_available, vm.settings_pack_media_installed,
-        vm.settings_pack_installing, true, vm.settings_pack_version);
+        vm.settings_pack_installing, true, vm.settings_pack_version, Bundled(vm, 0));
 }
 inline const wchar_t* Primary(const WindowViewModel& vm) {
-    return PrimaryLabel(vm.settings_pack_media_available, vm.settings_pack_media_installed, vm.settings_pack_installing);
+    return PrimaryLabel(vm.settings_pack_media_available, vm.settings_pack_media_installed, vm.settings_pack_installing, Bundled(vm, 0));
 }
 inline const wchar_t* SourceTitle() { return l10n::Pick(L"启用媒体增强", L"Enable media enhancement"); }
 inline const wchar_t* SourceStatus(const WindowViewModel& vm) {
@@ -369,7 +373,8 @@ inline const wchar_t* SourceStatus(const WindowViewModel& vm) {
             : l10n::Pick(L"已停用；所选来源：Pulse 管理的增强包", L"Off; selected source: Pulse-managed pack");
     if (vm.settings_pack_use_custom)
         return l10n::Pick(L"当前来源：已有 FFmpeg（用户文件，不做完整性校验）", L"Source: existing FFmpeg (user file, not verified)");
-    return l10n::Pick(L"当前来源：Pulse 管理的增强包", L"Source: Pulse-managed pack");
+    return Bundled(vm, 0) ? l10n::Pick(L"当前来源：随程序内置的媒体增强包", L"Source: bundled media pack")
+        : l10n::Pick(L"当前来源：Pulse 管理的增强包", L"Source: Pulse-managed pack");
 }
 // "正在下载… 42%" while a pack downloads.
 inline std::wstring Downloading(float progress) {
@@ -380,26 +385,26 @@ inline std::wstring Downloading(float progress) {
 inline std::wstring Downloading(const WindowViewModel& vm) { return Downloading(vm.settings_pack_progress); }
 inline Badge ImagesBadge(const WindowViewModel& vm) {
     return PackBadge(vm.settings_pack_images_available, vm.settings_pack_images_installed,
-        vm.settings_pack_images_installing, vm.settings_pack_images_enabled, vm.settings_pack_images_version);
+        vm.settings_pack_images_installing, vm.settings_pack_images_enabled, vm.settings_pack_images_version, Bundled(vm, 1));
 }
 inline const wchar_t* ImagesPrimary(const WindowViewModel& vm) {
-    return PrimaryLabel(vm.settings_pack_images_available, vm.settings_pack_images_installed, vm.settings_pack_images_installing);
+    return PrimaryLabel(vm.settings_pack_images_available, vm.settings_pack_images_installed, vm.settings_pack_images_installing, Bundled(vm, 1));
 }
 inline bool ShowsImagesEnable(const WindowViewModel& vm) { return vm.settings_pack_images_installed; }
 inline Badge RawBadge(const WindowViewModel& vm) {
     return PackBadge(vm.settings_pack_raw_available, vm.settings_pack_raw_installed,
-        vm.settings_pack_raw_installing, vm.settings_pack_raw_enabled, vm.settings_pack_raw_version);
+        vm.settings_pack_raw_installing, vm.settings_pack_raw_enabled, vm.settings_pack_raw_version, Bundled(vm, 2));
 }
 inline const wchar_t* RawPrimary(const WindowViewModel& vm) {
-    return PrimaryLabel(vm.settings_pack_raw_available, vm.settings_pack_raw_installed, vm.settings_pack_raw_installing);
+    return PrimaryLabel(vm.settings_pack_raw_available, vm.settings_pack_raw_installed, vm.settings_pack_raw_installing, Bundled(vm, 2));
 }
 inline bool ShowsRawEnable(const WindowViewModel& vm) { return vm.settings_pack_raw_installed; }
 inline Badge ArchiveBadge(const WindowViewModel& vm) {
     return PackBadge(vm.settings_pack_archive_available, vm.settings_pack_archive_installed,
-        vm.settings_pack_archive_installing, vm.settings_pack_archive_enabled, vm.settings_pack_archive_version);
+        vm.settings_pack_archive_installing, vm.settings_pack_archive_enabled, vm.settings_pack_archive_version, Bundled(vm, 3));
 }
 inline const wchar_t* ArchivePrimary(const WindowViewModel& vm) {
-    return PrimaryLabel(vm.settings_pack_archive_available, vm.settings_pack_archive_installed, vm.settings_pack_archive_installing);
+    return PrimaryLabel(vm.settings_pack_archive_available, vm.settings_pack_archive_installed, vm.settings_pack_archive_installing, Bundled(vm, 3));
 }
 inline bool ShowsArchiveEnable(const WindowViewModel& vm) { return vm.settings_pack_archive_installed; }
 // Switch and path rows exist once there is something to switch.

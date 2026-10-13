@@ -129,6 +129,7 @@ public:
         bool media_installed = false;     // the FFmpeg pack itself is on disk
         bool enabled = true, use_custom = false, remove_on_uninstall = true;
         uint32_t installed = 0;
+        uint32_t bundled_mask = 0;        // bits follow packs::PackId for the active bundled copies
         uint64_t bytes = 0;
         std::wstring version, custom_path, detected_path, root, notice;
         bool installing = false;          // a download is running

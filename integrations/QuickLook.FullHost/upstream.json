@@ -1,0 +1,14 @@
+{
+  "project": "QuickLook",
+  "repository": "https://github.com/QL-Win/QuickLook",
+  "version": "4.5.0",
+  "source_commit": "b13df028f3cce1f84792f7043b57bf5cea3a3e4c",
+  "source_url": "https://codeload.github.com/QL-Win/QuickLook/zip/b13df028f3cce1f84792f7043b57bf5cea3a3e4c",
+  "source_sha256": "bfa2d2bfa00ff9ea0a44a989cacc1d9f0b5241d7ad59126d305dc45cca56616a",
+  "runtime_url": "https://github.com/QL-Win/QuickLook/releases/download/4.5.0/QuickLook-4.5.0.zip",
+  "runtime_sha256": "852d8bcccd984e416fc8491ccedb848f0c3472e930ee0d292188b2ea3df524e0",
+  "license": "GPL-3.0-or-later",
+  "runtime_directory": "quicklook",
+  "host_filename": "Pulse.QuickLook.Host.exe",
+  "profile_directory": "%LOCALAPPDATA%\\PulseCustom\\QuickLook"
+}

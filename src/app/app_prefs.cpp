@@ -8,6 +8,7 @@
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
 #include "../common/config_json.h"
+#include "../common/edition.h"
 #include "../common/utf8_file.h"
 #include "../common/runtime_log.h"
 #include <windows.h>
@@ -24,7 +25,7 @@ namespace {
 
 constexpr const wchar_t* kRunKey =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr const wchar_t* kRunValue = L"Pulse";
+constexpr const wchar_t* kRunValue = edition::kStartupName;
 
 std::wstring ExePath() {
     wchar_t path[MAX_PATH] = {};

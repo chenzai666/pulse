@@ -605,14 +605,14 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     {&lay.pack_remove_row, PackAction::RemoveOnUninstall},
                 };
                 for (const auto& [bounds, action] : pack_targets) {
-                    if (action == PackAction::Install && !pack_text::PrimaryEnabled(vm.settings_pack_media_available,
-                        vm.settings_pack_media_installed, vm.settings_pack_installing)) continue;
-                    if (action == PackAction::ImagesInstall && !pack_text::PrimaryEnabled(vm.settings_pack_images_available,
-                        vm.settings_pack_images_installed, vm.settings_pack_images_installing)) continue;
-                    if (action == PackAction::RawInstall && !pack_text::PrimaryEnabled(vm.settings_pack_raw_available,
-                        vm.settings_pack_raw_installed, vm.settings_pack_raw_installing)) continue;
-                    if (action == PackAction::ArchiveInstall && !pack_text::PrimaryEnabled(vm.settings_pack_archive_available,
-                        vm.settings_pack_archive_installed, vm.settings_pack_archive_installing)) continue;
+                    if ((action == PackAction::Install || action == PackAction::Remove) && !pack_text::PrimaryEnabled(vm.settings_pack_media_available,
+                        vm.settings_pack_media_installed, vm.settings_pack_installing, pack_text::Bundled(vm, 0))) continue;
+                    if ((action == PackAction::ImagesInstall || action == PackAction::ImagesRemove) && !pack_text::PrimaryEnabled(vm.settings_pack_images_available,
+                        vm.settings_pack_images_installed, vm.settings_pack_images_installing, pack_text::Bundled(vm, 1))) continue;
+                    if ((action == PackAction::RawInstall || action == PackAction::RawRemove) && !pack_text::PrimaryEnabled(vm.settings_pack_raw_available,
+                        vm.settings_pack_raw_installed, vm.settings_pack_raw_installing, pack_text::Bundled(vm, 2))) continue;
+                    if ((action == PackAction::ArchiveInstall || action == PackAction::ArchiveRemove) && !pack_text::PrimaryEnabled(vm.settings_pack_archive_available,
+                        vm.settings_pack_archive_installed, vm.settings_pack_archive_installing, pack_text::Bundled(vm, 3))) continue;
                     if (bounds->right > bounds->left && ContainsPt(*bounds, x, y)) {
                         r.region = HitTestResult::SettingsPackAction;
                         r.index = static_cast<int>(action);

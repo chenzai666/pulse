@@ -1,0 +1,44 @@
+name: 构建 Pulse 定制版
+
+on:
+  push:
+    branches: [feature/files-integrations]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pulse-custom-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 构建和验证完整定制版
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_custom_ci.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pulse-Custom-complete
+          path: |
+            dist/Pulse-Custom-*.zip
+            dist/Pulse-Custom-*.sha256
+            dist/custom-build.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Pulse-Custom-build-diagnostics
+          path: |
+            build-custom/*.log
+            bench_data/selftest_1b2_last.log
+          if-no-files-found: ignore

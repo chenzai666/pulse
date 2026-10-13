@@ -4,6 +4,7 @@
 #include "app_state.h"
 #include "single_instance_coordinator.h"
 #include "window_placement.h"
+#include "../common/edition.h"
 
 #include <algorithm>
 #include <cmath>
@@ -97,7 +98,7 @@ HWND OpenPulseWindow(AppState& from, const WindowInit& init) {
     }
     const bool placed = rect.right > rect.left;
     const HWND hwnd = CreateWindowExW(
-        WS_EX_NOREDIRECTIONBITMAP, app::SingleInstanceCoordinator::WindowClassName(), L"Pulse", kMainWindowStyle,
+        WS_EX_NOREDIRECTIONBITMAP, app::SingleInstanceCoordinator::WindowClassName(), edition::kWindowTitle, kMainWindowStyle,
         placed ? rect.left : CW_USEDEFAULT, placed ? rect.top : CW_USEDEFAULT,
         placed ? rect.right - rect.left : CW_USEDEFAULT, placed ? rect.bottom - rect.top : CW_USEDEFAULT,
         nullptr, nullptr, GetModuleHandleW(nullptr), state);

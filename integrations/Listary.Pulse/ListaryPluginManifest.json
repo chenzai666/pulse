@@ -1,0 +1,13 @@
+{
+  "ManifestVersion": 1,
+  "Id": "PulseCustom",
+  "PluginType": "FileAppPlugin",
+  "PluginVersion": "1.0.0",
+  "DisplayName": "Pulse Custom",
+  "Authors": [ "Pulse Custom" ],
+  "Description": "在 Listary 中搜索，并将目录或选中文件交给 Pulse Custom。",
+  "Icon": "Icon.png",
+  "Api": "NetFramework",
+  "ApiVersion": 1,
+  "Entry": "Listary.FileAppPlugin.Pulse.dll"
+}

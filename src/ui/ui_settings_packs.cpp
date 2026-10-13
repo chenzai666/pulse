@@ -194,6 +194,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
         std::wstring_view title, desc, meta;
         pack_text::Badge badge_text;
         bool shows_enable, enabled, installed, installing, available;
+        bool bundled;
         float progress;
         std::wstring_view primary_label;
         PackAction enable_action, install_action, remove_action;
@@ -231,7 +232,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
         const bool installed = c.installed && !c.installing;
         button(c.primary, c.primary_label, installed ? c.remove_action : c.install_action,
                installed || c.installing || !c.available ? fluent::ButtonKind::Standard : fluent::ButtonKind::Primary,
-               pack_text::PrimaryEnabled(c.available, c.installed, c.installing));
+               pack_text::PrimaryEnabled(c.available, c.installed, c.installing, c.bundled));
         if (c.notice_box.bottom > c.notice_box.top) {
             const auto& n = c.notice_box;
             MakeBrush(dc, theme.fill_hover, brFillHover_);
@@ -248,7 +249,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
     draw_card({lay.pack_card, lay.pack_badge, lay.pack_enable, lay.pack_primary, lay.pack_notice, L"\xE714",
                pack_text::MediaTitle(), pack_text::MediaDesc(), pack_text::MediaMeta(), pack_text::MediaBadge(vm),
                false, vm.settings_pack_ffmpeg_enabled, vm.settings_pack_media_installed,
-               vm.settings_pack_installing, vm.settings_pack_media_available, vm.settings_pack_progress, pack_text::Primary(vm),
+               vm.settings_pack_installing, vm.settings_pack_media_available, pack_text::Bundled(vm, 0), vm.settings_pack_progress, pack_text::Primary(vm),
                PackAction::Enable, PackAction::Install, PackAction::Remove, vm.settings_pack_notice});
 
     // Images: the image pack.
@@ -257,7 +258,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
                lay.pack_images_notice, L"\xE91B",
                pack_text::ImagesTitle(), pack_text::ImagesDesc(), pack_text::ImagesMeta(), pack_text::ImagesBadge(vm),
                pack_text::ShowsImagesEnable(vm), vm.settings_pack_images_enabled, vm.settings_pack_images_installed,
-               vm.settings_pack_images_installing, vm.settings_pack_images_available, vm.settings_pack_images_progress, pack_text::ImagesPrimary(vm),
+               vm.settings_pack_images_installing, vm.settings_pack_images_available, pack_text::Bundled(vm, 1), vm.settings_pack_images_progress, pack_text::ImagesPrimary(vm),
                PackAction::ImagesEnable, PackAction::ImagesInstall, PackAction::ImagesRemove,
                vm.settings_pack_images_notice});
 
@@ -266,7 +267,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
                lay.pack_raw_notice, L"\xE722",
                pack_text::RawTitle(), pack_text::RawDesc(), pack_text::RawMeta(), pack_text::RawBadge(vm),
                pack_text::ShowsRawEnable(vm), vm.settings_pack_raw_enabled, vm.settings_pack_raw_installed,
-               vm.settings_pack_raw_installing, vm.settings_pack_raw_available, vm.settings_pack_raw_progress, pack_text::RawPrimary(vm),
+               vm.settings_pack_raw_installing, vm.settings_pack_raw_available, pack_text::Bundled(vm, 2), vm.settings_pack_raw_progress, pack_text::RawPrimary(vm),
                PackAction::RawEnable, PackAction::RawInstall, PackAction::RawRemove,
                vm.settings_pack_raw_notice});
 
@@ -276,7 +277,7 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
                lay.pack_archive_notice, L"\xE8B7",
                pack_text::ArchiveTitle(), pack_text::ArchiveDesc(), pack_text::ArchiveMeta(), pack_text::ArchiveBadge(vm),
                pack_text::ShowsArchiveEnable(vm), vm.settings_pack_archive_enabled, vm.settings_pack_archive_installed,
-               vm.settings_pack_archive_installing, vm.settings_pack_archive_available, vm.settings_pack_archive_progress, pack_text::ArchivePrimary(vm),
+               vm.settings_pack_archive_installing, vm.settings_pack_archive_available, pack_text::Bundled(vm, 3), vm.settings_pack_archive_progress, pack_text::ArchivePrimary(vm),
                PackAction::ArchiveEnable, PackAction::ArchiveInstall, PackAction::ArchiveRemove,
                vm.settings_pack_archive_notice});
 

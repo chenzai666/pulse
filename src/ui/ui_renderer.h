@@ -741,6 +741,7 @@ struct WindowViewModel {
     bool settings_pack_use_custom = false;
     bool settings_pack_remove_on_uninstall = true;
     uint32_t settings_pack_installed = 0;       // installed pack count
+    uint32_t settings_pack_bundled_mask = 0;    // ffmpeg, images, raw, archive
     bool settings_pack_media_available = false, settings_pack_images_available = false;
     bool settings_pack_media_installed = false; // the FFmpeg pack itself is on disk
     uint64_t settings_pack_bytes = 0;           // disk use of the packs folder

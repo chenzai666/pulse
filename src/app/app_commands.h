@@ -111,6 +111,7 @@ bool PickFolder(AppState& s, std::wstring& path, const wchar_t* title);
 D2D1_COLOR_F ResolveAccentColor(const app::AppPrefs& prefs, bool dark = false);
 void ApplyAccentFromPrefs(AppState& s, bool snap_picker);
 bool SelectedQuickPreviewItem(AppState& s, ui::QuickPreviewItem& item);
+void ShowNativeQuickPreview(AppState& s, const ui::QuickPreviewItem& item);
 void ToggleQuickPreview(AppState& s);
 void NavigateQuickPreview(AppState& s, int direction);
 // File verb requested from inside the quick preview (WM_QUICK_PREVIEW_COMMAND).

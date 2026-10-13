@@ -157,6 +157,13 @@ bool IsFfmpegExe(const std::wstring& path) {
     return _wcsicmp(name.c_str(), L"ffmpeg.exe") == 0 && packs::IsRegularFile(path);
 }
 
+uint64_t BundledPackBytes(const packs::InstalledPack& pack, const PackRelease& release) {
+    if (!pack.bundled) return 0;
+    uint64_t total = 0;
+    for (size_t i = 0; i < release.file_count; ++i) total += release.files[i].size;
+    return total;
+}
+
 } // namespace
 
 void SettingsController::RefreshPacks() {
@@ -192,6 +199,11 @@ void SettingsController::RefreshPacks() {
     state.images_installed = images.present;
     state.images_version = images.version;
     state.installed = (media.present ? 1u : 0u) + (images.present ? 1u : 0u) + (raw.present ? 1u : 0u) + (archive.present ? 1u : 0u);
+    state.bundled_mask = (media.bundled ? 1u : 0u) | (images.bundled ? 2u : 0u) |
+        (raw.bundled ? 4u : 0u) | (archive.bundled ? 8u : 0u);
+    const uint32_t installed_mask = (media.present ? 1u : 0u) | (images.present ? 2u : 0u) |
+        (raw.present ? 4u : 0u) | (archive.present ? 8u : 0u);
+    if (state.bundled_mask && state.bundled_mask == installed_mask) state.root = packs::BundledPacksRoot();
     // What the preview host would use, ignoring the on/off switch so the card
     // can still say which FFmpeg it is switching.
     if (state.use_custom) {
@@ -200,7 +212,12 @@ void SettingsController::RefreshPacks() {
     wchar_t found[MAX_PATH]{};
     if (SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, found, nullptr) && IsFfmpegExe(found))
         state.detected_path = found;
-    if (!state.root.empty()) state.bytes = DirectoryBytes(state.root);
+    const std::wstring user_root = packs::PacksRoot();
+    if (!user_root.empty()) state.bytes = DirectoryBytes(user_root);
+    // The bundled payload was verified while packaging; avoid walking its
+    // decoded files on the UI thread just to display their known size.
+    state.bytes += BundledPackBytes(media, kMediaPackRelease) + BundledPackBytes(images, kImagePackRelease) +
+        BundledPackBytes(raw, kRawPackRelease) + BundledPackBytes(archive, kArchivePackRelease);
     packs_ = std::move(state);
     packs_checked_ = GetTickCount64();
     offer_checked_ = 0;
@@ -352,6 +369,12 @@ bool SettingsController::TakeImagePackResult() { return TakePackResult(packs::Pa
 
 bool SettingsController::RemovePack(packs::PackId id) {
     if (InstallerFor(id).running()) return false;
+    if (packs::ReadInstalledPack(id).bundled) {
+        NoticeFor(id) = l10n::Pick(L"此增强包随程序内置；可以关闭启用开关，文件由 Pulse 安装程序管理。",
+            L"This pack is bundled with Pulse. Turn off its switch to disable it; setup manages its files.");
+        RefreshPacks();
+        return false;
+    }
     const std::wstring root = packs::PacksRoot();
     if (root.empty()) return false;
     const bool removed = RemovePackTree(root + L"\\" + packs::PackKey(id));

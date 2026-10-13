@@ -1,15 +1,14 @@
-// preview_packs.h - Optional preview packs (FFmpeg media, modern image codecs).
-//
-// A pack is a set of helper executables Pulse never ships in the installer.
-// The user installs one from Settings > Preview packs (or from the prompt
-// Quick Look shows when Windows lacks a decoder); afterwards the preview host
-// calls it only when the native path - WIC, Media Foundation, the shell
-// provider - could not make the preview. Without a pack nothing changes.
+// preview_packs.h - Preview packs (FFmpeg, modern images, RAW, archives).
+// Packs may ship beside the executables. A user-installed pack takes priority
+// over the bundled copy, so Settings' existing download/update path still works.
+// Preview helpers only run when the native decoder cannot handle a file.
 //
 // Layout under %LOCALAPPDATA%\Pulse\packs:
 //   packs.json                  user settings, written by the app
 //   <key>\installed.json        {"version":"7.1.1","dir":"7.1.1"}
 //   <key>\<dir>\ffmpeg.exe ...  the pack's files
+// The executable's packs\ directory uses the same installed.json layout;
+// settings are always per-user, including for a read-only Program Files install.
 //
 // Header-only on purpose: the preview host, the app and the tests are
 // separate executables and must not gain link dependencies.
@@ -17,6 +16,7 @@
 
 #include "json_utils.h"
 #include "utf8_file.h"
+#include "edition.h"
 #include <windows.h>
 #include <cstdint>
 #include <mutex>
@@ -50,13 +50,13 @@ inline const wchar_t* PackMainTool(PackId id) {
     return L"";
 }
 
-// %LOCALAPPDATA%\Pulse\packs, empty when the variable is unavailable. Tests and
+// The edition's per-user packs, empty when LOCALAPPDATA is unavailable. Tests and
 // --test-instance runs redirect LOCALAPPDATA, which isolates packs as well.
 inline std::wstring PacksRoot() {
     wchar_t root[32768];
     const DWORD count = GetEnvironmentVariableW(L"LOCALAPPDATA", root, static_cast<DWORD>(std::size(root)));
     if (!count || count >= std::size(root)) return {};
-    return std::wstring(root, count) + L"\\Pulse\\packs";
+    return std::wstring(root, count) + L"\\" + edition::kDataFolder + L"\\packs";
 }
 
 inline std::wstring PacksSettingsPath() {
@@ -72,6 +72,18 @@ inline bool IsRegularFile(const std::wstring& path) {
 inline std::wstring DirectoryOf(const std::wstring& file) {
     const size_t slash = file.find_last_of(L"\\/");
     return slash == std::wstring::npos ? std::wstring{} : file.substr(0, slash);
+}
+
+// Resolve from the executable, never from the working directory or PATH.
+inline const std::wstring& BundledPacksRoot() {
+    static const std::wstring root = [] {
+        wchar_t module[32768]{};
+        const DWORD count = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
+        if (!count || count >= std::size(module)) return std::wstring{};
+        const std::wstring directory = DirectoryOf(std::wstring(module, count));
+        return directory.empty() ? std::wstring{} : directory + L"\\packs";
+    }();
+    return root;
 }
 
 // User settings (packs.json). Flat keys so json_utils' key search is exact.
@@ -145,14 +157,14 @@ inline bool SavePackSettings(const PackSettings& settings) {
 
 struct InstalledPack {
     bool present = false;
+    bool bundled = false;
     std::wstring version;
     std::wstring directory;   // absolute directory holding the pack's files
 };
 
 // Reads <root>\<key>\installed.json and checks the main tool is there.
-inline InstalledPack ReadInstalledPack(PackId id) {
+inline InstalledPack ReadInstalledPackAtRoot(PackId id, const std::wstring& root, bool bundled = false) {
     InstalledPack pack;
-    const std::wstring root = PacksRoot();
     if (root.empty()) return pack;
     const std::wstring base = root + L"\\" + PackKey(id);
     std::wstring text;
@@ -164,7 +176,14 @@ inline InstalledPack ReadInstalledPack(PackId id) {
     pack.version = json::ExtractString(text, L"version");
     pack.directory = base + L"\\" + dir;
     pack.present = IsRegularFile(pack.directory + L"\\" + PackMainTool(id));
+    pack.bundled = pack.present && bundled;
     return pack;
+}
+
+inline InstalledPack ReadInstalledPack(PackId id) {
+    InstalledPack pack = ReadInstalledPackAtRoot(id, PacksRoot());
+    if (pack.present) return pack;
+    return ReadInstalledPackAtRoot(id, BundledPacksRoot(), true);
 }
 
 // Where a pack's tools come from right now.
@@ -195,14 +214,17 @@ inline ResolvedPack ResolvePackUncached(PackId id) {
     return out;
 }
 
-// Write times of packs.json and <key>\installed.json. Settings and the
+// Write times of packs.json and both installed.json markers. Settings and the
 // installer write one of them on every change, so comparing this stamp lets a
 // change made in Settings reach the very next request.
 inline uint64_t PackStamp(PackId id) {
     const std::wstring root = PacksRoot();
-    if (root.empty()) return 0;
+    const std::wstring& bundled_root = BundledPacksRoot();
     uint64_t stamp = 0;
-    for (const std::wstring& file : {root + L"\\packs.json", root + L"\\" + PackKey(id) + L"\\installed.json"}) {
+    for (const std::wstring& file : {
+        root.empty() ? std::wstring{} : root + L"\\packs.json",
+        root.empty() ? std::wstring{} : root + L"\\" + PackKey(id) + L"\\installed.json",
+        bundled_root.empty() ? std::wstring{} : bundled_root + L"\\" + PackKey(id) + L"\\installed.json"}) {
         WIN32_FILE_ATTRIBUTE_DATA data{};
         const uint64_t time = GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data)
             ? (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime
@@ -213,7 +235,7 @@ inline uint64_t PackStamp(PackId id) {
 }
 
 // The preview host asks this for every candidate file, so the answer is
-// cached: two attribute reads per call, the settings and pack files only when
+// cached: three attribute reads per call, the settings and pack files only when
 // they changed or every few seconds (a custom ffmpeg.exe may have been deleted).
 inline ResolvedPack ResolvePack(PackId id) {
     struct Slot { ULONGLONG checked = 0; uint64_t stamp = 0; ResolvedPack value; };

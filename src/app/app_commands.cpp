@@ -25,6 +25,7 @@
 #include "../common/localization.h"
 #include "../common/text_format.h"
 #include "../common/path_utils.h"
+#include "../common/edition.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
 #include "entry_sort.h"
@@ -2270,6 +2271,10 @@ bool SelectedQuickPreviewItem(AppState& s, ui::QuickPreviewItem& item) {
 }
 
 void ToggleQuickPreview(AppState& s) {
+    if (s.quickLook.active()) {
+        s.quickLook.Close();
+        return;
+    }
     if (s.quickPreview.visible()) {
         s.quickPreview.Close();
         return;
@@ -2277,38 +2282,47 @@ void ToggleQuickPreview(AppState& s) {
     if(DeferContentSelection(s,[](AppState& v){ToggleQuickPreview(v);},true)) return;
     ui::QuickPreviewItem item;
     if (SelectedQuickPreviewItem(s, item)) {
-        const auto effect = s.appPrefs.background_image.empty()
-            ? ui::WindowEffectFromId(s.appPrefs.window_effect)
-            : ui::WindowEffect::None;
-        // Grow the preview out of the selected item's icon (screen point).
-        POINT origin{};
-        const POINT* zoom_from = nullptr;
-        if (app::Tab* tab = ActiveTab(s); tab && s.pane) {
-            ui::PaneViewModel pane;
-            app::FillPaneViewModel(pane, *s.pane, &s.places);
-            const int view = pane.ViewIndex(tab->selected_index);
-            if (view >= 0) {
-                const D2D1_RECT_F bounds = FocusedPaneRect(s);
-                const D2D1_RECT_F list = s.renderer.PaneListRect(pane, bounds);
-                const D2D1_RECT_F cell = s.renderer.ItemRectInPane(pane, bounds, view);
-                const float cy = (cell.top + cell.bottom) * 0.5f;
-                const float row_h = cell.bottom - cell.top;
-                // Wide rows (details/list): the icon sits at the left edge;
-                // icon grids: the cell centre.
-                const float cx = cell.right - cell.left > row_h * 3.0f
-                    ? cell.left + row_h * 0.8f : (cell.left + cell.right) * 0.5f;
-                if (cy >= list.top && cy <= list.bottom) {
-                    origin = POINT{static_cast<LONG>(cx), static_cast<LONG>(cy)};
-                    ClientToScreen(s.hwnd, &origin);
-                    zoom_from = &origin;
-                }
+        if (edition::kCustom && !s.safeMode &&
+            s.quickLook.Initialize(s.hwnd, WM_QUICKLOOK_EVENT) && s.quickLook.Toggle(item.path)) {
+            s.quickPreviewSelection.Reset(item.path);
+            return;
+        }
+        ShowNativeQuickPreview(s, item);
+    }
+}
+
+void ShowNativeQuickPreview(AppState& s, const ui::QuickPreviewItem& item) {
+    const auto effect = s.appPrefs.background_image.empty()
+        ? ui::WindowEffectFromId(s.appPrefs.window_effect)
+        : ui::WindowEffect::None;
+    // Grow the preview out of the selected item's icon (screen point).
+    POINT origin{};
+    const POINT* zoom_from = nullptr;
+    if (app::Tab* tab = ActiveTab(s); tab && s.pane) {
+        ui::PaneViewModel pane;
+        app::FillPaneViewModel(pane, *s.pane, &s.places);
+        const int view = pane.ViewIndex(tab->selected_index);
+        if (view >= 0) {
+            const D2D1_RECT_F bounds = FocusedPaneRect(s);
+            const D2D1_RECT_F list = s.renderer.PaneListRect(pane, bounds);
+            const D2D1_RECT_F cell = s.renderer.ItemRectInPane(pane, bounds, view);
+            const float cy = (cell.top + cell.bottom) * 0.5f;
+            const float row_h = cell.bottom - cell.top;
+            // Wide rows (details/list): the icon sits at the left edge;
+            // icon grids: the cell centre.
+            const float cx = cell.right - cell.left > row_h * 3.0f
+                ? cell.left + row_h * 0.8f : (cell.left + cell.right) * 0.5f;
+            if (cy >= list.top && cy <= list.bottom) {
+                origin = POINT{static_cast<LONG>(cx), static_cast<LONG>(cy)};
+                ClientToScreen(s.hwnd, &origin);
+                zoom_from = &origin;
             }
         }
-        s.quickPreview.Initialize(s.hwnd, WM_QUICK_PREVIEW_NAVIGATE,
-                                  WM_QUICK_PREVIEW_OPEN, WM_QUICK_PREVIEW_COMMAND);
-        s.quickPreview.Show(item, s.darkMode, effect, s.safeMode, zoom_from);
-        s.quickPreviewSelection.Reset(item.path);
     }
+    s.quickPreview.Initialize(s.hwnd, WM_QUICK_PREVIEW_NAVIGATE,
+                              WM_QUICK_PREVIEW_OPEN, WM_QUICK_PREVIEW_COMMAND);
+    s.quickPreview.Show(item, s.darkMode, effect, s.safeMode, zoom_from);
+    s.quickPreviewSelection.Reset(item.path);
 }
 
 void NavigateQuickPreview(AppState& s, int direction) {
@@ -2324,7 +2338,9 @@ void NavigateQuickPreview(AppState& s, int direction) {
     EnsureRowVisible(s, *tab, tab->selected_index);
     auto update=[](AppState& v) {
         ui::QuickPreviewItem item;
-        if(v.quickPreview.visible() && SelectedQuickPreviewItem(v,item)) v.quickPreview.Update(item);
+        if (!SelectedQuickPreviewItem(v, item)) return;
+        if (v.quickLook.active()) v.quickLook.Switch(item.path);
+        else if (v.quickPreview.visible()) v.quickPreview.Update(item);
     };
     if(!DeferContentSelection(s,update,true)) update(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);

@@ -436,6 +436,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 vm.settings_pack_use_custom = packs.use_custom;
                 vm.settings_pack_remove_on_uninstall = packs.remove_on_uninstall;
                 vm.settings_pack_installed = packs.installed;
+                vm.settings_pack_bundled_mask = packs.bundled_mask;
                 vm.settings_pack_bytes = packs.bytes;
                 vm.settings_pack_version = packs.version;
                 vm.settings_pack_custom_path = packs.custom_path;

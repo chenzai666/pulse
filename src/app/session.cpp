@@ -2,6 +2,7 @@
 #include "session.h"
 #include "split_tree_shape.h"
 #include "../common/config_json.h"
+#include "../common/edition.h"
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
 #include "../common/utf8_file.h"
@@ -365,7 +366,7 @@ std::wstring GetPulseDataDir() {
 #endif
     wchar_t path[MAX_PATH] = {};
     if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) {
-        std::wstring dir = std::wstring(path) + L"\\Pulse";
+        std::wstring dir = std::wstring(path) + L"\\" + edition::kDataFolder;
         CreateDirectoryW(dir.c_str(), nullptr);
         return dir;
     }

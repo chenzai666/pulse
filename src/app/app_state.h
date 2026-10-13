@@ -10,6 +10,7 @@
 #include "../ui/drag_drop.h"
 #include "../ui/file_operation_dialog.h"
 #include "../ui/quick_preview_window.h"
+#include "quicklook_integration.h"
 #include "list_type_ahead.h"
 #include "preview_selection_follow.h"
 #include "../ui/text_diff_window.h"
@@ -253,6 +254,7 @@ struct AppState : AppCoreOwner {
     // Vsync-paced frames while highlight glides / list shifts run (frame_pump.h).
     app::FramePump framePump;
     ui::QuickPreviewWindow quickPreview;
+    app::QuickLookIntegration quickLook;
     // View row the quick preview was anchored to when Delete ran from inside
     // it; SyncQuickPreview re-anchors there once the listing drops the entry
     // so the preview steps to the neighbouring file instead of closing.

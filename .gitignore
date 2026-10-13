@@ -4,6 +4,8 @@
 /build-*/
 /out/
 /dist/
+**/bin/
+**/obj/
 CMakeCache.txt
 CMakeFiles/
 build.ninja

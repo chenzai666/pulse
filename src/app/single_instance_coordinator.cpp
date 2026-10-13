@@ -5,14 +5,15 @@
 #include <cstring>
 #include <objbase.h>
 #include "../common/current_user_security.h"
+#include "../common/edition.h"
 #include "default_file_manager.h"
 
 namespace pulse::app {
 namespace {
 
-constexpr wchar_t kMutexName[] = L"Local\\Pulse.Singleton";
-constexpr wchar_t kWindowClass[] = L"PulseMainWindow";
-constexpr wchar_t kPrimaryProperty[] = L"Pulse.Singleton.PrimaryPid";
+constexpr const wchar_t* kMutexName = edition::kInstanceMutex;
+constexpr const wchar_t* kWindowClass = edition::kWindowClass;
+constexpr const wchar_t* kPrimaryProperty = edition::kInstanceProperty;
 constexpr ULONG_PTR kOpenPathMessage = 0x50554C53; // 'PULS'
 constexpr ULONG_PTR kOpenRequestMessage = 0x50554C32; // 'PUL2'
 constexpr size_t kMaxForwardedPathChars = 32768;

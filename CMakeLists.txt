@@ -25,6 +25,11 @@ add_compile_options(/utf-8 /permissive- /W4 /EHsc)
 # Expose optional SDK COM interfaces; runtime calls are capability-checked.
 add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0603 WINVER=0x0603 _WIN32_IE=0x0A00 NTDDI_VERSION=NTDDI_WIN10_NI)
 
+option(PULSE_CUSTOM_EDITION "Build the isolated Pulse edition with bundled integrations" OFF)
+if(PULSE_CUSTOM_EDITION)
+    add_compile_definitions(PULSE_CUSTOM_EDITION=1)
+endif()
+
 option(PULSE_WITH_LUMATEXT "Use LumaText for Pulse-owned single-line text" ON)
 set(LUMATEXT_SOURCE_DIR "" CACHE PATH
     "Optional LumaText source tree used for development builds")
@@ -796,6 +801,7 @@ add_executable(pulse_pane_drop_test src/bench/pane_drop_test.cpp src/app/pane_dr
     src/index/content_result_store.cpp src/fs/fs_enum.cpp src/ui/view_layout.cpp)
 target_link_libraries(pulse_pane_drop_test PRIVATE
     user32 shell32 ole32 uuid advapi32 shlwapi netapi32 secur32 pulse_localization pulse_runtime_log pulse_sqlite)
+add_executable(pulse_bundled_preview_packs_test src/bench/bundled_preview_packs_test.cpp)
 # Multi-window M1: AppState's process-wide members alias one AppCore (compile-time checks).
 add_executable(pulse_app_core_alias_test src/bench/app_core_alias_test.cpp)
 target_include_directories(pulse_app_core_alias_test PRIVATE "${CMAKE_BINARY_DIR}/generated")

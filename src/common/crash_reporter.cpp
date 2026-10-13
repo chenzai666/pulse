@@ -1,5 +1,6 @@
 #include "crash_reporter.h"
 #include "runtime_log.h"
+#include "edition.h"
 #include "pulse_version.h"
 
 #include <dbghelp.h>
@@ -106,7 +107,7 @@ std::wstring DefaultDataRoot(bool machine_scope) {
     wchar_t path[MAX_PATH]{};
     const int csidl = machine_scope ? CSIDL_COMMON_APPDATA : CSIDL_LOCAL_APPDATA;
     if (FAILED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, path))) return {};
-    return JoinPath(path, L"Pulse");
+    return JoinPath(path, edition::kDataFolder);
 }
 
 std::wstring SafeBuildId() {

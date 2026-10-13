@@ -74,6 +74,9 @@
 #include "../ui/color_picker.h"
 #include "../ui/bloom_accent_picker.h"
 #include "../ui/folder_picker_dialog.h"
+#include "app_quicklook_routing.h"
+#include "listary_integration.h"
+#include "../common/edition.h"
 #ifdef PULSE_WITH_SELFTEST
 #include "selftest_1b2.h"
 #include "../bench/startup_rollback_test.h"
@@ -624,6 +627,8 @@ static BOOL HandleInstanceCopyData(AppState& s, COPYDATASTRUCT* cds) {
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    LRESULT listary_result = 0;
+    if (s && ListaryWindowMessage(*s, msg, wParam, lParam, listary_result)) return listary_result;
     if (s && msg != 0 && msg == app::UpdateShutdownMessage())
         return CloseForUpdate(*s);
     if (s && IsUiActivityMessage(msg)) NoteUiActivity(*s, hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
@@ -1075,6 +1080,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (init_core && !s->isolatedTest && !s->shot.active && !s->menushot)
             app::CleanupAbandonedUpdateStagesAsync();
         s->startupComplete = true;
+        if (edition::kCustom && !s->isolatedTest && !s->safeMode) AttachListaryWindow(*s);
         s->lastFrameTime = std::chrono::steady_clock::now();
         s->renderer.SetDetailsPanelVisible(s->showDetailsPanel);
         s->renderer.SetDetailsPanelWidth(s->detailsPanelWidth);
@@ -2217,6 +2223,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) NavigateQuickPreview(*s, static_cast<int>(wParam));
         return 0;
 
+    case WM_QUICKLOOK_EVENT:
+        if (s) HandleEmbeddedQuickLookEvent(*s, static_cast<UINT_PTR>(lParam));
+        return 0;
+
     case WM_QUICK_PREVIEW_OPEN:
         if (s) {
             // wParam 1: an item inside the previewed folder (Quick Look list).
@@ -2318,6 +2328,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         const bool last_window = !s || s->core.windows.IsLastWindow(hwnd);
         if (last_window) app::shell_tags::RevokeCommandServer();
         if (s) {
+            DetachListaryWindow(*s);
+            s->quickLook.Shutdown();
             s->framePump.Stop();
             if (last_window) {
                 s->probe_scheduler.Clear();
@@ -3139,7 +3151,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     HWND hwnd = CreateWindowExW(
         WS_EX_NOREDIRECTIONBITMAP,
         wc.lpszClassName,
-        L"Pulse",
+        edition::kWindowTitle,
         // Pulse paints the entire title bar (WM_NCCALCSIZE makes the whole
         // window client area). WS_CAPTION is what makes DWM play the system
         // minimize / maximize / restore animations; WM_NCACTIVATE keeps the

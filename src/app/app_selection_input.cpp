@@ -32,7 +32,7 @@ bool HandleListCharacter(AppState& s, wchar_t ch) {
 }
 
 void TickQuickPreviewSelection(AppState& s, ULONGLONG now) {
-    if (!s.quickPreview.visible()) { s.quickPreviewSelection.Reset(); return; }
+    if (!s.quickPreview.visible() && !s.quickLook.active()) { s.quickPreviewSelection.Reset(); return; }
     auto* tab = ActiveTab(s);
     if (!tab || tab->loading || s.quickPreviewAnchorView >= 0) return;
     ui::QuickPreviewItem item;
@@ -40,7 +40,12 @@ void TickQuickPreviewSelection(AppState& s, ULONGLONG now) {
     if (!s.quickPreviewSelection.Observe(item.path, now)) return;
     // Empty selections leave the current preview available. The next selected
     // file will replace it. Update cancels old requests through its generation.
-    if (!item.path.empty() && item.path != s.quickPreview.item().path)
-        s.quickPreview.Update(item);
+    if (!item.path.empty()) {
+        if (s.quickLook.active()) {
+            if (item.path != s.quickLook.path()) s.quickLook.Switch(item.path);
+        } else if (item.path != s.quickPreview.item().path) {
+            s.quickPreview.Update(item);
+        }
+    }
 }
 } // namespace pulse

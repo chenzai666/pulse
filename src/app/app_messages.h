@@ -55,5 +55,6 @@ constexpr UINT WM_MERGE_WINDOW = WM_APP + 83;  // released on a tab strip after 
 constexpr UINT WM_CONVERT_EXTERNAL_OPEN = WM_APP + 84;  // the open toast was clicked: tab <-> new window (M7b)
 constexpr UINT WM_ADOPT_OPEN_POLICY = WM_APP + 85;  // the "make it the default" toast was clicked (M7b)
 constexpr UINT WM_REOPEN_CLOSED_TABS = WM_APP + 86;  // the "N tabs closed" toast was clicked (M7f)
+constexpr UINT WM_QUICKLOOK_EVENT = WM_APP + 88;  // lParam: owned preview event token
 
 }  // namespace pulse
