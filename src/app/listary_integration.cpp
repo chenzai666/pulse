@@ -2,6 +2,7 @@
 
 #include "app_hosted_edit.h"
 #include "app_navigation.h"
+#include "app_network_locations.h"
 #include "app_runtime.h"
 #include "tray_reveal.h"
 #include "../common/current_user_security.h"
@@ -11,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -139,7 +141,7 @@ struct Bridge {
     // These fields are owned by the UI thread. Tokens never contain addresses.
     const app::LayoutTab* observed_layout = nullptr;
     const app::Pane* observed_pane = nullptr;
-    uint64_t observed_generation = 0, tab_token = 0;
+    uint64_t tab_token = 0;
     std::wstring observed_path;
 
     ~Bridge() { Stop(); }
@@ -255,12 +257,11 @@ struct Bridge {
         const auto* layout = state.window_tabs.Active();
         const auto* pane = state.pane;
         const auto* tab = pane ? pane->ActiveTab() : nullptr;
+        const bool changed_path = tab ? tab->current_path != observed_path : !observed_path.empty();
         if (layout != observed_layout || pane != observed_pane ||
-            (tab ? tab->view_generation : 0) != observed_generation ||
-            (tab ? tab->current_path : std::wstring()) != observed_path) {
+            changed_path) {
             observed_layout = layout;
             observed_pane = pane;
-            observed_generation = tab ? tab->view_generation : 0;
             observed_path = tab ? tab->current_path : std::wstring();
             if (++tab_token == 0) ++tab_token;
         }
@@ -290,7 +291,6 @@ struct Bridge {
             request.status = Status::Busy;
             return;
         }
-        if (state.addressEditing) HideAddressEditor(state, false);
         const bool select = op == Operation::SelectItem || op == Operation::NewTabSelectItem;
         const bool new_tab = op == Operation::NewTabFolder || op == Operation::NewTabSelectItem;
         std::wstring folder = request.path, leaf;
@@ -299,6 +299,13 @@ struct Bridge {
             leaf = folder.substr(slash + 1);
             folder.resize(slash + 1);
         }
+        // Pulse's ordinary navigation can launch a NetHood shell alias. The
+        // external bridge has navigation/selection capabilities only.
+        if (IsSystemNetworkShortcut(state, folder)) {
+            request.status = Status::Invalid;
+            return;
+        }
+        if (state.addressEditing) HideAddressEditor(state, false);
         if (new_tab) {
             if (TakeFreshStart(state)) StartFreshAt(state, folder);
             else OpenTabAt(state, folder);
@@ -368,9 +375,14 @@ void DetachListaryWindow(AppState& state) noexcept {
 
 bool ListaryWindowMessage(AppState& state, UINT message, WPARAM wparam,
                          LPARAM, LRESULT& result) {
-    if (message != kListaryBridgeMessage) return false;
-    result = 0;
     const auto found = bridges.find(state.hwnd);
+    if (message != kListaryBridgeMessage) {
+        // Observe focus/navigation between requests as well: switching away
+        // and back must retire an old lease. A listing refresh alone must not.
+        if (found != bridges.end()) found->second->ObserveTab(state);
+        return false;
+    }
+    result = 0;
     if (found == bridges.end()) return true;
     const auto bridge = found->second;
     std::shared_ptr<Request> request;

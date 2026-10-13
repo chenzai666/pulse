@@ -13,6 +13,11 @@ if (-not $vsRoot) { throw '需要 Visual Studio 2022 x64 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
+& "$PSScriptRoot/build_quicklook_host.ps1" -BuildDir $taskBuild
+& "$PSScriptRoot/build_listary_plugin.ps1" -OutputPath (Join-Path $taskBuild 'ListaryPlugin')
+& "$taskRepo/integrations/Listary.Pulse/tests/run_protocol_tests.ps1"
+& "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild
+& "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild -VerifyOnly
 $buildBatch = Join-Path $taskBuild 'compile-custom.bat'
 @"
 @echo off
@@ -56,8 +61,4 @@ exit /b %errorlevel%
 & $productionBatch
 if ($LASTEXITCODE) { throw '移除测试入口后的正式原生编译失败' }
 & "$PSScriptRoot/check_release_payload.ps1" -BuildDir $taskBuild
-& "$PSScriptRoot/build_quicklook_host.ps1" -BuildDir $taskBuild
-& "$PSScriptRoot/build_listary_plugin.ps1" -OutputPath (Join-Path $taskBuild 'ListaryPlugin')
-& "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild
-& "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild -VerifyOnly
 & "$PSScriptRoot/package_custom.ps1" -BuildDir $taskBuild

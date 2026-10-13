@@ -2295,8 +2295,8 @@ void TestShellMenuMerge() {
     Check(!ipc::IsBuiltinContextVerb(L"MergePdf", false), L"shellmenu: third-party verb kept");
     Check(!ipc::IsBuiltinContextVerb(L"refresh", false), L"shellmenu: refresh only filtered on background");
     Check(ipc::IsBuiltinContextVerb(L"refresh", true), L"shellmenu: background refresh filtered");
-    Check(ipc::IsDroppedContextSubmenu(L"OpenAs"), L"shellmenu: 打开方式 submenu dropped (registry provides it)");
-    Check(!ipc::IsDroppedContextSubmenu(L"sendto"), L"shellmenu: 发送到 submenu kept as a flyout");
+    Check(ipc::IsOpenWithSubmenuVerb(L"OpenAs"), L"shellmenu: 打开方式 submenu recognized for the Explorer flyout");
+    Check(!ipc::IsOpenWithSubmenuVerb(L"sendto"), L"shellmenu: 发送到 is a separate flyout");
 
     Check(ipc::CleanMenuText(L"打开方式(&H)...\tCtrl+O") == L"打开方式(H)...",
           L"shellmenu: text loses & mnemonic and \\t shortcut");

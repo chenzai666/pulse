@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Security.Principal;
+using System.Security;
 using System.Text;
 
 namespace Listary.FileAppPlugin.Pulse;
@@ -32,6 +33,14 @@ internal sealed class PulseWindowIdentity
     }
 
     internal static PulseWindowIdentity? Capture(IntPtr handle)
+    {
+        try { return CaptureCore(handle); }
+        catch (SecurityException) { return null; }
+        catch (ArgumentException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    private static PulseWindowIdentity? CaptureCore(IntPtr handle)
     {
         if (!NativeMethods.IsWindow(handle) ||
             NativeMethods.GetPropW(handle, NativeMethods.BridgeProperty) != new IntPtr(1)) return null;

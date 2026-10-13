@@ -41,6 +41,9 @@ internal static class ProtocolTests
 
     private static async Task ManagedProtocol(PulseWindowIdentity identity)
     {
+        using var plugin = new PulsePlugin();
+        Check(await plugin.Initialize(null!), "official plugin initializes without altering Listary settings");
+        Check(plugin.BindFileWindow(identity.Handle) is PulseWindow, "official plugin binds the custom window");
         var client = new PulseWindow(identity, CancellationToken.None);
         var tab = await Exchange(identity, client.GetCurrentTab, request =>
         {
@@ -74,6 +77,18 @@ internal static class ProtocolTests
             return Reply(PulseStatus.Ok, 43, string.Empty);
         });
         Check(newTab, "window-level file selection accepted");
+        Check(await Exchange(identity, () => plugin.OpenFolder(@"C:\测试目录"), request =>
+        {
+            Check(request.Operation == PulseOperation.NewTabFolder && request.Tab == 0,
+                "global directory result routes into Pulse as a new tab");
+            return Reply(PulseStatus.Ok, 44, string.Empty);
+        }), "global directory handoff accepted");
+        Check(await Exchange(identity, () => plugin.OpenFolderAndSelectFile(@"C:\测试目录\a.txt"), request =>
+        {
+            Check(request.Operation == PulseOperation.NewTabSelectItem && request.Tab == 0,
+                "global file result routes into Pulse with selection");
+            return Reply(PulseStatus.Ok, 45, string.Empty);
+        }), "global file handoff accepted");
         var stale = await Exchange(identity, fileTab.GetCurrentFolder, _ => Reply(PulseStatus.StaleTab, 0, string.Empty));
         Check(stale == null, "stale tab is not treated as success");
 
@@ -103,16 +118,17 @@ internal static class ProtocolTests
             Check(await query == null && elapsed.ElapsedMilliseconds < 3000, "hung peer expires within the request deadline");
         }
         using (var server = Server(identity.PipeName))
-        using (var lifetime = new CancellationTokenSource())
         {
             var connected = server.WaitForConnectionAsync();
-            var query = PulseBridgeClient.Send(identity, PulseOperation.CurrentTab, 0, null, lifetime.Token);
+            var bound = plugin.BindFileWindow(identity.Handle);
+            var query = bound.GetCurrentTab();
             await connected;
             await ReadRequest(server);
             var elapsed = Stopwatch.StartNew();
-            lifetime.Cancel();
+            plugin.Dispose();
             Check(await query == null && elapsed.ElapsedMilliseconds < 500, "plugin cancellation closes a pending pipe");
         }
+        Check(!await plugin.OpenFolder(@"C:\测试目录"), "disposed plugin rejects new navigation");
     }
 
     private static async Task NativeSmoke(IntPtr handle, string fixture)

@@ -29,10 +29,20 @@ public sealed class PulsePlugin : IFileAppPlugin, IOpenFolder, IOpenFolderAndSel
             if (folder != null)
             {
                 var config = Path.Combine(folder, "PulseExecutable.path");
-                if (File.Exists(config) && new FileInfo(config).Length <= 65536)
+                if (File.Exists(config))
                 {
-                    var executable = File.ReadAllText(config).Trim();
-                    if (ValidExecutablePath(executable)) _configuredExecutable = executable;
+                    using var stream = new FileStream(config, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    if (stream.Length <= 65536)
+                    {
+                        using var reader = new StreamReader(stream);
+                        var chars = new char[PulseBridgeClient.MaxPathChars + 1];
+                        var count = reader.ReadBlock(chars, 0, chars.Length);
+                        if (count <= PulseBridgeClient.MaxPathChars)
+                        {
+                            var executable = new string(chars, 0, count).Trim();
+                            if (ValidExecutablePath(executable)) _configuredExecutable = executable;
+                        }
+                    }
                 }
             }
         }
@@ -58,21 +68,21 @@ public sealed class PulsePlugin : IFileAppPlugin, IOpenFolder, IOpenFolderAndSel
     private async Task<bool> OpenGlobal(string path, bool select)
     {
         if (Volatile.Read(ref _disposed) != 0 || !PulseBridgeClient.IsAbsoluteFileSystemPath(path)) return false;
-        var window = Volatile.Read(ref _lastWindow);
-        if (window == null || !window.StillValid())
+        PulseWindowIdentity? visible = null;
+        PulseWindowIdentity? hidden = null;
+        // EnumWindows is in Z order; a directory-provider refresh may have
+        // bound a background window after the user focused a different one.
+        NativeMethods.EnumWindows((handle, _) =>
         {
-            PulseWindowIdentity? visible = null;
-            PulseWindowIdentity? hidden = null;
-            NativeMethods.EnumWindows((handle, _) =>
-            {
-                var candidate = PulseWindowIdentity.Capture(handle);
-                if (candidate == null) return true;
-                if (NativeMethods.IsWindowVisible(handle)) { visible = candidate; return false; }
-                hidden ??= candidate;
-                return true;
-            }, IntPtr.Zero);
-            window = visible ?? hidden;
-        }
+            var candidate = PulseWindowIdentity.Capture(handle);
+            if (candidate == null) return true;
+            if (NativeMethods.IsWindowVisible(handle)) { visible = candidate; return false; }
+            hidden ??= candidate;
+            return true;
+        }, IntPtr.Zero);
+        var window = visible ?? hidden;
+        var last = Volatile.Read(ref _lastWindow);
+        if (window == null && last?.StillValid() == true) window = last;
         if (window != null)
         {
             Interlocked.Exchange(ref _lastWindow, window);
@@ -109,7 +119,8 @@ public sealed class PulsePlugin : IFileAppPlugin, IOpenFolder, IOpenFolderAndSel
     {
         if (!PulseBridgeClient.IsAbsoluteFileSystemPath(path)) return false;
         var ordinary = path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path.Substring(4) : path;
-        if (ordinary.StartsWith(@"\\", StringComparison.Ordinal)) return false;
+        if (ordinary.Length < 3 || !char.IsLetter(ordinary[0]) || ordinary[1] != ':' ||
+            (ordinary[2] != '\\' && ordinary[2] != '/')) return false;
         var name = Path.GetFileName(path);
         return (string.Equals(name, "pulse.exe", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(name, "PulseCustom.exe", StringComparison.OrdinalIgnoreCase)) && File.Exists(path);

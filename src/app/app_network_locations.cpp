@@ -124,6 +124,15 @@ void CancelNetworkLocations(AppState& state) {
     if (state.networkLocations) state.networkLocations->cancelled = true;
 }
 
+bool IsSystemNetworkShortcut(const AppState& state, const std::wstring& path) {
+    if (!state.networkLocations) return false;
+    for (const auto& location : state.networkLocations->items) {
+        if (location.shell_link && _wcsicmp(location.path.c_str(), path.c_str()) == 0)
+            return true;
+    }
+    return false;
+}
+
 bool OpenSystemNetworkShortcut(AppState& state, const std::wstring& path) {
     if (!state.networkLocations) return false;
     for (const auto& location : state.networkLocations->items) {
