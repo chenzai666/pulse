@@ -2487,10 +2487,14 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
         } else if (hit.region == ui::HitTestResult::ThemeToggle) {
             ToggleTheme(*s);
-        } else if (hit.region == ui::HitTestResult::SettingsButton) {
-            OpenSettingsTab(*s, 0);
-        } else if (hit.region == ui::HitTestResult::StatusCenterButton) {
-            ShowStatusCenter(*s);
+        } else if (hit.region == ui::HitTestResult::SettingsButton ||
+                   hit.region == ui::HitTestResult::StatusCenterButton ||
+                   hit.region == ui::HitTestResult::Properties) {
+            switch (hit.region) {
+            case ui::HitTestResult::SettingsButton: OpenSettingsTab(*s, 0); break;
+            case ui::HitTestResult::StatusCenterButton: ShowStatusCenter(*s); break;
+            default: ShowToolbarProperties(*s); break;
+            }
         } else if (hit.region == ui::HitTestResult::SettingsNav) {
             OpenSettingsTab(*s, hit.index);
         } else if (HandleSettingsControl(*s, hit)) {
@@ -2658,8 +2662,6 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             PasteIntoCurrent(*s);
         } else if (hit.region == ui::HitTestResult::Rename) {
             ShowRenameOverlay(*s);
-        } else if (hit.region == ui::HitTestResult::Properties) {
-            ShowToolbarProperties(*s);
         } else if (hit.region == ui::HitTestResult::Delete) {
             DeleteSelected(*s, (GetKeyState(VK_SHIFT) & 0x8000) != 0, true);
         } else if (hit.region == ui::HitTestResult::GroupHeader ||
