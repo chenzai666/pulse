@@ -113,6 +113,8 @@ enum MenuCmd : int {
     CmdApplyGroupToAllFolders = 195, // group menu: this grouping becomes every folder's default (#75)
     CmdExitPulse = 196,         // palette: quit even when closing keeps Pulse running (#57)
     CmdOpenInNewWindow = 197,   // sidebar destination: preserve the current window
+    CmdFileConversion = 198,
+    CmdFileConversionCancel = 199,
     CmdRecentBase = 200,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the

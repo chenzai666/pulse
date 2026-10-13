@@ -8,6 +8,7 @@
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
 #include "sidebar_navigation.h"
+#include "app_file_conversion.h"
 #include "app_sidebar_refresh.h"
 #include "tray_reveal.h"
 #include "group_wheel_ui.h"
@@ -1030,6 +1031,7 @@ std::vector<ui::FluentMenuItem> BuildFinderItemMenu(
         }
     }
     std::vector<ui::FluentMenuItem> items = app::BuildItemMenu(can_undo, undo_label, folder);
+    AppendFileConversionCommand(s, items);
     if (const auto* tab = ActiveTab(s))
         app::AppendRecentChangesCommand(items, app::RecentChangesMenuPath(*tab, false));
     ApplyWorkspacePinLabel(items, s);
@@ -1375,6 +1377,7 @@ void ShowItemContextMenu(AppState& s, POINT screen_pt) {
     s.context_menu.CloseMenu();
     if (HandleShellMenuCommand(s, cmd)) return;
     if (HandleQuickAccessCommand(s, cmd, quick_paths)) return;
+    if (HandleFileConversionCommand(s, cmd, paths, screen_pt)) return;
     const auto window_folder = [&](int base) {
         const int index = cmd - base;
         return index >= 0 && index < static_cast<int>(window_folders.size()) ? &window_folders[static_cast<size_t>(index)]

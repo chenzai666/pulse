@@ -18,6 +18,18 @@ namespace pulse {
 
 struct AppState;
 
+// A modal callback can dispatch WM_NCDESTROY and the host's deferred release.
+// Keep its state alive until the callback returns; window resources still close normally.
+class WindowStateLease {
+public:
+    explicit WindowStateLease(AppState& state);
+    ~WindowStateLease();
+    WindowStateLease(const WindowStateLease&) = delete;
+    WindowStateLease& operator=(const WindowStateLease&) = delete;
+private:
+    AppState& state_;
+};
+
 // Style of every Pulse main window (see WinMain for why WS_CAPTION without
 // WS_SYSMENU).
 constexpr DWORD kMainWindowStyle = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;

@@ -56,5 +56,9 @@ constexpr UINT WM_CONVERT_EXTERNAL_OPEN = WM_APP + 84;  // the open toast was cl
 constexpr UINT WM_ADOPT_OPEN_POLICY = WM_APP + 85;  // the "make it the default" toast was clicked (M7b)
 constexpr UINT WM_REOPEN_CLOSED_TABS = WM_APP + 86;  // the "N tabs closed" toast was clicked (M7f)
 constexpr UINT WM_QUICKLOOK_EVENT = WM_APP + 88;  // lParam: owned preview event token
+constexpr UINT WM_FILE_CONVERSION_EVENT = WM_APP + 90; // lParam: owned conversion event token
+constexpr UINT WM_FILE_CONVERSION_CANCEL = WM_APP + 91;
+constexpr UINT WM_FILE_CONVERSION_OPEN_OUTPUT = WM_APP + 92;
+constexpr UINT WM_FILE_CONVERSION_CHOOSE = WM_APP + 93;
 
 }  // namespace pulse

@@ -77,6 +77,7 @@
 #include "app_quicklook_routing.h"
 #include "listary_integration.h"
 #include "sidebar_navigation.h"
+#include "app_file_conversion.h"
 #include "../common/edition.h"
 #ifdef PULSE_WITH_SELFTEST
 #include "selftest_1b2.h"
@@ -629,6 +630,7 @@ static BOOL HandleInstanceCopyData(AppState& s, COPYDATASTRUCT* cds) {
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
     if (s && HandleDroppedNavigationMessage(*s, msg, wParam, lParam)) return 0;
+    if (s && HandleFileConversionMessage(*s, msg, wParam, lParam)) return 0;
     LRESULT listary_result = 0;
     if (s && ListaryWindowMessage(*s, msg, wParam, lParam, listary_result)) return listary_result;
     if (s && msg != 0 && msg == app::UpdateShutdownMessage())
@@ -2337,6 +2339,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) {
             DetachListaryWindow(*s);
             s->quickLook.Shutdown();
+            ShutdownFileConversion(*s);
             s->framePump.Stop();
             if (last_window) {
                 s->probe_scheduler.Clear();

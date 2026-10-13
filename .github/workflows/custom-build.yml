@@ -15,12 +15,25 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make nasm pkgconf curl tar xz
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+      - name: 从固定源码构建常见音视频转换组件
+        shell: msys2 {0}
+        run: bash scripts/build_conversion_ffmpeg.sh
       - name: 构建和验证完整定制版
         shell: pwsh
         env:
@@ -43,4 +56,5 @@ jobs:
             bench_data/selftest_1b2_last.log
             bench_data/tab-transfer/results.log
             bench_data/m10005_tab_pin_boundary.log
+            bench_data/file-conversion-ui.log
           if-no-files-found: ignore

@@ -10,6 +10,10 @@
 #include <cmath>
 #include <memory>
 #include <vector>
+#ifdef PULSE_WITH_SELFTEST
+#include <filesystem>
+#include <fstream>
+#endif
 
 namespace pulse {
 namespace {
@@ -200,8 +204,54 @@ bool RetireWindowState(AppState& s) {
 void ReleaseRetiredWindowStates() {
     // Moved out first: an AppState destructor must not see the list mid-change.
     std::vector<std::unique_ptr<AppState>> retired;
-    retired.swap(g_retired);
+    for (auto it = g_retired.begin(); it != g_retired.end();) {
+        if ((*it)->windowLifetimePins) ++it;
+        else {
+            retired.push_back(std::move(*it));
+            it = g_retired.erase(it);
+        }
+    }
 }
+
+WindowStateLease::WindowStateLease(AppState& state) : state_(state) { ++state_.windowLifetimePins; }
+WindowStateLease::~WindowStateLease() {
+    if (--state_.windowLifetimePins == 0)
+        if (const HWND host = state_.core.host.Hwnd()) PostMessageW(host, WM_RELEASE_WINDOW_STATES, 0, 0);
+}
+
+#ifdef PULSE_WITH_SELFTEST
+bool RunWindowStateLeaseTest() {
+    std::filesystem::create_directories(L"bench_data");
+    std::ofstream log(L"bench_data/file-conversion-ui.log");
+    bool passed = log.good();
+    const auto check = [&](bool value, const char* text) {
+        log << (value ? "[PASS] " : "[FAIL] ") << text << std::endl;
+        passed &= value;
+    };
+    auto owned = std::make_unique<AppState>();
+    owned->isolatedTest = true;
+    AppState* const state = owned.get();
+    g_windows.push_back(std::move(owned));
+    const auto retained = [&] {
+        return std::any_of(g_retired.begin(), g_retired.end(), [state](const auto& entry) { return entry.get() == state; });
+    };
+    {
+        WindowStateLease outer(*state);
+        {
+            WindowStateLease nested(*state);
+            check(state->windowLifetimePins == 2, "nested modal callbacks hold separate lifetime leases");
+            check(RetireWindowState(*state), "closed secondary state enters the real retirement path");
+            ReleaseRetiredWindowStates();
+            check(retained(), "host release while nested modal callback runs keeps the closed state alive");
+        }
+        ReleaseRetiredWindowStates();
+        check(retained() && state->windowLifetimePins == 1, "unwinding one modal frame cannot release its outer caller");
+    }
+    ReleaseRetiredWindowStates();
+    check(!retained(), "the last modal frame unwinds before the retired state is released");
+    return passed;
+}
+#endif
 
 void ReleaseWindowStatesAtExit() {
     std::vector<HWND> open;

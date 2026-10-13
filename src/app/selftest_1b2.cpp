@@ -98,6 +98,7 @@ bool RunOperationIntentUiTest();
 int RunTrayCompletionTest();
 bool RunTrayTagsUiTest();
 bool RunTabPinBoundaryTest();
+namespace pulse { bool RunWindowStateLeaseTest(); }
 bool RunDialogRecoveryTest();
 bool RunTagColorCommandTest();
 bool RunPreviewDeadlineTest();
@@ -7315,6 +7316,12 @@ int RunSelfTest1B2() {
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"tab-pin-boundary") == 0) {
         const bool passed = ::RunTabPinBoundaryTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"file-conversion-ui") == 0) {
+        const bool passed = pulse::RunWindowStateLeaseTest();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return passed ? 0 : 1;
     }

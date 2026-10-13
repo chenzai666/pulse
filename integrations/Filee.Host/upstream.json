@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "project": "KnifeLemon/Filee",
+  "version": "1.10.2",
+  "source_commit": "3daacc0ab3cf4052a3922b86d5dd5ceb5fcd8a54",
+  "source_url": "https://codeload.github.com/KnifeLemon/Filee/zip/3daacc0ab3cf4052a3922b86d5dd5ceb5fcd8a54",
+  "source_sha256": "2ed32995245614eec71245161deec2f2b9748166661df6d6f0e8f6e1b9191a3d",
+  "runtime_id": "win-x64",
+  "engines": [
+    {
+      "id": "rhwp", "version": "0.8.7", "license": "MIT",
+      "url": "https://github.com/edwardkim/rhwp/releases/download/v0.8.7/rhwp-v0.8.7-windows-x86_64.zip",
+      "sha256": "f7ac326e98f595ae8fecd8da7a614ee9a37db77bdf938782a8e07c9da473ec6f",
+      "bytes": 19796112, "kind": "zip", "required": ["rhwp.exe"]
+    },
+    {
+      "id": "7zip", "version": "26.03", "license": "LGPL-2.1-or-later AND unRAR restriction",
+      "url": "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.msi",
+      "sha256": "c0680064d698a62dd4a5a47f403db356a6531a5473e4c4b1d090ea2590513926",
+      "bytes": 2007040, "kind": "msi", "required": ["7z.exe", "7z.dll", "License.txt", "readme.txt"]
+    },
+    {
+      "id": "ffmpeg", "version": "9.0.2", "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "source_sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "kind": "source-build", "required": ["bin/ffmpeg.exe", "bin/ffprobe.exe"],
+      "build_script": "scripts/build_conversion_ffmpeg.sh",
+      "build_directory": "conversion-ffmpeg-source-runtime",
+      "note": "由固定 FFmpeg 与 LAME 源码在 CI 构建；仅内置 MPEG-4/AAC 和 libmp3lame 等必要编解码器，禁用 GPL/nonfree。二进制 SHA256 由实际构建清单记录。"
+    },
+    {
+      "id": "pandoc", "version": "3.12", "license": "GPL-2.0-or-later",
+      "url": "https://github.com/jgm/pandoc/releases/download/3.12/pandoc-3.12-windows-x86_64.zip",
+      "sha256": "2a77ebc2517d13e95056e76b1cd5b574cfe958ac61aa6058117d80c22ca19b79",
+      "bytes": 42114462, "kind": "zip", "required": ["pandoc.exe"]
+    }
+  ],
+  "sources": [
+    {
+      "id": "rhwp", "version": "0.8.7", "commit": "1a76570e833917d15817415a53c09ad61ab3203f",
+      "url": "https://codeload.github.com/edwardkim/rhwp/zip/1a76570e833917d15817415a53c09ad61ab3203f",
+      "sha256": "c5c0976b55a9668fb94031d13d3d979ee14a7ae338bc6fbd2a942781321cff94",
+      "bundle": false, "filename": "rhwp-0.8.7-source.zip",
+      "note": "MIT 源码固定至此提交；归档含大量测试数据，约 3.95 GiB，随包提供许可证和固定获取地址。"
+    },
+    {
+      "id": "7zip", "version": "26.03",
+      "url": "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-src.tar.xz",
+      "sha256": "9cbde5099c6deb73691b0579063da5827522ccbbcba3f0020fd04e8c8c16c0d4",
+      "bundle": true, "filename": "7z2603-src.tar.xz"
+    },
+    {
+      "id": "ffmpeg", "version": "9.0.2",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "bundle": true, "filename": "ffmpeg-9.0.2.tar.xz",
+      "note": "FFmpeg 上游固定源码；云端最小 LGPL 构建，保留源码、补丁、构建脚本、配置与许可。"
+    },
+    {
+      "id": "lame", "version": "3.100", "license": "LGPL-2.0-or-later",
+      "url": "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+      "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e",
+      "bundle": true, "filename": "lame-3.100.tar.gz"
+    },
+    {
+      "id": "pandoc", "version": "3.12", "commit": "381230ee36d8fa871c28f8982e22579f1a8f723b",
+      "url": "https://codeload.github.com/jgm/pandoc/zip/381230ee36d8fa871c28f8982e22579f1a8f723b",
+      "sha256": "b791c1c9211df1094cb49d21702d55c5b0a05beaedde2007ab0ecef84637cc64",
+      "bundle": true, "filename": "pandoc-3.12-source.zip"
+    }
+  ]
+}
