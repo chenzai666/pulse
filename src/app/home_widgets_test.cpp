@@ -47,6 +47,9 @@ int VerifyHomeNavigation(pulse::AppState& state,const std::filesystem::path& dir
     check(wait([&]{return ActiveTab(state) && !ActiveTab(state)->loading && ActiveTab(state)->EntryCount()==1;}),
         "最近访问页面从真实记录异步加载目录");
     auto* recent=ActiveTab(state);
+    TickRecentViews(state);
+    check(wait([&]{return !recent->loading;}) && !state.recentViewsRefreshPending,
+        "先完成目录访问触发的刷新，再独立验证新文件记录");
     const auto snapshot=recent->snapshot;
     RecordRecentOpen(state,file,app::PlaceItemKind::File);
     check(state.recentViewsRefreshPending && recent->snapshot==snapshot,"记录新文件时保留正在显示的快照并排队刷新");
