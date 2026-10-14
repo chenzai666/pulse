@@ -628,8 +628,26 @@ bool BeginTabDropPreview(AppState& s, size_t index, POINT grab, app::Pane* pane)
     s.paneDragPending = false;
     // The content that would remain after detaching is shown for same-window
     // split previews, while ownership, ordering and all pane state stay intact.
-    if (!pane && s.window_tabs.items.size() > 1)
-        SwitchTab(s, index + 1 < s.window_tabs.items.size() ? index + 1 : index - 1);
+    if (!pane && s.window_tabs.items.size() > 1) {
+        const auto& tabs = s.window_tabs.items;
+        size_t background = index + 1 < tabs.size() ? index + 1 : index - 1;
+        // Settings cannot receive panes. Keep the usual adjacent background
+        // when possible, but do not let an open settings tab hide other targets.
+        if (IsSettingsTab(tabs[background]->ActiveFolder())) {
+            for (size_t distance = 1; distance < tabs.size(); ++distance) {
+                if (index + distance < tabs.size() &&
+                    !IsSettingsTab(tabs[index + distance]->ActiveFolder())) {
+                    background = index + distance;
+                    break;
+                }
+                if (distance <= index && !IsSettingsTab(tabs[index - distance]->ActiveFolder())) {
+                    background = index - distance;
+                    break;
+                }
+            }
+        }
+        SwitchTab(s, background);
+    }
     // SetCapture on the same HWND still sends WM_CAPTURECHANGED. The press
     // already owns capture, so repeating it would cancel this new preview.
     if (GetCapture() != s.hwnd) SetCapture(s.hwnd);

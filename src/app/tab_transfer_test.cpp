@@ -115,12 +115,17 @@ bool RunTabDragInputTest() {
             GetKeyboardState(saved);
             memcpy(held, saved, sizeof(held));
             held[VK_LBUTTON] |= 0x80;
-            for (int path_case : {0, 1, 2}) {
+            for (int path_case : {0, 1, 2, 3}) {
                 const bool reorder_first = path_case != 0;
-                const size_t count = path_case == 2 ? 4 : 2;
+                const size_t count = path_case >= 2 ? 4 : 2;
                 log << "path_case=" << path_case << std::endl;
                 log << "reorder_first=" << reorder_first << std::endl;
                 Seed(state->window_tabs, count);
+                const LayoutTab* settings = nullptr;
+                if (path_case == 3) {
+                    settings = state->window_tabs.items[2].get();
+                    state->window_tabs.items[2]->ActiveFolder()->current_path = L"pulse:settings:general";
+                }
                 BindCurrentLayout(*state);
                 const auto* dragged = state->window_tabs.items[1].get();
                 D2D1_RECT_F tab{};
@@ -138,7 +143,7 @@ bool RunTabDragInputTest() {
                 const auto content = state->renderer.ContentRect(static_cast<float>(width), static_cast<float>(height));
                 const int dx = static_cast<int>(content.right - 20 * scale);
                 const int dy = static_cast<int>((content.top + content.bottom) / 2);
-                if (path_case == 2) {
+                if (path_case >= 2) {
                     bool preview_kept = true;
                     for (int move_y = y + 1; move_y <= dy; ++move_y) {
                         SendMessageW(state->hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x - 30, move_y));
@@ -154,12 +159,20 @@ bool RunTabDragInputTest() {
                 check(state->tabDropPending && state->dragGhost.on && GetCapture() == state->hwnd,
                     "moving from strip into content preserves captured preview through WndProc");
                 check(state->contentDrop && !state->contentDropAsTab, "content edge offers a split before release");
+                if (settings)
+                    check(!IsSettingsTab(ActiveTab(*state)), "settings neighbor does not become the split background");
                 SetKeyboardState(saved);
                 SendMessageW(state->hwnd, WM_LBUTTONUP, 0, MAKELPARAM(dx, dy));
                 check(state->window_tabs.items.size() == count - 1 && state->window_tabs.Active()->VisiblePanes().size() == 2,
                     "button release commits the actual same-window split");
                 check(!state->tabDropPending && !state->tabDragPending && GetCapture() != state->hwnd,
                     "release clears capture and every drag flag");
+                if (settings) {
+                    const auto found = std::find_if(state->window_tabs.items.begin(), state->window_tabs.items.end(),
+                        [settings](const auto& tab) { return tab.get() == settings; });
+                    check(found != state->window_tabs.items.end() && (*found)->VisiblePanes().size() == 1 &&
+                        IsSettingsTab((*found)->ActiveFolder()), "split preserves the separate settings tab unchanged");
+                }
                 (void)dragged;
                 CancelPendingTabDrop(*state);
             }

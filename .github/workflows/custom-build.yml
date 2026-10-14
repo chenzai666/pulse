@@ -10,6 +10,10 @@ on:
         type: choice
         options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics]
         default: full
+      verify_settings_regression:
+        description: '先验证设置页相邻场景在旧实现失败，再验证修复版本'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -85,7 +89,7 @@ jobs:
           if ('${{ inputs.validation_scope }}' -eq 'tab-drag-diagnostics') {
             ./scripts/build_tab_drag_ci.ps1 -DiagnosticsOnly
           } else {
-            ./scripts/build_tab_drag_ci.ps1
+            ./scripts/build_tab_drag_ci.ps1 -VerifySettingsRegression:('${{ inputs.verify_settings_regression }}' -eq 'true')
           }
       - uses: actions/upload-artifact@v4
         if: (inputs.validation_scope == 'tab-drag' || inputs.validation_scope == 'tab-drag-diagnostics') && success()

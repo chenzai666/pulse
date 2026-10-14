@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$DiagnosticsOnly)
+param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -74,6 +74,40 @@ if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target pulse
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
+if ($VerifySettingsRegression) {
+    if ($DiagnosticsOnly) { throw '旧实现复现需要启用定向测试' }
+    $regressionBase = '3762af04f941d0b24ef328c626c842f5a2a7f9eb'
+    & git fetch --no-tags --depth=1 origin $regressionBase
+    if ($LASTEXITCODE) { throw '无法读取待复现的旧实现' }
+    $detachFile = Join-Path $taskRepo 'src/app/tab_detach.cpp'
+    $fixedSource = [IO.File]::ReadAllBytes($detachFile)
+    try {
+        $oldSource = & git show "${regressionBase}:src/app/tab_detach.cpp"
+        if ($LASTEXITCODE) { throw '无法读取旧拖动实现' }
+        [IO.File]::WriteAllText($detachFile, ($oldSource -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+        & $buildBatch
+        if ($LASTEXITCODE) { throw '旧实现复现构建失败' }
+        $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
+        $env:PULSE_SELFTEST_CASE = 'tab-drag-input'
+        $baseline = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
+        if (-not $baseline.WaitForExit(60000)) { $baseline.Kill(); $baseline.WaitForExit(); throw '旧实现复现超时' }
+        $baseline.Refresh()
+        $baselineLog = Join-Path $taskBuild 'settings-neighbor-before.log'
+        Copy-Item -LiteralPath 'bench_data/tab-drag-input/results.log' -Destination $baselineLog
+        $failures = @(Get-Content -LiteralPath $baselineLog | Where-Object { $_.StartsWith('[FAIL]') })
+        $expected = @('[FAIL] content edge offers a split before release',
+            '[FAIL] settings neighbor does not become the split background',
+            '[FAIL] button release commits the actual same-window split')
+        if ($baseline.ExitCode -eq 0 -or $expected[1] -notin $failures -or
+            @($failures | Where-Object { $_ -notin $expected }).Count) {
+            throw '旧实现没有按预期复现设置页阻断分栏，或出现无关失败'
+        }
+        Write-Host '已确认旧实现复现：相邻设置页阻断分栏，其余失败均属于同一场景。'
+    } finally {
+        [IO.File]::WriteAllBytes($detachFile, $fixedSource)
+        Remove-Item Env:PULSE_SELFTEST_CASE -ErrorAction SilentlyContinue
+    }
+}
 & $buildBatch
 if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
