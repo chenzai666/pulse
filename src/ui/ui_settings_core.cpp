@@ -313,7 +313,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         draw_card(lay.home_widgets_card);
         const std::wstring widget_titles[]={l10n::Get(I::SidebarQuickAccess),
             l10n::Pick(L"驱动器",L"Drives"),l10n::Get(I::SidebarNetworkLocations),
-            l10n::Get(I::SidebarTags),l10n::Pick(L"最近使用的文件",L"Recent files")};
+            l10n::Get(I::SidebarTags),l10n::Pick(L"最近访问",L"Recent activity")};
         const wchar_t* widget_icons[]={L"\xE8A9",L"\xE977",L"\xE968",L"\xE8EC",L"\xE823"};
         for(int i=0;i<5;++i) {
             const auto r=lay.home_widget_row[i];

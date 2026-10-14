@@ -1274,10 +1274,15 @@ void RefreshSidebarDriveCapacity(std::vector<SidebarEntry>& drives) {
         entry.detail.clear();
         entry.used_ratio = 0.0f;
         entry.danger = false;
+        entry.free_bytes = entry.total_bytes = 0;
+        entry.capacity_valid = false;
         if (!GetDiskFreeSpaceExW(entry.path.c_str(), &free_bytes, &total_bytes, nullptr))
             continue;
         const uint64_t total = total_bytes.QuadPart;
         const uint64_t free = std::min(free_bytes.QuadPart, total_bytes.QuadPart);
+        entry.free_bytes = free;
+        entry.total_bytes = total;
+        entry.capacity_valid = total > 0;
         entry.detail = pulse::format::ByteSize(free, false, pulse::format::ByteSizeStyle::Compact)
             + L" / " + pulse::format::ByteSize(total, false, pulse::format::ByteSizeStyle::Compact);
         if (total > 0) {
@@ -1357,6 +1362,15 @@ SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
         recycle_bin.detail = occupancy;
     }
     m.quick_access.push_back(std::move(recycle_bin));
+
+    // BuildSidebarModel 在后台加载；主页绘制只消费缓存，不重新查询 Shell。
+    m.home_folders.push_back(m.quick_access[1]);
+    m.home_folders.push_back(m.quick_access[2]);
+    m.home_folders.push_back(MakeKnownEntry(FOLDERID_Documents,L"\xE8A5",L"Documents",ui::HexColor(0x60A5FA),l10n::Pick(L"文档",L"Documents")));
+    m.home_folders.push_back(MakeKnownEntry(FOLDERID_Pictures,L"\xEB9F",L"Pictures",ui::HexColor(0x38BDF8),l10n::Pick(L"图片",L"Pictures")));
+    m.home_folders.push_back(MakeKnownEntry(FOLDERID_Music,L"\xE8D6",L"Music",ui::HexColor(0xF472B6),l10n::Pick(L"音乐",L"Music")));
+    m.home_folders.push_back(MakeKnownEntry(FOLDERID_Videos,L"\xE714",L"Videos",ui::HexColor(0xC084FC),l10n::Pick(L"视频",L"Videos")));
+    m.home_folders.push_back(m.quick_access.back());
 
     static const uint32_t kDrivePalette[] = { 0x60A5FA, 0x34D399, 0xFBBF24, 0xC084FC };
     DWORD drives = GetLogicalDrives();

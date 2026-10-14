@@ -1603,7 +1603,11 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
         DrawHomeWidgets(painter_, *compositor_, theme, vm.home_widgets, bounds,
             std::clamp(pane.scroll_y, 0.0f, maximum), scale_,
             vm.hover_region == static_cast<int>(HitTestResult::HomeWidget) && vm.hover_pane_index == pane_index
-                ? vm.hover_control_index : -1);
+                ? vm.hover_control_index : -1,
+            [this](std::wstring_view glyph,const D2D1_RECT_F& icon) {
+                const int svg=FluentSvgIdForGlyph(glyph);
+                return !IsHighContrast() && svg && DrawFluentSvg(svg,icon,1.0f,nullptr,true);
+            });
         return;
     }
 

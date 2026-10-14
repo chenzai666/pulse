@@ -533,6 +533,8 @@ struct SidebarEntry {
     std::wstring path;
     bool is_drive = false;
     float used_ratio = 0.0f;
+    uint64_t free_bytes = 0, total_bytes = 0;
+    bool capacity_valid = false;
     bool expandable = false;
     // Built-in quick-access link (BuiltinQuickAccess), -1 for user entries.
     // The quick-access menu toggles these one by one.
@@ -584,6 +586,7 @@ int SidebarSectionIndex(const ui::WindowViewModel& vm, int section_id);
 struct SidebarModel {
     std::vector<SidebarEntry> system_networks;
     std::vector<SidebarEntry> quick_access;
+    std::vector<SidebarEntry> home_folders; // 主页常用目录缓存，与侧边栏显示开关无关。
     std::vector<SidebarEntry> saved_searches;
     std::vector<SidebarEntry> drives;
     std::vector<SidebarEntry> cloud;   // OneDrive accounts (empty while signed out)

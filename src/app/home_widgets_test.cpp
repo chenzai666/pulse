@@ -37,11 +37,25 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
         tab->SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
         app::SidebarEntry quick;quick.label=L"桌面";quick.path=L"C:\\fixture\\Desktop";quick.glyph=L"\xE8B7";
         state->sidebar.quick_access.push_back(quick);
+        const wchar_t* names[]={L"桌面",L"下载",L"文档",L"图片",L"音乐",L"视频",L"回收站"};
+        const wchar_t* glyphs[]={L"\xE7F4",L"\xE896",L"\xE8A5",L"\xEB9F",L"\xE8D6",L"\xE714",L"\xE75C"};
+        for(int i=0;i<7;++i) {
+            auto folder=quick;folder.label=names[i];folder.glyph=glyphs[i];folder.path=L"C:\\fixture\\"+std::wstring(names[i]);
+            state->sidebar.home_folders.push_back(std::move(folder));
+        }
+        state->places.quick_access_paths={L"C:\\fixture\\wallpaper",L"C:\\fixture\\工作资料"};
         app::SidebarEntry drive;drive.label=L"本地磁盘 (C:)";drive.path=L"C:\\";drive.detail=L"128 GB 可用，共 256 GB";
-        drive.glyph=L"\xE977";drive.is_drive=true;drive.used_ratio=0.5f;state->sidebar.drives.push_back(drive);
+        drive.glyph=L"\xE7F1";drive.is_drive=true;drive.used_ratio=0.5f;
+        drive.capacity_valid=true;drive.free_bytes=128ull<<30;drive.total_bytes=256ull<<30;
+        for(int i=0;i<4;++i) {
+            auto disk=drive;disk.label=L"本地磁盘 ("+std::wstring(1,static_cast<wchar_t>(L'C'+i))+L":)";
+            disk.path=std::wstring(1,static_cast<wchar_t>(L'C'+i))+L":\\";
+            state->sidebar.drives.push_back(std::move(disk));
+        }
         state->places.networks.push_back({L"资料共享",L"\\\\offline.invalid\\data"});
         state->places.tags.push_back({L"work",L"工作",0x0078D4,{L"C:\\fixture\\report.txt"}});
         state->places.recent_items.push_back({L"C:\\fixture\\项目说明.txt",app::PlaceItemKind::File,0});
+        state->places.recent_items.push_back({L"C:\\fixture\\最近访问的文件夹",app::PlaceItemKind::Folder,0});
         const auto bounds=D2D1::RectF(0,0,static_cast<float>(state->compositor.Width()),static_cast<float>(state->compositor.Height()));
         const uint32_t all_sections=(1u<<app::kSidebarSectionCount)-1;
         for(int section=0;section<app::kSidebarSectionCount;++section) {
@@ -104,6 +118,15 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
             const auto sidebar=L"home-sidebar-settings-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
             check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/sidebar).c_str()),"侧边栏恢复设置明暗主题截图");
         }
+        state->compositor.Resize(static_cast<int>(640*scale),static_cast<int>(920*scale));
+        const auto narrow_bounds=D2D1::RectF(0,0,static_cast<float>(state->compositor.Width()),static_cast<float>(state->compositor.Height()));
+        for(bool dark:{false,true}) {
+            const auto vm=BuildVm(*state,false);
+            auto* dc=state->compositor.Dc();dc->BeginDraw();
+            state->renderer.Render(vm,narrow_bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            const auto name=L"home-narrow-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
+            check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/name).c_str()),"窄窗口主页卡片换行截图");
+        }
         const HWND hwnd=state->hwnd;state->hwnd=nullptr;DestroyWindow(hwnd);
     }
     UnregisterClassW(wc.lpszClassName,wc.hInstance);
@@ -139,7 +162,23 @@ int RunHomeWidgetsTest(const wchar_t* output) {
     check(all.sections.size()==5,"主页包含五个真实组件");
     check(all.sections[2].items.size()==1 && all.sections[2].items[0].path==places.networks[0].unc,"网络组件读取缓存，不要求共享在线");
     check(all.sections[3].items[0].path==app::MakeTagPath(L"tag-1"),"标签链接使用稳定标签标识");
-    check(all.sections[4].items.size()==1 && all.sections[4].items[0].file,"最近文件组件过滤文件夹");
+    check(all.sections[4].items.size()==2 && !all.sections[4].items[0].file && all.sections[4].items[1].file,
+        "最近访问同时包含文件夹和文件并保留正确打开方式");
+    sidebar.home_folders={shortcut};
+    for(const wchar_t* name:{L"Downloads",L"Documents",L"Pictures",L"Music",L"Videos"}) {
+        auto folder=shortcut;folder.label=name;folder.path=L"C:\\fixture\\"+std::wstring(name);
+        sidebar.home_folders.push_back(std::move(folder));
+    }
+    auto recycle=shortcut;recycle.path=app::MakeRecyclePath();sidebar.home_folders.push_back(recycle);
+    places.quick_access_paths={shortcut.path,L"C:\\fixture\\wallpaper"};
+    const auto folders=app::BuildHomeWidgets(sidebar,places,0);
+    check(folders.sections[0].items.size()==8,"主页六个常用目录及回收站、固定文件夹去重后显示");
+    sidebar.drives[0].capacity_valid=true;sidebar.drives[0].free_bytes=128ull<<30;sidebar.drives[0].total_bytes=256ull<<30;
+    const auto capacity=app::BuildHomeWidgets(sidebar,places,0).sections[1].items[0].detail;
+    check(capacity.find(L"128.00 GiB")!=std::wstring::npos && capacity.find(L"256.00 GiB")!=std::wstring::npos,
+        "磁盘卡片由缓存显示完整可用空间和总容量");
+    const auto wide=ui::HitHomeWidgets(folders,D2D1::RectF(0,0,1100,700),0,1,1050,100);
+    check(wide.index==5 && wide.path==sidebar.home_folders[5].path,"宽主页六列卡片绘制与点击位置一致");
     for(float scale:{1.0f,1.25f,2.0f}) {
         const auto bounds=D2D1::RectF(20,30,20+320*scale,30+600*scale);
         const auto hit=ui::HitHomeWidgets(all,bounds,0,scale,bounds.left+30*scale,bounds.top+120*scale);

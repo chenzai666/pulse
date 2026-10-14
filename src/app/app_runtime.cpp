@@ -1021,10 +1021,12 @@ std::wstring RecycleOccupancyText(const fs::RecycleBinInfo& info) {
 
 void ApplyRecycleOccupancy(AppState& s) {
     const std::wstring detail = RecycleOccupancyText(s.recycle_info);
-    for (auto& entry : s.sidebar.quick_access) {
-        if (entry.path == app::MakeRecyclePath()) {
-            entry.detail = detail;
-            break;
+    for (auto* entries : { &s.sidebar.quick_access, &s.sidebar.home_folders }) {
+        for (auto& entry : *entries) {
+            if (entry.path == app::MakeRecyclePath()) {
+                entry.detail = detail;
+                break;
+            }
         }
     }
     ForEachPane(s, [&](app::Pane& pane) {
