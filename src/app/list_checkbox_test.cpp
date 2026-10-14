@@ -94,7 +94,8 @@ bool RunListCheckboxTest() {
             click(2);
             check(tab->SelectedCount() == 2 && tab->IsSelected(0) && tab->IsSelected(2), "checkboxes add without Ctrl");
             click(0, true);
-            check(tab->SelectedCount() == 1 && tab->IsSelected(2) && tab->current_path == L"C:\\Pulse-checkbox-fixture",
+            check(tab->SelectedCount() == 1 && tab->IsSelected(2) &&
+                tab->current_path == fs::NormalizePath(L"C:\\Pulse-checkbox-fixture"),
                 "double-click toggles without opening the row");
             check(vm().pane.visible_selected_count == 1, "header sees a partial selection");
             for (bool dark : {false, true}) {
@@ -128,6 +129,10 @@ bool RunListCheckboxTest() {
             tab->scroll_y = 0;
             click(-1);
             check(tab->SelectedCount() == 0 && vm().pane.EntryCount() == 0, "empty view cannot select source items");
+            tab->SelectOnly(1);
+            click(-1);
+            check(tab->IsSelected(1), "disabled empty-view checkbox preserves hidden selection");
+            tab->ClearSelection();
             tab->filter_text.clear();
             auto* original_pane = state->pane;
             app::AddPaneFromTab(*state->window_tabs.Active(), app::MakeSingleLayoutTab(L"C:\\second-fixture"), app::ContentDrop::Right);

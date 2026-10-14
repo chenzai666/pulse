@@ -2290,7 +2290,8 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 } else {
                     ui::PaneViewModel view;
                     app::FillPaneViewModel(view, *s->pane, &s->places);
-                    if (view.EntryCount() && static_cast<size_t>(view.visible_selected_count) == view.EntryCount())
+                    if (view.EntryCount() == 0) return 0;
+                    if (static_cast<size_t>(view.visible_selected_count) == view.EntryCount())
                         tab->ClearSelection();
                     else {
                         std::vector<int> matches;

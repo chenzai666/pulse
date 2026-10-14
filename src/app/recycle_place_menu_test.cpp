@@ -234,7 +234,7 @@ bool RunRecyclePlaceMenuTest() {
         check(app::AddPaneFromTab(*layout, app::MakeSingleLayoutTab(app::MakeRecyclePath()), placement),
             "existing split model accepts the recycle virtual location");
     }
-    check(original_pane->ActiveTab()->current_path == L"C:\\synthetic-recycle-menu" &&
+    check(original_pane->ActiveTab()->current_path == fs::NormalizePath(L"C:\\synthetic-recycle-menu") &&
         layout->VisiblePanes().size() == 3,
         "new recycle panes preserve the original folder and its pane");
     app::AddPaneFromTab(*layout, app::MakeSingleLayoutTab(app::MakeRecyclePath()), app::ContentDrop::Right);
