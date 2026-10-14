@@ -3792,6 +3792,8 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 BindCurrentLayout(*s);
             }
             shown = true;
+        } else if (HandleHomeWidgetContextMenu(*s, hit, sp)) {
+            shown = true;
         } else if (hit.region == ui::HitTestResult::BreadcrumbSegment && !hit.path.empty()) {
             ShowBreadcrumbMenu(*s, hit.path, sp);
             shown = true;
@@ -3813,7 +3815,9 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             const bool curated = tab && app::ParsePulsePath(
                 tab->current_path, &virtual_kind, nullptr) &&
                 (virtual_kind == L"starred" || virtual_kind == L"recent");
-            if (curated) {
+            if (curated && virtual_kind == L"recent") {
+                ShowHomeItemMenu(*s, EntryFullPath(*tab, hit.index), !tab->EntryAt(hit.index).is_dir, true, sp);
+            } else if (curated) {
                 ShowCuratedItemMenu(*s, EntryFullPath(*tab, hit.index),
                                     virtual_kind == L"recent", sp);
             } else {

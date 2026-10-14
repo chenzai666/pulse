@@ -9,8 +9,11 @@
 #include "app_internal.h"
 #include "app_commands.h"
 #include "startup_location.h"
+#include "app_input.h"
 #include "../ui/ui_renderer_internal.h"
+#include <algorithm>
 #include <memory>
+#include <optional>
 
 namespace {
 int VerifyHomeNavigation(pulse::AppState& state,const std::filesystem::path& directory,std::ofstream& log) {
@@ -197,6 +200,151 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
     return failures;
 }
 }
+int RunHomeMenuTest(const wchar_t* output) {
+    using namespace pulse;
+    const auto directory = std::filesystem::absolute(output).parent_path();
+    std::filesystem::create_directories(directory);
+    std::ofstream log{std::filesystem::path(output)};
+    int failed = 0;
+    const auto check = [&](bool ok, const char* label) {
+        log << (ok ? "[PASS] " : "[FAIL] ") << label << '\n';
+        log.flush();
+        if (!ok) ++failed;
+        return ok;
+    };
+    const auto previous_language = l10n::preference();
+    l10n::SetLanguage(L"zh-CN");
+    for (float scale : {1.0f, 1.5f, 2.0f}) {
+        auto state = std::make_unique<AppState>();
+        state->isolatedTest = true;
+        state->scale = scale;
+        state->places.persist = state->appPrefs.persist = state->ctxMenuPrefs.persist = state->searchHistory.persist = false;
+        state->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
+            L"STATIC", L"Pulse 最近访问菜单测试", WS_POPUP, -30000, -30000,
+            static_cast<int>(1100 * scale), static_cast<int>(850 * scale),
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!check(state->hwnd && state->compositor.Init(state->hwnd), "初始化隔离菜单渲染器")) {
+            if (state->hwnd) DestroyWindow(state->hwnd);
+            state->hwnd = nullptr;
+            continue;
+        }
+        state->renderer.SetCompositor(&state->compositor);
+        state->renderer.SetScale(scale);
+        state->compositor.RecreateTextFormats(scale);
+        state->window_tabs.NewTab(std::wstring(app::kHomePath));
+        BindCurrentLayout(*state);
+        auto* tab = ActiveTab(*state);
+        tab->loading = false;
+        tab->SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
+        const std::wstring folder = L"C:\\fixture\\最近访问的文件夹";
+        const std::wstring file = L"C:\\fixture\\工作资料\\说明文档.txt";
+        const auto parent = fs::ParentPath(file);
+        state->places.RecordRecent(folder, app::PlaceItemKind::Folder);
+        state->places.RecordRecent(file, app::PlaceItemKind::File);
+        const auto contains_command = [](const auto& menu, int command) {
+            return std::any_of(menu.begin(), menu.end(), [&](const auto& item) { return item.command == command; });
+        };
+        auto menu = BuildHomeItemMenu(*state, folder, false, true);
+        check(contains_command(menu, app::CmdPinQuickAccess) && contains_command(menu, app::CmdRemoveRecent) &&
+            contains_command(menu, app::CmdOpenInNewTab), "最近访问目录菜单提供固定、移除记录和新标签打开");
+        check(BuildHomeItemMenu(*state, std::wstring(app::kHomePath), false, true).empty() &&
+            !HandleHomeItemMenuCommand(*state, std::wstring(app::kHomePath), false, true, app::CmdPinQuickAccess),
+            "虚拟位置不能误固定为普通文件夹");
+        const auto bit = 1u << static_cast<unsigned>(app::SidebarSectionId::QuickAccess);
+        state->sidebarHiddenMask = state->sidebarCollapsedMask = bit;
+        auto other = std::make_unique<AppState>(state->core);
+        other->isolatedTest = true;
+        other->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP,
+            -30000, -30000, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        other->sidebarHiddenMask = other->sidebarCollapsedMask = bit;
+        state->core.windows.Add(state->hwnd, state.get());
+        state->core.windows.Add(other->hwnd, other.get());
+        const auto bounds = D2D1::RectF(0, 0, static_cast<float>(state->compositor.Width()),
+            static_cast<float>(state->compositor.Height()));
+        const auto find_point = [&](const std::wstring& path, bool home) -> std::optional<POINT> {
+            const auto vm = BuildVm(*state, false);
+            for (int y = 0; y < static_cast<int>(bounds.bottom); y += 8)
+                for (int x = 0; x < static_cast<int>(bounds.right); x += 8) {
+                    const auto hit = state->renderer.HitTest(vm, bounds, static_cast<float>(x), static_cast<float>(y));
+                    if ((home && hit.region == ui::HitTestResult::HomeWidget && hit.path == path) ||
+                        (!home && hit.region == ui::HitTestResult::Row && hit.index >= 0 &&
+                            EntryFullPath(*ActiveTab(*state), hit.index) == path)) return POINT{x, y};
+                }
+            return {};
+        };
+        int popup_calls = 0;
+        SetHomeMenuCallbackForTest([&](const auto& items) {
+            ++popup_calls;
+            check(contains_command(items, app::CmdPinQuickAccess), "真实右键菜单收到固定命令");
+            return app::CmdPinQuickAccess;
+        });
+        const auto folder_point = find_point(folder, true);
+        if (check(folder_point.has_value(), "真实主页渲染命中最近访问目录卡片"))
+            HandleRButtonUp(state.get(), state->hwnd, WM_RBUTTONUP, 0, MAKELPARAM(folder_point->x, folder_point->y));
+        check(popup_calls == 1 && state->places.IsQuickAccessPinned(folder), "主页右键输入路径实际固定目录");
+        check(!(state->sidebarHiddenMask & bit) && !(state->sidebarCollapsedMask & bit), "固定后显示并展开快速访问分组");
+        check(other->hwnd && !(other->sidebarHiddenMask & bit) && !(other->sidebarCollapsedMask & bit) &&
+            other->places.IsQuickAccessPinned(folder), "同进程另一窗口同步固定数据并显示快速访问");
+        auto vm = BuildVm(*state, false);
+        const int section = app::SidebarSectionIndex(vm, static_cast<int>(app::SidebarSectionId::QuickAccess));
+        check(section >= 0 && std::any_of(vm.sidebar[section].items.begin(), vm.sidebar[section].items.end(),
+            [&](const auto& item) { return item.path == folder; }), "固定后左侧快速访问立即包含目录");
+        check(std::any_of(vm.home_widgets.sections[0].items.begin(), vm.home_widgets.sections[0].items.end(),
+            [&](const auto& item) { return item.path == folder; }), "固定后主页快速访问立即包含同一目录");
+        menu = BuildHomeItemMenu(*state, folder, false, true);
+        check(contains_command(menu, app::CmdUnpinQuickAccess) && !contains_command(menu, app::CmdPinQuickAccess),
+            "已固定目录改为取消固定");
+        HandleHomeItemMenuCommand(*state, folder, false, true, app::CmdPinQuickAccess);
+        check(state->places.quick_access_paths.size() == 1, "重复固定不产生重复入口");
+        HandleHomeItemMenuCommand(*state, folder, false, true, app::CmdUnpinQuickAccess);
+        check(!state->places.IsQuickAccessPinned(folder) && state->places.FindRecent(folder), "取消固定保留访问历史");
+        menu = BuildHomeItemMenu(*state, file, true, true);
+        check(std::any_of(menu.begin(), menu.end(), [](const auto& item) {
+            return item.command == app::CmdPinQuickAccess && item.text == L"将所在文件夹固定到快速访问";
+        }), "文件菜单明确说明固定所在文件夹");
+        const auto file_point = find_point(file, true);
+        if (check(file_point.has_value(), "真实主页命中最近访问文件卡片"))
+            HandleRButtonUp(state.get(), state->hwnd, WM_RBUTTONUP, 0, MAKELPARAM(file_point->x, file_point->y));
+        check(popup_calls == 2 && state->places.IsQuickAccessPinned(parent) && !state->places.IsQuickAccessPinned(file),
+            "文件右键只固定父目录，不将文件作为目录保存");
+        for (bool dark : {false, true}) {
+            ui::FluentMenu popup;
+            if (check(popup.Create(state->hwnd, &state->compositor, scale), "建立隔离菜单截图器")) {
+                popup.SetTheme(dark, ui::HexColor(0x0078D4));
+                for (bool is_file : {false, true}) {
+                    const auto name = L"home-menu-" + std::to_wstring(static_cast<int>(scale * 100)) +
+                        (dark ? L"-dark-" : L"-light-") + (is_file ? L"file.png" : L"folder.png");
+                    check(popup.SaveDebugSnapshot((directory / name).c_str(),
+                        BuildHomeItemMenu(*state, is_file ? file : folder, is_file, true), 1), "中文右键菜单渲染截图");
+                }
+            }
+        }
+        HandleHomeItemMenuCommand(*state, file, true, true, app::CmdUnpinQuickAccess);
+        tab->current_path = app::MakeRecentPath();
+        auto entries = std::make_shared<std::vector<fs::DirEntry>>();
+        fs::DirEntry entry; entry.name = L"说明文档.txt"; entry.full_path = file; entries->push_back(entry);
+        tab->SetSnapshot(entries);
+        const auto row_point = find_point(file, false);
+        if (check(row_point.has_value(), "真实最近访问列表命中文件行"))
+            HandleRButtonUp(state.get(), state->hwnd, WM_RBUTTONUP, 0, MAKELPARAM(row_point->x, row_point->y));
+        check(popup_calls == 3 && state->places.IsQuickAccessPinned(parent), "独立最近访问列表右键复用固定父目录功能");
+        SetHomeMenuCallbackForTest({});
+        HandleHomeItemMenuCommand(*state, file, true, true, app::CmdRemoveRecent);
+        check(!state->places.FindRecent(file) && state->places.IsQuickAccessPinned(parent) && state->recentViewsRefreshPending,
+            "移除访问记录保留固定入口，并排队刷新最近访问");
+        check(other->recentViewsRefreshPending, "另一窗口最近访问列表同时排队刷新");
+        if (scale == 1.0f) failed += VerifyHomeNavigation(*state, directory, log);
+        check(!IsWindowVisible(state->hwnd), "测试窗口未显示且没有修改用户配置");
+        state->core.windows.Remove(other->hwnd);
+        if (other->hwnd) DestroyWindow(other->hwnd);
+        other->hwnd = nullptr;
+        state->core.windows.Remove(state->hwnd);
+        const HWND hwnd = state->hwnd; state->hwnd = nullptr; DestroyWindow(hwnd);
+    }
+    l10n::SetLanguage(l10n::LanguageId(previous_language));
+    return failed ? 1 : 0;
+}
+
 int RunHomeWidgetsTest(const wchar_t* output) {
     using namespace pulse;
     std::ofstream log{std::filesystem::path(output)};
