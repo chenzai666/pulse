@@ -1,4 +1,5 @@
 #requires -Version 7.2
+param([switch]$DiagnosticsOnly)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -61,19 +62,21 @@ $vsRoot = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Micr
 if (-not $vsRoot) { throw '需要 Visual Studio 2022 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
+$selftestMode = if ($DiagnosticsOnly) { 'OFF' } else { 'ON' }
 $buildBatch = Join-Path $taskBuild 'compile-native-fixes.bat'
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
-cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
+cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target pulse
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
+if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 foreach ($testCase in @('tab-drag-input', 'tab-transfer', 'tab-pin-boundary')) {
@@ -99,6 +102,7 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $productionBatch -Encoding utf8
 & $productionBatch
 if ($LASTEXITCODE) { throw '移除测试入口后的正式构建失败' }
+}
 Copy-Item -LiteralPath (Join-Path $taskBuild 'pulse.exe') -Destination (Join-Path $payload 'pulse.exe')
 & "$PSScriptRoot/package_custom.ps1" -BuildDir $payload
 # 小型更新包仅包含相对固定基线变化的文件；安装端仍须核对完整清单。

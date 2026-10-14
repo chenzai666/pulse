@@ -10,6 +10,7 @@
 #include "window_identity_ui.h"
 #include "window_merge.h"
 #include "window_registry.h"
+#include "../common/runtime_log.h"
 
 #include <dwmapi.h>
 
@@ -629,11 +630,16 @@ bool BeginTabDropPreview(AppState& s, size_t index, POINT grab, app::Pane* pane)
     // SetCapture on the same HWND still sends WM_CAPTURECHANGED. The press
     // already owns capture, so repeating it would cancel this new preview.
     if (GetCapture() != s.hwnd) SetCapture(s.hwnd);
+    diagnostics::runtime::Event("tab_preview_begin", {{"pending", s.tabDropPending},
+        {"capture", GetCapture() == s.hwnd}, {"pane", pane != nullptr}, {"tabs", s.window_tabs.items.size()}});
     InvalidateRect(s.hwnd, nullptr, FALSE);
     return true;
 }
 
 bool CancelPendingTabDrop(AppState& s) {
+    if (s.tabDropPending)
+        diagnostics::runtime::Event("tab_preview_cancel", {{"capture", GetCapture() == s.hwnd},
+            {"moving", g_moving != nullptr}, {"pending_owner", g_pending.window == s.hwnd}});
     AppState* source = &s;
     if (g_pending.window) {
         if (g_pending.window != s.hwnd && g_drop.window != s.hwnd && g_ghost != s.hwnd) return false;
@@ -696,6 +702,9 @@ bool FinishPendingTabDrop(AppState& s, int mx, int my) {
     // Sidebar, toolbar, status bar, a full layout or a stale target never
     // creates an unexpected window while the pointer is inside Pulse.
     const bool new_window = !target && !drop.over && outside;
+    diagnostics::runtime::Event("tab_preview_release", {{"target", target != nullptr},
+        {"same_window", target == &s}, {"zone", static_cast<uint64_t>(drop.zone)},
+        {"outside", outside}, {"new_window", new_window}, {"tabs", s.window_tabs.items.size()}});
     if ((!target && !new_window) || (target == &s && drop.zone == app::ContentDrop::Center))
         return CancelPendingTabDrop(s);
     ClearPendingPreview(s, false);
@@ -778,7 +787,20 @@ bool TryDetachDraggedTab(AppState& s, int mx, int my) {
     const ui::WindowViewModel vm = BuildVm(s, false);
     const float width = static_cast<float>(s.compositor.Width());
     D2D1_RECT_F first{}, self{};
-    if (!FirstTabRect(s, vm, &first) || !s.renderer.TabItemRect(vm, width, index, &self)) return false;
+    const bool first_ok = FirstTabRect(s, vm, &first);
+    const bool self_ok = s.renderer.TabItemRect(vm, width, index, &self);
+    // Numeric, bounded diagnostics distinguish input/geometry/capture failures
+    // on machines where the isolated pointer-flow regression cannot reproduce.
+    static ULONGLONG next_trace = 0;
+    const ULONGLONG now_tick = GetTickCount64();
+    if (now_tick >= next_trace) {
+        next_trace = now_tick + 250;
+        diagnostics::runtime::Event("tab_detach_threshold", {{"first", first_ok}, {"self", self_ok},
+            {"index", static_cast<uint64_t>(index)}, {"views", vm.tabs.size()},
+            {"moving", g_moving != nullptr}, {"pending", g_pending.window != nullptr},
+            {"capture", GetCapture() == s.hwnd}, {"outside", outside}, {"sorter", s.tabDragging}});
+    }
+    if (!first_ok || !self_ok) return false;
     const float slack = 12.0f * s.scale;
     if (my >= first.top - slack && my <= first.bottom + slack && mx >= first.left - slack &&
         mx <= width - 3.0f * 46.0f * s.scale) return false;

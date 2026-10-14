@@ -1346,6 +1346,8 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         if (TryDetachDraggedPane(*s, mx, my)) return 0;  // captured pane preview, committed on release
         if (s->tabDragPending) {
             if ((GetKeyState(VK_LBUTTON) & 0x8000) == 0) {
+                diagnostics::runtime::Event("tab_drag_button_lost", {{"message_down", (wParam & MK_LBUTTON) != 0},
+                    {"capture", GetCapture() == hwnd}, {"sorter", s->tabDragging}});
                 s->tabDragPending = false;
                 s->tabDragging = false;
                 s->tabDragIndex = -1;
@@ -2473,6 +2475,8 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             s->tabDragIndex = hit.index;
             s->tabDragStartPt = POINT{ mx, my };
             SetCapture(hwnd);
+            diagnostics::runtime::Event("tab_drag_press", {{"index", static_cast<uint64_t>(hit.index)},
+                {"tabs", s->window_tabs.items.size()}, {"capture", GetCapture() == hwnd}});
         } else if (hit.region == ui::HitTestResult::TabClose && hit.index >= 0) {
             s->renderer.FreezeTabWidths(BuildVm(*s, false), static_cast<float>(s->compositor.Width()));
             CloseLayoutTab(*s, static_cast<size_t>(hit.index));
@@ -3593,6 +3597,9 @@ LRESULT HandleCaptureChanged(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LP
         (void)wParam;
         (void)lParam;
         if (s) {
+            if (s->tabDropPending || s->tabDragPending || s->tabDragging)
+                diagnostics::runtime::Event("tab_drag_capture_changed", {{"pending", s->tabDropPending},
+                    {"sorter", s->tabDragging}, {"same_target", reinterpret_cast<HWND>(lParam) == hwnd}});
             CancelPendingTabDrop(*s);
             s->columnResizing = false;
             s->columnResizeIndex = -1;

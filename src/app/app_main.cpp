@@ -24,6 +24,7 @@
 #include "../ui/typography.h"
 #include "../ui/preview_format_catalog.h"
 #include "../common/crash_reporter.h"
+#include "../common/runtime_log.h"
 #include "../common/diagnostics_exporter.h"
 #include "../common/localization.h"
 #include "pulse_version.h"
@@ -1290,7 +1291,12 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_ACTIVATE:
-        if (s && LOWORD(wParam) == WA_INACTIVE) CancelPendingTabDrop(*s);
+        if (s && LOWORD(wParam) == WA_INACTIVE) {
+            if (s->tabDropPending || s->tabDragPending || s->tabDragging)
+                diagnostics::runtime::Event("tab_drag_deactivate", {{"preview", s->tabDropPending},
+                    {"capture", GetCapture() == hwnd}});
+            CancelPendingTabDrop(*s);
+        }
         if (s && LOWORD(wParam) != WA_INACTIVE) {
             s->core.windows.Touch(hwnd);
             // The session's other windows open once the first one is on screen
@@ -1724,6 +1730,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_CANCELMODE:
+        if (s && (s->tabDropPending || s->tabDragPending || s->tabDragging))
+            diagnostics::runtime::Event("tab_drag_cancelmode", {{"preview", s->tabDropPending}});
         if (s) CancelPendingTabDrop(*s);
         HandleSidebarResize(s, hwnd, msg, lParam);
         if (s) s->settings.EndMenuDrag();
