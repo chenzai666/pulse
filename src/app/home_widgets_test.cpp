@@ -236,8 +236,8 @@ int RunHomeMenuTest(const wchar_t* output) {
         auto* tab = ActiveTab(*state);
         tab->loading = false;
         tab->SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
-        const std::wstring folder = L"C:\\fixture\\最近访问的文件夹";
-        const std::wstring file = L"C:\\fixture\\工作资料\\说明文档.txt";
+        const auto folder = fs::NormalizePath(L"C:\\fixture\\最近访问的文件夹");
+        const auto file = fs::NormalizePath(L"C:\\fixture\\工作资料\\说明文档.txt");
         const auto parent = fs::ParentPath(file);
         state->places.RecordRecent(folder, app::PlaceItemKind::Folder);
         state->places.RecordRecent(file, app::PlaceItemKind::File);
