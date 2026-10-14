@@ -379,7 +379,7 @@ public:
                            bool hosted_edit = false);
     void DrawTextField(const TextFieldSpec& spec);
     void DrawCheckBox(const D2D1_RECT_F& bounds, std::wstring_view text,
-                      const ControlState& state);
+                      const ControlState& state, bool mixed = false);
     void DrawRadioButton(const D2D1_RECT_F& bounds, std::wstring_view text,
                          const ControlState& state);
     void DrawSwitch(const D2D1_RECT_F& bounds, std::wstring_view text,

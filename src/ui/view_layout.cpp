@@ -61,6 +61,14 @@ D2D1_RECT_F DetailsContentRect(D2D1_RECT_F bounds, float scale) noexcept {
     return bounds;
 }
 
+D2D1_RECT_F DetailsSelectionRect(D2D1_RECT_F cell, float scale) noexcept {
+    const float size = 18.0f * scale;
+    const float left = cell.left + 8.0f * scale;
+    const float top = (cell.top + cell.bottom - size) * 0.5f;
+    if (left + size > cell.right || top < cell.top) return {};
+    return {left, top, left + size, top + size};
+}
+
 ViewLayout::ViewLayout(ViewMode mode, D2D1_RECT_F viewport, size_t item_count,
                        float scroll_x, float scroll_y, float scale,
                        float row_height_dip, const ListGroups* groups)
@@ -240,7 +248,7 @@ D2D1_RECT_F ViewLayout::ItemRect(int index) const noexcept {
 D2D1_RECT_F ViewLayout::IconRect(int index) const noexcept {
     const D2D1_RECT_F cell = ItemRect(index);
     const float icon = metrics_.icon_size;
-    const float pad = 8.0f * scale_;
+    const float pad = (8.0f + (mode_ == ViewMode::Details ? kDetailsSelectionLaneDip : 0.0f)) * scale_;
     if (mode_ == ViewMode::ExtraLargeIcons || mode_ == ViewMode::LargeIcons ||
         mode_ == ViewMode::MediumIcons) {
         const float available = std::max(16.0f, cell.right - cell.left - pad * 2.0f);
@@ -268,7 +276,8 @@ D2D1_RECT_F ViewLayout::NameRect(int index) const noexcept {
         return {left, cell.top + 7.0f * scale_, cell.right - pad,
                 cell.top + 31.0f * scale_};
     }
-    const float left = cell.left + pad + icon + 8.0f * scale_;
+    const float left = cell.left + pad + icon +
+        (8.0f + (mode_ == ViewMode::Details ? kDetailsSelectionLaneDip : 0.0f)) * scale_;
     return {left, cell.top + 1.0f * scale_, cell.right - pad,
             cell.bottom - 1.0f * scale_};
 }

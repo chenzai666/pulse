@@ -258,6 +258,14 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             for(int i=0;i<3;++i) if(ContainsPt(actions[i],x,y)) {r.region=HitTestResult::SettingsContentAction;r.index=i+1;return r;}
 
             if (vm.settings_page == 0) {
+                for (int i = 0; i < 5; ++i) {
+                    if (ContainsPt(lay.home_widget_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsToggle; r.index = 40 + i; return r;
+                    }
+                }
+                if (ContainsPt(lay.sidebar_network_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 45; return r;
+                }
                 const D2D1_RECT_F integration_rows[]={lay.default_manager_row,lay.startup_row[2],
                     lay.win_e_row,lay.this_pc_row,lay.explorer_windows_row};
                 for(int i=0;i<5;++i) if(ContainsPt(integration_rows[i],x,y)) {
@@ -733,6 +741,11 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             }
             return r;
         }
+        if (vm.pane.is_recycle) {
+            r.index = HitRecycleToolbar(vm, toolbar, rect.right, x, y);
+            if (r.index >= 0) r.region = HitTestResult::RecycleToolbarAction;
+            return r;
+        }
         if (ContainsPt(toolbar.sort,x,y)) {r.region=HitTestResult::ToolbarSort; return r;}
         if (toolbar.group.right>toolbar.group.left && ContainsPt(toolbar.group,x,y)) {
             const bool chip=toolbar_group_>0 && toolbar.group.right-toolbar.group.left>=60*scale_;
@@ -1035,6 +1048,17 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         out.pane_index = paneIndex;
         if (x < paneRc.left || x >= paneRc.right || y < paneRc.top || y >= paneRc.bottom)
             return out;
+        if (paneVm.is_home) {
+            const float maximum = std::max(0.0f, HomeWidgetsHeight(vm.home_widgets,
+                paneRc.right - paneRc.left, scale_) - (paneRc.bottom - paneRc.top));
+            const auto hit = HitHomeWidgets(vm.home_widgets, paneRc,
+                std::clamp(paneVm.scroll_y, 0.0f, maximum), scale_, x, y);
+            out.region = hit.index >= 0 ? HitTestResult::HomeWidget : HitTestResult::Pane;
+            out.index = hit.index;
+            out.path = hit.path;
+            out.sub_index = hit.file ? 1 : 0;
+            return out;
+        }
         const D2D1_RECT_F detailsRc = PaneDetailsRect(paneRc);
         if (compositor_ && ContainsPt(ChangeTitleRect(paneRc, detailsRc.left - 8 * scale_, pane_header_height_, paneVm.title_change_badge, scale_, compositor_, paneVm.header_text), x, y)) {
             out.region = HitTestResult::ChangeBadge; out.index = -1; return out;
@@ -1135,6 +1159,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             return out;
         }
         if (ShowsColumnHeader(paneVm.view_mode) && y >= columnTop && y < listTop) {
+            auto header = DetailsContentRect(paneRc, scale_);
+            header.top = columnTop;
+            header.bottom = listTop;
+            if (ContainsPt(DetailsSelectionRect(header, scale_), x, y)) {
+                out.region = HitTestResult::SelectAllCheckbox;
+                return out;
+            }
             if (paneVm.curated_order) {
                 out.region = HitTestResult::Pane;
                 return out;
@@ -1250,6 +1281,16 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 out.region=HitTestResult::Pane; return out;
             }
             if (idx >= 0) {
+                if (paneVm.view_mode == ViewMode::Details) {
+                    const auto list = PaneListRect(paneRc, extra, paneVm.view_mode);
+                    ViewLayout layout(paneVm.view_mode, list, paneVm.EntryCount(),
+                        paneVm.scroll_x, paneVm.scroll_y, scale_, ListRowHeightDip(paneVm, list), paneVm.Groups());
+                    if (ContainsPt(DetailsSelectionRect(layout.ItemRect(paneVm.ViewIndex(idx)), scale_), x, y)) {
+                        out.region = HitTestResult::RowCheckbox;
+                        out.index = idx;
+                        return out;
+                    }
+                }
                 if (idx != paneVm.rename_index) {
                     int viewRow = paneVm.ViewIndex(idx);
                     if (viewRow >= 0 && compositor_ && compositor_->DwriteFactory()) {

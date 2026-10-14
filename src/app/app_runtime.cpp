@@ -1,6 +1,7 @@
 // app_runtime.cpp — extracted from app_main.cpp.
 #include "app_window_title.h"
 #include "app_internal.h"
+#include "home_widgets.h"
 #include "pane_layout.h"
 #include "tab_spring.h"
 #include "vertical_tabs.h"
@@ -1953,6 +1954,22 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_list_selection_outline = s.appPrefs.list_selection_outline;
     vm.settings_list_thumbnail_badges = s.appPrefs.list_thumbnail_badges;
     vm.settings_vertical_tabs = s.appPrefs.vertical_tabs;
+    vm.settings_home_widgets_hidden = s.appPrefs.home_widgets_hidden;
+    vm.settings_sidebar_network = (s.sidebarHiddenMask & (1u << static_cast<int>(app::SidebarSectionId::Networks))) == 0;
+    bool has_home = vm.pane.is_home;
+    ForEachPane(s, [&](app::Pane& pane) {
+        if(const auto* tab=pane.ActiveTab(); tab && app::IsHomePath(tab->current_path)) has_home=true;
+    });
+    if(has_home) vm.home_widgets = app::BuildHomeWidgets(s.sidebar, s.places, s.appPrefs.home_widgets_hidden);
+    ui::SidebarGroup home_group;
+    home_group.id = -3;
+    ui::SidebarItem home_item;
+    home_item.label = l10n::Pick(L"主页", L"Home");
+    home_item.path = app::kHomePath;
+    home_item.icon_glyph = L"\xE80F";
+    home_item.icon_color = s.accentColor;
+    home_group.items.push_back(std::move(home_item));
+    vm.sidebar.insert(vm.sidebar.begin(), std::move(home_group));
     vm.settings_show_hints = s.appPrefs.show_hints;
     vm.settings_tips_seen = s.appPrefs.tips_seen != 0;
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
@@ -2681,6 +2698,11 @@ std::wstring TooltipForHover(AppState& s) {
     case R::RowStar: return text(s.appPrefs.show_hints ? I::TipxStar : I::Star);
     case R::RowNewTab: return text(s.appPrefs.show_hints ? I::TipxRowNewTab : I::OpenNewTab);
     case R::RowMore: return text(I::MoreActions);
+    case R::SelectAllCheckbox: return l10n::Pick(L"全选 / 取消全选", L"Select all / clear selection");
+    case R::RowCheckbox: return l10n::Pick(L"选中 / 取消选中", L"Select / deselect");
+    case R::RecycleToolbarAction:
+        return text(s.hoverControlIndex == 0 ? I::EmptyRecycleBin :
+            s.hoverControlIndex == 1 ? I::RestoreAll : I::Restore);
     case R::SidebarItemAction:
         return text(IsVerticalTabPath(s.hoverPath) ? I::TooltipCloseTab : I::Unpin);
     case R::WindowIdentity: return text(I::WindowIdentityTip);

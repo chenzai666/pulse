@@ -47,6 +47,8 @@ struct AppPrefs {
     bool list_thumbnail_badges = true;
     bool vertical_tabs = false;       // tabs as the first sidebar section
     bool sidebar_collapsed = false;   // sidebar folded to its icon rail (Ctrl+B)
+    // 主页组件独立于侧边栏；位 0..4 为快速访问、驱动器、网络、标签、最近文件。
+    uint32_t home_widgets_hidden = 0;
     // 0 folders first, 1 follow the sort direction, 2 mixed with files
     int folder_sort_mode = 0;
     // Optional Details columns for every folder (ui/details_column_set.h bits).

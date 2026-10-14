@@ -8,6 +8,7 @@
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
 #include "sidebar_navigation.h"
+#include "recycle_place_commands.h"
 #include "app_file_conversion.h"
 #include "app_status_center.h"
 #include "app_properties.h"
@@ -2187,9 +2188,9 @@ void ShowOmnibar(AppState& s, OmnibarMode mode) {
 void ShowRecyclePlaceMenu(AppState& s, POINT screen_pt) {
     if (!EnsureMenu(s)) return;
     const bool can_empty = !s.recycle_info.valid || s.recycle_info.items > 0;
-    const int cmd = s.menu->TrackPopup(screen_pt, app::BuildRecyclePlaceMenu(can_empty));
-    if (HandleSidebarNavigationCommand(s, app::MakeRecyclePath(), cmd)) return;
-    if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
+    const int cmd = s.menu->TrackPopup(screen_pt,
+        app::BuildRecyclePlaceMenu(can_empty, CanOpenRecycleInNewPane(s)));
+    HandleRecyclePlaceCommand(s, cmd);
 }
 void ApplyAppWindowChrome(AppState& s) {
     if (!s.hwnd) return;

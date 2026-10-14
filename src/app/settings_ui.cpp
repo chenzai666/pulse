@@ -126,6 +126,11 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     switch(hit.region) {
     case H::SettingsFind: FindSetting(s);break;
     case H::SettingsToggle: {
+        if(hit.index == 45) {
+            ToggleSidebarSection(s, static_cast<int>(app::SidebarSectionId::Networks));
+            InvalidateRect(s.hwnd, nullptr, FALSE);
+            break;
+        }
         // Pulse menu preview: pressing a movable row arms a drag (app_input
         // follows the pointer and drops); the fixed rows do nothing.
         if(hit.index<ui::kSettingsMenuFixedHit) return false;

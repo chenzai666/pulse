@@ -309,11 +309,23 @@ std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,
     return items;
 }
 
-std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty) {
-    auto items = BuildSidebarNavigationMenu();
-    items.front().command = CmdOpenRecycle;
+std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty, bool can_split) {
+    std::vector<ui::FluentMenuItem> items;
     items.push_back(Item(CmdEmptyRecycle, l10n::Get(l10n::StringId::EmptyRecycleBin).c_str(),
                          kGlyphRecycle, nullptr, can_empty));
+    items.push_back(Item(CmdRestoreAllRecycle, l10n::Get(l10n::StringId::RestoreAll).c_str(),
+                         kGlyphUndo, nullptr, can_empty));
+    items.back().separator_after = true;
+    items.push_back(Item(CmdOpenInNewTab, l10n::Get(l10n::StringId::OpenNewTab).c_str(), kGlyphOpenInNewTab));
+    items.push_back(Item(CmdOpenInNewWindow, l10n::Pick(L"在新窗口打开", L"Open in new window"), L"\xE8A7"));
+    auto pane = Item(CmdNone, l10n::Pick(L"在新面板中打开", L"Open in new pane"), L"\xE8A0", nullptr, can_split);
+    pane.children.push_back(Item(CmdOpenInNewPaneVertical, l10n::Pick(L"左右分屏", L"Side by side"), L"\xE8A0", nullptr, can_split));
+    pane.children.push_back(Item(CmdOpenInNewPaneHorizontal, l10n::Pick(L"上下分屏", L"Stacked"), L"\xE8A1", nullptr, can_split));
+    pane.separator_after = true;
+    items.push_back(std::move(pane));
+    items.push_back(Item(CmdUnpinQuickAccess, l10n::Pick(L"从侧边栏取消固定", L"Unpin from sidebar"), L"\xE77A"));
+    items.back().separator_after = true;
+    items.push_back(Item(CmdProperties, l10n::Get(l10n::StringId::Properties).c_str(), kGlyphProperties));
     return items;
 }
 

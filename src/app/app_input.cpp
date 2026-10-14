@@ -1,4 +1,6 @@
 #include "reopen_closed.h"
+#include "recycle_place_commands.h"
+#include "home_widgets.h"
 #include "pane_column_input.h"
 // app_input.cpp — extracted from app_main.cpp.
 #include "quick_access.h"
@@ -596,6 +598,13 @@ float MaxScrollForActivePane(AppState& s, ui::PaneViewModel* out) {
     if (!s.pane || !s.pane->ActiveTab()) return 0.0f;
     ui::PaneViewModel pane;
     app::FillPaneViewModel(pane, *s.pane, &s.places);
+    if (pane.is_home) {
+        const auto bounds = FocusedPaneRect(s);
+        const auto widgets = app::BuildHomeWidgets(s.sidebar, s.places, s.appPrefs.home_widgets_hidden);
+        if (out) *out = pane;
+        return std::max(0.0f, ui::HomeWidgetsHeight(widgets, bounds.right - bounds.left, s.scale) -
+            (bounds.bottom - bounds.top));
+    }
     const float max_scroll = s.renderer.MaxScrollForPane(pane, FocusedPaneRect(s));
     if (out) *out = std::move(pane);
     return max_scroll;
@@ -2270,6 +2279,37 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         if (hit.pane_index >= 0) {
             if (app::Pane* p = PaneAtSlot(*s, hit.pane_index)) FocusPane(*s, p);
         }
+        if (hit.region == ui::HitTestResult::RowCheckbox ||
+            hit.region == ui::HitTestResult::SelectAllCheckbox) {
+            s->dragPending = false;
+            s->clickCollapseIndex = -1;
+            s->clickToggleOnRelease = false;
+            if (app::Tab* tab = ActiveTab(*s); tab && !tab->loading) {
+                if (hit.region == ui::HitTestResult::RowCheckbox) {
+                    tab->ToggleSelect(hit.index);
+                } else {
+                    ui::PaneViewModel view;
+                    app::FillPaneViewModel(view, *s->pane, &s->places);
+                    if (view.EntryCount() && static_cast<size_t>(view.visible_selected_count) == view.EntryCount())
+                        tab->ClearSelection();
+                    else {
+                        std::vector<int> matches;
+                        app::CollectFilterMatches(*tab, &s->places, matches);
+                        tab->SelectIndices(matches);
+                    }
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (hit.region == ui::HitTestResult::RecycleToolbarAction) {
+            HandleRecycleToolbarCommand(*s, hit.index);
+            return 0;
+        }
+        if (hit.region == ui::HitTestResult::HomeWidget) {
+            HandleHomeWidgetClick(*s, hit.path, hit.sub_index == 1);
+            return 0;
+        }
         ArmPaneDrag(*s, hit, mx, my);  // the press still does what it did; a drag takes the pane out (M6d)
         if (HandleChangeClick(*s, hit, POINT{mx, my})) {
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -3153,6 +3193,9 @@ LRESULT HandleLButtonDblClk(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPA
             {"item_index", hit.index >= 0 ? static_cast<uint64_t>(hit.index) : 0}});
         if (HandleWindowIdentityDoubleClick(*s, hit, POINT{mx, my})) return 0;  // M7c: rename, recolor
         if (pulse::HandleTabDoubleClick(*s, hit)) return 0;
+        if (hit.region == ui::HitTestResult::RowCheckbox ||
+            hit.region == ui::HitTestResult::SelectAllCheckbox)
+            return HandleLButtonDown(s, hwnd, WM_LBUTTONDOWN, wParam, lParam);
         if ((hit.region == ui::HitTestResult::Pane || hit.region == ui::HitTestResult::None) &&
             PointInList(*s, mx, my) &&
             (hit.pane_index < 0 || PaneAtSlot(*s, hit.pane_index) == s->pane)) {
@@ -3688,7 +3731,7 @@ LRESULT HandleRButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         ui::HitTestResult hit = s->renderer.HitTest(vm, rect, (float)mx, (float)my);
         app::Pane* pane = hit.pane_index >= 0 ? PaneAtSlot(*s, hit.pane_index) : s->pane;
         app::Tab* tab = pane ? pane->ActiveTab() : nullptr;
-        if (hit.region == ui::HitTestResult::Row && hit.index >= 0 && tab) {
+        if ((hit.region == ui::HitTestResult::Row || hit.region == ui::HitTestResult::RowCheckbox) && hit.index >= 0 && tab) {
             // Selection changes on WM_RBUTTONUP; predict what it will be.
             std::vector<std::wstring> paths;
             std::wstring ext;
@@ -3758,7 +3801,7 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                    hit.region == ui::HitTestResult::TrayNext) {
             ShowTrayBatchMenu(*s, sp);
             shown = true;
-        } else if (hit.region == ui::HitTestResult::Row && hit.index >= 0) {
+        } else if ((hit.region == ui::HitTestResult::Row || hit.region == ui::HitTestResult::RowCheckbox) && hit.index >= 0) {
             app::Tab* tab = ActiveTab(*s);
             if (tab) {
                 if (!tab->IsSelected(hit.index)) tab->SelectOnly(hit.index);
@@ -3958,6 +4001,10 @@ LRESULT HandleMouseWheel(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
         int delta = GET_WHEEL_DELTA_WPARAM(wParam);
         app::Tab* wheelTab = ActiveTab(*s);
+        if (wheelTab && app::IsHomePath(wheelTab->current_path)) {
+            StartSmoothScroll(*s, -(static_cast<float>(delta) / WHEEL_DELTA) * 96.0f * s->scale);
+            return 0;
+        }
         if ((GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0 && !marquee) {
             if (wheelTab) {
                 const int direction = delta > 0 ? -1 : 1;

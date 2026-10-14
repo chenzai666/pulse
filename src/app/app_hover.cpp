@@ -8,6 +8,7 @@ bool UpdatePointerHover(AppState& s, const ui::HitTestResult& hit, POINT point) 
         hit.index != s.hoverControlIndex || hit.sub_index != s.hoverSubIndex ||
         hit.pane_index != s.hoverPaneIndex || hit.path != s.hoverPath || hit.label != s.hoverLabel;
     const int row = (hit.region == ui::HitTestResult::Row ||
+        hit.region == ui::HitTestResult::RowCheckbox ||
         hit.region == ui::HitTestResult::RowStar ||
         hit.region == ui::HitTestResult::RowFolderSize ||
         hit.region == ui::HitTestResult::RowNewTab ||

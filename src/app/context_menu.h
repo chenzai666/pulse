@@ -117,6 +117,8 @@ enum MenuCmd : int {
     CmdFileConversionCancel = 199,
     CmdRecentBase = 200,
     CmdStatusCenter = 600,
+    CmdOpenInNewPaneVertical = 601,
+    CmdOpenInNewPaneHorizontal = 602,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
     // current selection (+index into the StaticVerb list) and pulse_shell
@@ -241,7 +243,7 @@ std::vector<ui::FluentMenuItem> BuildRecycleItemMenu(bool can_undo,
 std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,
                                                            const std::wstring& undo_label,
                                                            bool can_empty);
-std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty);
+std::vector<ui::FluentMenuItem> BuildRecyclePlaceMenu(bool can_empty, bool can_split = true);
 std::vector<ui::FluentMenuItem> BuildSidebarNavigationMenu();
 
 // Toolbar "新建▾" dropdown (reuses the same FluentMenu component).

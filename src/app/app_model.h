@@ -188,6 +188,9 @@ struct Tab {
     mutable uint64_t view_cache_places_revision = 0;
     mutable std::wstring view_cache_filter_text;
     mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> view_filter_map;
+    mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> selection_view_filter;
+    mutable uint64_t selection_view_revision = UINT64_MAX;
+    mutable int selection_view_count = 0;
     mutable std::shared_ptr<const ui::PaneViewModel::TagDots> view_tag_dots;
     mutable std::shared_ptr<ui::RowPresentationCache> view_row_cache;
     // Group spans over view rows; rebuilt when any input below changes.

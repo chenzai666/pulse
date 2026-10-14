@@ -309,6 +309,27 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         const I folder_sort[]={I::FolderSortTop,I::FolderSortFollow,I::FolderSortMixed};const int folder_sort_values[]={0,1,2};
         segmented(lay.folder_sort_card,lay.folder_sort_row,folder_sort,folder_sort_values,vm.settings_folder_sort,H::SettingsFolderSort,I::SettingsFolderSort,I::SettingsFolderSortDesc);divider(lay.folder_sort_card);
         toggle(lay.confirm_delete_row,I::SettingsConfirmDelete,I::SettingsConfirmDeleteDesc,L"\xE74D",vm.settings_confirm_delete,32);
+        text(l10n::Pick(L"主页小组件", L"Home widgets"),lay.home_widgets_section);
+        draw_card(lay.home_widgets_card);
+        const std::wstring widget_titles[]={l10n::Get(I::SidebarQuickAccess),
+            l10n::Pick(L"驱动器",L"Drives"),l10n::Get(I::SidebarNetworkLocations),
+            l10n::Get(I::SidebarTags),l10n::Pick(L"最近使用的文件",L"Recent files")};
+        const wchar_t* widget_icons[]={L"\xE8A9",L"\xE977",L"\xE968",L"\xE8EC",L"\xE823"};
+        for(int i=0;i<5;++i) {
+            const auto r=lay.home_widget_row[i];
+            label(r,widget_titles[i],l10n::Pick(L"在主页显示此小组件",L"Show this widget on Home"),widget_icons[i]);
+            fluent::ControlState st{};st.checked=(vm.settings_home_widgets_hidden&(1u<<i))==0;
+            st.hovered=IsHovered(vm,H::SettingsToggle,40+i);
+            painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+16*scale_,r.right-16*scale_,r.top+48*scale_),L"",st);
+            if(i<4) divider(r);
+        }
+        draw_card(lay.sidebar_network_row);
+        label(lay.sidebar_network_row,l10n::Pick(L"侧边栏：网络",L"Sidebar: Network"),
+            l10n::Pick(L"显示或恢复侧边栏中的网络分组",L"Show or restore the Network section in the sidebar"),L"\xE968");
+        fluent::ControlState network_st{};network_st.checked=vm.settings_sidebar_network;
+        network_st.hovered=IsHovered(vm,H::SettingsToggle,45);
+        painter_.DrawSwitch(D2D1::RectF(lay.sidebar_network_row.right-60*scale_,lay.sidebar_network_row.top+16*scale_,
+            lay.sidebar_network_row.right-16*scale_,lay.sidebar_network_row.top+48*scale_),L"",network_st);
         disclosure(lay.disclosure[0],I::SettingsAdvanced,I::SettingsAdvancedDesc,L"\xE713",0,true);
         if(vm.settings_expanded & 1u) {
         draw_card(lay.wallpaper_card);

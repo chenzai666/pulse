@@ -958,6 +958,12 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
 
     std::wstring kind, rest;
     app::ParsePulsePath(path, &kind, &rest);
+    if (kind == L"home") {
+        tab.virtual_title = l10n::Pick(L"主页", L"Home");
+        tab.SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
+        tab.scroll_y = 0;
+        return;
+    }
     if (kind == L"changes") {
         LoadChangeView(s, tab, rest);
         return;

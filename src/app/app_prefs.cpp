@@ -71,6 +71,7 @@ void AppPrefs::ResetToDefaults() {
     list_size_bar = false;
     list_selection_outline = false;
     list_thumbnail_badges = true;
+    home_widgets_hidden = 0;
     folder_sort_mode = 0;
     details_columns = ui::kDetailsColumnsDefault;
     startup_open = 0;
@@ -170,6 +171,7 @@ std::wstring AppPrefs::ToJson() const {
     out += vertical_tabs ? L"true" : L"false";
     out += L",\n  \"sidebar_collapsed\":";
     out += sidebar_collapsed ? L"true" : L"false";
+    out += L",\n  \"home_widgets_hidden\":" + std::to_wstring(home_widgets_hidden & 31u);
     out += L",\n  \"folder_sort_mode\":";
     out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
     out += L",\n  \"details_columns\":";
@@ -321,6 +323,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     list_thumbnail_badges = pulse::json::ExtractBool(json, L"list_thumbnail_badges", true);
     vertical_tabs = pulse::json::ExtractBool(json, L"vertical_tabs", false);
     sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
+    home_widgets_hidden = static_cast<uint32_t>(pulse::json::ExtractInt(json, L"home_widgets_hidden", 0)) & 31u;
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
     if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
     details_columns = ui::NormalizeDetailsColumns(static_cast<uint32_t>(pulse::json::ExtractInt(

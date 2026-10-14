@@ -1010,7 +1010,7 @@ void Painter::DrawTextField(const TextFieldSpec& spec) {
 }
 
 void Painter::DrawCheckBox(const D2D1_RECT_F& bounds, std::wstring_view text,
-                           const ControlState& state) {
+                           const ControlState& state, bool mixed) {
     if (!theme_ || !compositor_) {
         return;
     }
@@ -1058,7 +1058,13 @@ void Painter::DrawCheckBox(const D2D1_RECT_F& bounds, std::wstring_view text,
         if (!state.enabled) {
             check_color = MultiplyAlpha(check_color, 0.8f);
         }
-        DrawCheckMark(box, check_color);
+        if (mixed) {
+            const float middle = (box.top + box.bottom) * 0.5f;
+            FillRoundedRect(D2D1::RectF(box.left + Px(4), middle - Px(1),
+                box.right - Px(4), middle + Px(1)), Px(1), check_color);
+        } else {
+            DrawCheckMark(box, check_color);
+        }
     }
     DrawText(text,
              D2D1::RectF(box.right + Px(8.0f), bounds.top, bounds.right, bounds.bottom),

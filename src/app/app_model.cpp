@@ -860,6 +860,7 @@ std::wstring TabTitle(const std::wstring& path) {
         if (kind == L"starred") return l10n::Get(l10n::StringId::StarredItems);
         if (kind == L"recent") return l10n::Get(l10n::StringId::Recent);
         if (kind == L"recycle") return l10n::Get(l10n::StringId::RecycleBin);
+        if (kind == L"home") return l10n::Pick(L"主页", L"Home");
         if (kind == L"search") return l10n::Get(l10n::StringId::Search);
         if (kind == L"tag") return rest.empty() ? l10n::Get(l10n::StringId::Tag) : rest;
     }
@@ -1610,6 +1611,7 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
     out.is_starred = virtual_kind == L"starred";
     out.is_recent = virtual_kind == L"recent";
     out.is_recycle = virtual_kind == L"recycle";
+    out.is_home = virtual_kind == L"home";
     out.is_search = virtual_kind == L"search" || virtual_kind == L"saved-search"
         || virtual_kind == L"recycle" || virtual_kind == L"changes";
     out.is_query_search = virtual_kind == L"search";
@@ -1735,6 +1737,23 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
             }
             out.filter_map = tab->view_compare_map;
         }
+    }
+    // Recount filtered selections only when the selection or displayed mapping
+    // changes, not on every hover/animation frame in a large search result.
+    if (!out.filter_map || out.content_results) {
+        out.visible_selected_count = std::min(out.selected_count, static_cast<int>(out.EntryCount()));
+    } else if (out.all_selected) {
+        out.visible_selected_count = static_cast<int>(out.EntryCount());
+    } else {
+        if (tab->selection_view_revision != tab->selection_revision ||
+            tab->selection_view_filter != out.filter_map) {
+            tab->selection_view_count = 0;
+            for (int source : *out.filter_map)
+                if (out.IsRowSelected(source)) ++tab->selection_view_count;
+            tab->selection_view_filter = out.filter_map;
+            tab->selection_view_revision = tab->selection_revision;
+        }
+        out.visible_selected_count = tab->selection_view_count;
     }
     // "Group by": the worker sorted with the same key, so each group is one
     // run of view rows. Spans are cached until an input changes.

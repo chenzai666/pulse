@@ -31,6 +31,10 @@ bool ShowsFolderSize(ViewMode mode) noexcept;
 // Reserve a marquee gutter before the name and before the scrollbar.
 D2D1_RECT_F DetailsContentRect(D2D1_RECT_F bounds, float scale) noexcept;
 
+// A fixed leading lane keeps icons and names still when the checkbox appears.
+constexpr float kDetailsSelectionLaneDip = 28.0f;
+D2D1_RECT_F DetailsSelectionRect(D2D1_RECT_F cell, float scale) noexcept;
+
 // "Group by" (details view): contiguous view rows [first, first + count)
 // shown under one header. Groups cover every row, in display order.
 struct ListGroup {

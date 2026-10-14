@@ -141,7 +141,10 @@ void ShowSidebarSectionMenu(AppState& s, int section, POINT screen_pt) {
     }
     ui::FluentMenuItem hide;
     hide.command = kHideSection;
-    hide.text = l10n::Get(I::SidebarHideSection);
+    hide.text = l10n::Pick(L"隐藏 ", L"Hide ") +
+        (section == static_cast<int>(app::SidebarSectionId::Networks)
+            ? std::wstring(l10n::Pick(L"网络", L"Network")) : SectionTitle(section)) +
+        l10n::Pick(L" 部分", L" section");
     items.push_back(std::move(hide));
     // #80: hidden sections come back from any section menu too, not only from
     // the empty space below the sections, which a full sidebar may not have.

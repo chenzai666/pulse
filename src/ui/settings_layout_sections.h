@@ -181,6 +181,11 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.folder_sort_card=row(narrow ? 98.0f : 64.0f); segments(l.folder_sort_card,l.folder_sort_row,3,282);
     l.confirm_delete_row=row(64);
     l.group[2]=D2D1::RectF(left,l.density_card.top,right,y);
+    y+=24*scale; l.home_widgets_section=row(28);
+    const float home_top=y;
+    for(auto& widget:l.home_widget_row) widget=row(64);
+    l.home_widgets_card=D2D1::RectF(left,home_top,right,y);
+    y+=12*scale; l.sidebar_network_row=row(64);
     y+=18*scale;
     l.disclosure[0]=row(64);
     if(vm.settings_expanded & 1u) {

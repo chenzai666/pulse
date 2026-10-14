@@ -1081,6 +1081,17 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 33) {
         prefs_->list_selection_outline = !prefs_->list_selection_outline;
         SaveAndApply(SettingsEffect::ListStyle);
+    } else if (index >= 40 && index < 45) {
+        const uint32_t previous = prefs_->home_widgets_hidden;
+        prefs_->home_widgets_hidden ^= 1u << (index - 40);
+        if (!prefs_->Save()) {
+            prefs_->home_widgets_hidden = previous;
+            error_ = l10n::Pick(L"无法保存主页设置，请检查配置目录权限。", L"Could not save home settings. Check the configuration folder permissions.");
+            if (ui_.show_error) ui_.show_error(error_);
+            return;
+        }
+        ClearError();
+        Apply(SettingsEffect::None);
     } else if (index == 34) {
         prefs_->list_thumbnail_badges = !prefs_->list_thumbnail_badges;
         SaveAndApply(SettingsEffect::ListStyle);

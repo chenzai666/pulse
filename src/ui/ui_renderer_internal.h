@@ -2028,6 +2028,8 @@ struct SettingsLayout {
     D2D1_RECT_F protected_files_row{};
     D2D1_RECT_F pinned_names_row{};
     D2D1_RECT_F vertical_tabs_row{};
+    D2D1_RECT_F home_widgets_section{}, home_widgets_card{}, home_widget_row[5]{};
+    D2D1_RECT_F sidebar_network_row{};
     D2D1_RECT_F hints_row{};
     D2D1_RECT_F hints_reset_row{};
     D2D1_RECT_F hints_reset_button{};

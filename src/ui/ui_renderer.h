@@ -8,6 +8,7 @@
 #include "shell_icons.h"
 #include "open_with_icons.h"
 #include "view_layout.h"
+#include "home_widgets.h"
 #include "column_strip_layout.h"
 #include "panel_metrics.h"
 #include "toolbar_layout.h"
@@ -235,6 +236,7 @@ struct PaneViewModel {
     bool is_starred = false;
     bool is_recent = false;
     bool is_recycle = false;
+    bool is_home = false;
     bool is_search = false;   // search results add a display-only 路径 column
     bool is_query_search = false;
     bool is_content_search = false;
@@ -250,6 +252,7 @@ struct PaneViewModel {
     std::wstring date_column_label;
     int selected_index = -1;
     int selected_count = 0;
+    int visible_selected_count = 0;
     bool all_selected = false;
     const std::unordered_set<int>* selected_indices = nullptr;
     int hover_index = -1;
@@ -790,6 +793,9 @@ struct WindowViewModel {
     bool settings_tips_seen = false;   // any teaching bubble already shown
     int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
     int settings_startup_open = 0; // 0 last tabs, 1 default location
+    uint32_t settings_home_widgets_hidden = 0;
+    bool settings_sidebar_network = true;
+    HomeWidgets home_widgets;
     int settings_notify_icon = 0;  // 0 always, 1 in the background, 2 never (#57)
     int settings_new_tab_open = 0; // 0 current folder, 1 default location
     int settings_external_open = 0; // 0 smart, 1 tab, 2 new window (multi-window M7b)
@@ -934,12 +940,16 @@ struct HitTestResult {
         AddressSearchClose,
         BreadcrumbSegment,
         ColumnHeader,
+        SelectAllCheckbox,
+        RecycleToolbarAction,
+        HomeWidget,
         ColumnDivider,
         FilterBox,
         FilterClear,
         Splitter,
         Scrollbar,
         Row,
+        RowCheckbox,
         ChangeBadge,
         ChangeOpen,
         ChangeTimeFilter,
@@ -1529,6 +1539,9 @@ private:
     TabStripMetrics ComputeTabStrip(const WindowViewModel& vm, float window_w) const;
     void DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
+    bool DrawRecycleToolbar(const WindowViewModel& vm, const ToolbarLayout& toolbar, float width);
+    int HitRecycleToolbar(const WindowViewModel& vm, const ToolbarLayout& toolbar,
+        float width, float x, float y) const;
     void DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawPane(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);

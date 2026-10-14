@@ -7,6 +7,9 @@
 // All file operations are confined to bench_data/opstest/selftest_1b2 and
 // cleaned up afterwards.
 #include "selftest_1b2.h"
+bool RunListCheckboxTest();
+bool RunRecyclePlaceMenuTest();
+int RunHomeWidgetsTest(const wchar_t* output);
 #include "listary_search_entry.h"
 #include "scroll_hover_taskbar_test.h"
 #include "change_tracking_ui_test.h"
@@ -2095,9 +2098,9 @@ void TestMenuModel() {
           recycle_bg[0].enabled,
           L"menu: recycle background can empty the bin");
     auto recycle_place = BuildRecyclePlaceMenu(true);
-    Check(recycle_place.size() == 4 && recycle_place[0].command == CmdOpenRecycle &&
-          recycle_place[1].command == CmdOpenInNewTab && recycle_place[2].command == CmdOpenInNewWindow &&
-          recycle_place[3].command == CmdEmptyRecycle,
+    Check(recycle_place.size() == 7 && recycle_place[0].command == CmdEmptyRecycle &&
+          recycle_place[1].command == CmdRestoreAllRecycle && recycle_place[2].command == CmdOpenInNewTab &&
+          recycle_place[3].command == CmdOpenInNewWindow,
           L"menu: recycle quick access supports new tab/window and preserves empty");
     {
         std::vector<ui::FluentMenuItem> en_place;
@@ -7301,6 +7304,19 @@ int RunSelfTest1B2() {
     g_skip_visual = GetEnvironmentVariableW(L"PULSE_SELFTEST_NO_SCREENSHOTS", skip_visual, ARRAYSIZE(skip_visual)) > 0;
     if (g_skip_visual) LogLine(L"[SKIP] Screenshot capture disabled\n");
     wchar_t test_case[64]{};
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"home-widgets") == 0) {
+        const int result = ::RunHomeWidgetsTest(L"bench_data/home-widgets.log");
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return result;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        (wcscmp(test_case, L"list-checkbox") == 0 || wcscmp(test_case, L"recycle-place-menu") == 0)) {
+        const bool passed = wcscmp(test_case, L"list-checkbox") == 0
+            ? ::RunListCheckboxTest() : ::RunRecyclePlaceMenuTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"scroll-hover-taskbar") == 0) {
         const bool passed = RunScrollHoverTaskbarTest();

@@ -1,0 +1,121 @@
+#include "home_widgets.h"
+#include "app_model.h"
+#include "app_prefs.h"
+#include "places.h"
+#include <filesystem>
+#include <fstream>
+
+#ifdef PULSE_WITH_SELFTEST
+#include "app_internal.h"
+#include "../ui/ui_renderer_internal.h"
+#include <memory>
+
+namespace {
+int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& log) {
+    using namespace pulse;
+    int failures=0;
+    auto check=[&](bool ok,const char* label){log<<(ok ? "[PASS] " : "[FAIL] ")<<label<<'\n';if(!ok)++failures;return ok;};
+    const auto language=l10n::preference();
+    l10n::SetLanguage(L"zh-CN");
+    WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpfnWndProc=DefWindowProcW;
+    wc.lpszClassName=L"PulseHomeWidgetsTest";RegisterClassW(&wc);
+    for(float scale:{1.0f,1.5f,2.0f}) {
+        auto state=std::make_unique<AppState>();
+        state->isolatedTest=true;state->scale=scale;
+        state->places.persist=state->appPrefs.persist=state->ctxMenuPrefs.persist=state->searchHistory.persist=false;
+        state->hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOREDIRECTIONBITMAP,wc.lpszClassName,L"",WS_POPUP,
+            -30000,-30000,static_cast<int>(1100*scale),static_cast<int>(920*scale),nullptr,nullptr,wc.hInstance,nullptr);
+        if(!check(state->hwnd && state->compositor.Init(state->hwnd),"初始化隔离主页渲染器")) {
+            if(state->hwnd)DestroyWindow(state->hwnd);
+            state->hwnd=nullptr;continue;
+        }
+        state->renderer.SetCompositor(&state->compositor);state->renderer.SetScale(scale);
+        state->compositor.RecreateTextFormats(scale);
+        state->window_tabs.NewTab(std::wstring(app::kHomePath));BindCurrentLayout(*state);
+        auto* tab=ActiveTab(*state);tab->loading=false;
+        tab->SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
+        app::SidebarEntry quick;quick.label=L"桌面";quick.path=L"C:\\fixture\\Desktop";quick.glyph=L"\xE8B7";
+        state->sidebar.quick_access.push_back(quick);
+        app::SidebarEntry drive;drive.label=L"本地磁盘 (C:)";drive.path=L"C:\\";drive.detail=L"128 GB 可用，共 256 GB";
+        drive.glyph=L"\xE977";drive.is_drive=true;drive.used_ratio=0.5f;state->sidebar.drives.push_back(drive);
+        state->places.networks.push_back({L"资料共享",L"\\\\offline.invalid\\data"});
+        state->places.tags.push_back({L"work",L"工作",0x0078D4,{L"C:\\fixture\\report.txt"}});
+        state->places.recent_items.push_back({L"C:\\fixture\\项目说明.txt",app::PlaceItemKind::File,0});
+        const auto bounds=D2D1::RectF(0,0,static_cast<float>(state->compositor.Width()),static_cast<float>(state->compositor.Height()));
+        for(bool dark:{false,true}) {
+            auto vm=BuildVm(*state,false);vm.dark=dark;
+            check(vm.pane.is_home && vm.home_widgets.sections.size()==5,"真实视图模型绑定主页缓存");
+            auto* dc=state->compositor.Dc();dc->BeginDraw();
+            state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            const auto name=L"home-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
+            check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/name).c_str()),"中文主页两主题截图");
+            vm.settings_open=true;vm.settings_page=0;vm.settings_scroll=0;vm.settings_expanded=0;
+            ui::fluent::Painter painter(&state->compositor);painter.SetScale(scale);painter.BeginFrame(ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            auto layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            vm.settings_scroll=layout.home_widgets_section.top-layout.content.top-12*scale;
+            layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            for(int i=0;i<5;++i) {
+                const auto r=layout.home_widget_row[i];
+                const auto hit=state->renderer.HitTest(vm,bounds,r.right-38*scale,(r.top+r.bottom)/2);
+                check(hit.region==ui::HitTestResult::SettingsToggle && hit.index==40+i,"主页开关真实命中映射");
+            }
+            const auto r=layout.sidebar_network_row;
+            const auto hit=state->renderer.HitTest(vm,bounds,r.right-38*scale,(r.top+r.bottom)/2);
+            check(hit.region==ui::HitTestResult::SettingsToggle && hit.index==45,"侧边栏网络恢复使用独立开关");
+            dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            const auto settings=L"home-settings-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
+            check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/settings).c_str()),"中文主页设置两主题截图");
+        }
+        const HWND hwnd=state->hwnd;state->hwnd=nullptr;DestroyWindow(hwnd);
+    }
+    UnregisterClassW(wc.lpszClassName,wc.hInstance);
+    l10n::SetLanguage(l10n::LanguageId(language));
+    return failures;
+}
+}
+int RunHomeWidgetsTest(const wchar_t* output) {
+    using namespace pulse;
+    std::ofstream log{std::filesystem::path(output)};
+    int failed=0;
+    auto check=[&](bool ok,const char* label){log<<(ok ? "[PASS] " : "[FAIL] ")<<label<<'\n';if(!ok)++failed;};
+    app::AppPrefs prefs;prefs.persist=false;
+    check(prefs.FromJson(L"{}") && prefs.home_widgets_hidden==0,"旧配置默认启用全部主页组件");
+    for(uint32_t mask=0;mask<32;++mask) {
+        prefs.home_widgets_hidden=mask;
+        app::AppPrefs restored;restored.persist=false;
+        check(restored.FromJson(prefs.ToJson()) && restored.home_widgets_hidden==mask,"五组件任意组合可往返保存");
+    }
+    prefs.home_widgets_hidden=31;prefs.ResetToDefaults();
+    check(prefs.home_widgets_hidden==0,"恢复默认重新显示五组件");
+    app::SidebarModel sidebar;
+    app::SidebarEntry shortcut;shortcut.label=L"桌面";shortcut.path=L"C:\\fixture\\Desktop";
+    sidebar.quick_access.push_back(shortcut);
+    app::SidebarEntry drive;drive.label=L"C:";drive.path=L"C:\\";drive.is_drive=true;
+    sidebar.drives.push_back(drive);
+    app::PlacesCatalog places;places.persist=false;
+    places.networks.push_back({L"离线共享",L"\\\\offline.invalid\\data"});
+    places.tags.push_back({L"tag-1",L"工作",0x0078D4,{L"C:\\fixture\\report.txt"}});
+    places.recent_items.push_back({L"C:\\fixture\\folder",app::PlaceItemKind::Folder,0});
+    places.recent_items.push_back({L"C:\\fixture\\report.txt",app::PlaceItemKind::File,0});
+    const auto all=app::BuildHomeWidgets(sidebar,places,0);
+    check(all.sections.size()==5,"主页包含五个真实组件");
+    check(all.sections[2].items.size()==1 && all.sections[2].items[0].path==places.networks[0].unc,"网络组件读取缓存，不要求共享在线");
+    check(all.sections[3].items[0].path==app::MakeTagPath(L"tag-1"),"标签链接使用稳定标签标识");
+    check(all.sections[4].items.size()==1 && all.sections[4].items[0].file,"最近文件组件过滤文件夹");
+    for(float scale:{1.0f,1.25f,2.0f}) {
+        const auto bounds=D2D1::RectF(20,30,20+320*scale,30+600*scale);
+        const auto hit=ui::HitHomeWidgets(all,bounds,0,scale,bounds.left+30*scale,bounds.top+120*scale);
+        check(hit.index==0 && hit.path==shortcut.path,"窄窗口及不同缩放的图块命中与布局一致");
+        const auto hidden=app::BuildHomeWidgets(sidebar,places,1);
+        const auto after=ui::HitHomeWidgets(hidden,bounds,0,scale,bounds.left+30*scale,bounds.top+120*scale);
+        check(after.index==100000 && after.path==drive.path,"隐藏快速访问立即重排图块和命中");
+        check(ui::HomeWidgetsHeight(hidden,320*scale,scale)<ui::HomeWidgetsHeight(all,320*scale,scale),"隐藏组件缩短滚动范围");
+        const auto scrolled=ui::HitHomeWidgets(all,bounds,100*scale,scale,bounds.left+30*scale,bounds.top+20*scale);
+        check(scrolled.index==0,"滚动后命中仍对应原图块");
+    }
+    const auto none=app::BuildHomeWidgets(sidebar,places,31);
+    check(ui::HitHomeWidgets(none,D2D1::RectF(0,0,400,600),0,1,40,120).index==-1,"全部关闭没有残留可点击图块");
+    failed+=CaptureHomeWidgets(std::filesystem::absolute(output).parent_path(),log);
+    return failed ? 1 : 0;
+}
+#endif

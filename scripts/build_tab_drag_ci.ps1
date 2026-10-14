@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression)
+param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -15,6 +15,23 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $allowed = @('.github/workflows/custom-build.yml', 'scripts/build_tab_drag_ci.ps1',
     'src/app/tab_transfer_test.cpp', 'src/app/selftest_1b2.cpp',
     'src/app/app_input.cpp', 'src/app/app_main.cpp', 'src/app/tab_detach.cpp', 'src/app/tab_detach.h')
+if ($FileUi) {
+    # 这些模块只链接进主程序；辅助进程和转换/预览组件仍复用校验后的完整包。
+    $allowed += @('src/app/app_hover.cpp', 'src/app/app_model.cpp', 'src/app/app_model.h',
+        'src/app/app_commands.cpp', 'src/app/context_menu.cpp', 'src/app/context_menu.h',
+        'src/app/recycle_place_commands.cpp', 'src/app/recycle_place_commands.h',
+        'src/app/recycle_place_menu_test.cpp', 'src/app/list_checkbox_test.cpp',
+        'src/ui/ui_renderer.h', 'src/ui/ui_hit_test.cpp', 'src/ui/ui_pane_list.cpp',
+        'src/ui/view_layout.cpp', 'src/ui/view_layout.h',
+        'src/ui/fluent_components.cpp', 'src/ui/fluent_components.h',
+        'src/ui/ui_toolbar.cpp', 'src/ui/recycle_toolbar.cpp', 'src/ui/recycle_toolbar.h')
+    $allowed += @('src/app/app_prefs.cpp', 'src/app/app_prefs.h', 'src/app/app_runtime.cpp',
+        'src/app/app_navigation.cpp', 'src/app/settings_controller.cpp', 'src/app/settings_ui.cpp',
+        'src/app/sidebar_sections.cpp', 'src/ui/settings_layout_sections.h',
+        'src/ui/ui_renderer_internal.h', 'src/ui/ui_settings_core.cpp',
+        'src/app/home_widgets.cpp', 'src/app/home_widgets.h', 'src/app/home_widget_actions.cpp',
+        'src/app/home_widgets_test.cpp', 'src/ui/home_widgets.cpp', 'src/ui/home_widgets.h')
+}
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
     & git fetch --no-tags --depth=1 origin $baseCommit
@@ -113,7 +130,9 @@ if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-foreach ($testCase in @('tab-drag-input', 'tab-transfer', 'tab-pin-boundary')) {
+$testCases = if ($FileUi) { @('list-checkbox', 'recycle-place-menu', 'home-widgets') }
+    else { @('tab-drag-input', 'tab-transfer', 'tab-pin-boundary') }
+foreach ($testCase in $testCases) {
     $env:PULSE_SELFTEST_CASE = $testCase
     $process = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
     if (-not $process.WaitForExit(60000)) { $process.Kill(); $process.WaitForExit(); $testFailures.Add("timeout: $testCase") }

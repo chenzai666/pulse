@@ -667,8 +667,9 @@ D2D1_RECT_F MainRenderer::NameCellRect(const D2D1_RECT_F& pane_bounds, int view_
     const float icon_size = 16.0f * scale_;
     const float row_h = row_height_px > 0.0f ? row_height_px : row_height_;
     const float row_y = list_y + static_cast<float>(view_row) * row_h - scroll_y;
-    const float name_x = list_x + margin_ + icon_size + margin_ + 4.0f * scale_;
-    const float name_avail = name_w - icon_size - margin_ * 3;
+    const float name_x = list_x + margin_ + icon_size + margin_ +
+        (4.0f + kDetailsSelectionLaneDip) * scale_;
+    const float name_avail = std::max(0.0f, name_w - icon_size - margin_ * 3 - kDetailsSelectionLaneDip * scale_);
     const float inset = 1.0f * scale_;
     return D2D1::RectF(name_x, row_y + inset, name_x + std::max(40.0f * scale_, name_avail),
                        row_y + row_h - inset);
@@ -1597,6 +1598,15 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
     const float bottom = bounds.bottom;
     if (w <= 1.0f || bottom - y0 <= 1.0f) return;
 
+    if (pane.is_home) {
+        const float maximum = std::max(0.0f, HomeWidgetsHeight(vm.home_widgets, w, scale_) - (bottom - y0));
+        DrawHomeWidgets(painter_, *compositor_, theme, vm.home_widgets, bounds,
+            std::clamp(pane.scroll_y, 0.0f, maximum), scale_,
+            vm.hover_region == static_cast<int>(HitTestResult::HomeWidget) && vm.hover_pane_index == pane_index
+                ? vm.hover_control_index : -1);
+        return;
+    }
+
     dc->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Each pane is a card on the shared sheet; the frame below outlines it.
@@ -1852,6 +1862,16 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
         FillRect(dc, brFillInput_.get(), x, y, w, column_header_height_);
         FillRect(dc, brStrokeDivider_.get(), x, y + column_header_height_ - 1, w, 1);
         const DetailsColumnLayout columns = DetailsColumns(bounds, pane);
+        auto check_cell = DetailsContentRect(bounds, scale_);
+        check_cell.top = y;
+        check_cell.bottom = y + column_header_height_;
+        fluent::ControlState check_state;
+        check_state.enabled = pane.EntryCount() > 0 && !pane.loading;
+        check_state.checked = pane.visible_selected_count > 0;
+        check_state.hovered = vm.hover_region == static_cast<int>(HitTestResult::SelectAllCheckbox) &&
+            vm.hover_pane_index == pane_index;
+        painter_.DrawCheckBox(DetailsSelectionRect(check_cell, scale_), L"", check_state,
+            check_state.checked && static_cast<size_t>(pane.visible_selected_count) < pane.EntryCount());
         if (pane_index >= 0 && pane_index < static_cast<int>(painted_columns_.size())) {
             uint32_t mask = columns.two_line ? (1u << 8) : 0u;
             for (int col = 0; col < columns.count; ++col)
@@ -1863,9 +1883,9 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
             const bool active = !pane.curated_order && pane.sort_column == col;
             MakeBrush(dc, active ? theme.accent : theme.text, brText_);
             IDWriteTextFormat* fmt = compositor_->HeaderFormat();
-            const float textInset = 8.0f * scale_;
+            const float textInset = (8.0f + (col == SortColumn::Name ? kDetailsSelectionLaneDip : 0.0f)) * scale_;
             const float contentLeft = cx + textInset;
-            const float availableW = std::max(0.0f, cw - textInset * 2.0f);
+            const float availableW = std::max(0.0f, cw - textInset - 8.0f * scale_);
             const float iconW = active ? 12.0f * scale_ : 0.0f;
             const float iconGap = active ? 3.0f * scale_ : 0.0f;
             const float labelAvailable = std::max(0.0f, availableW - iconW - iconGap);
@@ -2461,6 +2481,12 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     (bg.top + bg.bottom - bar_h) * 0.5f, 2.5f * scale_, bar_h, 1.25f * scale_);
             }
             if (draw_shapes && selected) selection_painter.Selected(bg);
+            if (draw_shapes && detailsView && (selected || hover)) {
+                fluent::ControlState check_state;
+                check_state.checked = selected;
+                check_state.hovered = hover_region == static_cast<int>(HitTestResult::RowCheckbox) && hover;
+                painter_.DrawCheckBox(DetailsSelectionRect(cell, scale_), L"", check_state);
+            }
             if (draw_shapes && row_flash > 0.0f && !IsHighContrast()) {
                 // Newly appeared (pasted / created / extracted) row: fading accent wash.
                 MakeBrush(dc, WithAlpha(theme.accent, 0.20f * row_flash), brFillInput_);
