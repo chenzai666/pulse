@@ -158,6 +158,7 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
             vm.settings_scroll=layout.home_folder_card.top-layout.content.top-12*scale;
             layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
             const auto home_button=layout.home_folder_home;
+            check(home_button.top>=layout.home_folder_card.top+56*scale,"默认位置按钮避开说明文字");
             const auto home_hit=state->renderer.HitTest(vm,bounds,(home_button.left+home_button.right)/2,(home_button.top+home_button.bottom)/2);
             check(home_hit.region==ui::HitTestResult::SettingsHomeFolder && home_hit.index==2,"默认位置主页按钮命中正确");
             dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));

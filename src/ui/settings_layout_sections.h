@@ -161,7 +161,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     section(1);
     l.startup_row[0]=row(64); l.start_in_tray_row=row(64); l.startup_row[1]=row(64);
     l.notify_icon_card=row(narrow ? 98.0f : 64.0f); segments(l.notify_icon_card,l.notify_icon_row,3,282);
-    l.home_folder_card=row(narrow ? 138.0f : 98.0f);
+    l.home_folder_card=row(narrow ? 152.0f : 104.0f);
     {
         const float rw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::ThisPc)) : 80*scale;
         const float cw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::SettingsHomeFolderPick)) : 120*scale;
