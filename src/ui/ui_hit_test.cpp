@@ -353,6 +353,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     r.index = 1;
                     return r;
                 }
+                if (ContainsPt(lay.home_folder_home, x, y)) {
+                    r.region = HitTestResult::SettingsHomeFolder; r.index = 2; return r;
+                }
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.tray_icon_row[i], x, y)) {
                         r.region = HitTestResult::SettingsTrayIcon;

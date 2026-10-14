@@ -395,7 +395,13 @@ void RememberPath(AppState& s, const std::wstring& path) {
 
 void RecordRecentOpen(AppState& s, const std::wstring& path,
                              app::PlaceItemKind kind) {
+    if(path.empty() || fs::IsVirtualPath(path)) return;
     s.places.RecordRecent(path, kind);
+    // 多选打开时不能在输入循环中替换快照；下一帧合并刷新所有窗口。
+    app::ForEachWindowSharingCore(s,[&](AppState& window) {
+        window.recentViewsRefreshPending=true;
+        if(window.hwnd) InvalidateRect(window.hwnd,nullptr,FALSE);
+    });
 }
 void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
     D2D1_RECT_F content = s.renderer.ContentRect(
@@ -1000,9 +1006,20 @@ void RefreshRecentViews(AppState& s) {
         app::Tab* tab = pane.ActiveTab();
         if (!tab) return;
         std::wstring kind;
-        if (app::ParsePulsePath(tab->current_path, &kind, nullptr) && kind == L"recent")
+        if (app::ParsePulsePath(tab->current_path, &kind, nullptr) && kind == L"recent") {
+            CaptureListingSelection(*tab);
+            const auto snapshot=tab->snapshot;
             LoadVirtualView(s, *tab, tab->current_path);
+            if(snapshot) tab->SetSnapshot(snapshot);
+        }
     });
+}
+
+bool TickRecentViews(AppState& s) {
+    if(!s.recentViewsRefreshPending) return false;
+    s.recentViewsRefreshPending=false;
+    RefreshRecentViews(s);
+    return true;
 }
 
 bool IsRecycleTab(const app::Tab* tab) {

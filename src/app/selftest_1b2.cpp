@@ -3471,11 +3471,11 @@ void TestFolderSorts() {
 void TestStartupLocation() {
     AppPrefs prefs;
     prefs.persist = false;
-    Check(prefs.startup_open == 0 && prefs.new_tab_open == 0 && prefs.home_folder.empty() &&
-          app::RestoresLastTabs(prefs) && app::DefaultLocation(prefs).empty(),
-          L"startup location: defaults restore the last tabs and point at This PC");
-    Check(app::NewTabLocation(prefs, L"D:\\Current") == L"D:\\Current",
-          L"startup location: new tabs keep the current folder by default");
+    Check(prefs.startup_open == 0 && prefs.new_tab_open == 1 && prefs.home_folder==L"pulse:home" &&
+          app::RestoresLastTabs(prefs) && app::DefaultLocation(prefs)==L"pulse:home",
+          L"startup location: defaults restore the last tabs and new tabs open Home");
+    Check(app::NewTabLocation(prefs, L"D:\\Current") == L"pulse:home",
+          L"startup location: new tabs open the default Home location");
     prefs.startup_open = 1;
     prefs.new_tab_open = 1;
     prefs.home_folder = L"\\\\server\\share\\照片";
@@ -3488,10 +3488,10 @@ void TestStartupLocation() {
     Check(app::NewTabLocation(reloaded, L"D:\\Current") == prefs.home_folder,
           L"startup location: new tabs open the default location when chosen (#34)");
     reloaded.FromJson(L"{\"startup_open\":7,\"new_tab_open\":-1}");
-    Check(reloaded.startup_open == 0 && reloaded.new_tab_open == 0 && reloaded.home_folder.empty(),
-          L"startup location: invalid or missing values keep the old behavior");
+    Check(reloaded.startup_open == 0 && reloaded.new_tab_open == 0 && reloaded.home_folder==L"pulse:home",
+          L"startup location: invalid mode retains current-folder rule and missing location defaults to Home");
     prefs.ResetToDefaults();
-    Check(prefs.startup_open == 0 && prefs.new_tab_open == 0 && prefs.home_folder.empty(),
+    Check(prefs.startup_open == 0 && prefs.new_tab_open == 1 && prefs.home_folder==L"pulse:home",
           L"startup location: reset restores defaults");
 
     wchar_t temp[MAX_PATH]{};
@@ -3521,10 +3521,12 @@ void TestStartupLocation() {
             state->pane = state->window_tabs.Active()->panes.front().get();
             StartLoadingPath(*state, *state->pane->ActiveTab(), work);
             const std::wstring work_path = state->pane->ActiveTab()->current_path;
+            state->appPrefs.new_tab_open = 0;
             Check(NewTabPath(*state) == work_path,
                   L"startup location: current-folder mode opens the active folder");
             const size_t before = state->window_tabs.items.size();
             state->appPrefs.new_tab_open = 1;
+            state->appPrefs.home_folder.clear();
             Check(NewTabPath(*state).empty(), L"startup location: default location starts as This PC");
             OpenNewTab(*state);
             const app::Tab* opened = ActiveTab(*state);

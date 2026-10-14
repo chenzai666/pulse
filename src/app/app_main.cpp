@@ -1476,7 +1476,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         if (s && wParam == kTimerUi) {
             SyncUiTimerRate(*s, hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
-            bool dirty = false;
+            bool dirty = TickRecentViews(*s);
             if (TickChangeTracking(*s)) dirty = true;
             static bool folderSizeResortWaiting = false;
             if (s->folderSizes.TakeChanged()) {

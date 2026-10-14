@@ -8,7 +8,7 @@ namespace pulse::app {
 
 struct AppPrefs;
 
-// The configured default location: a folder path, or empty for This PC.
+// 默认位置：pulse:home、文件夹路径，或空字符串表示此电脑。
 std::wstring DefaultLocation(const AppPrefs& prefs);
 
 // True when startup should bring back the previous session's tabs.

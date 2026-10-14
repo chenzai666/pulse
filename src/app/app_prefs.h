@@ -53,11 +53,11 @@ struct AppPrefs {
     int folder_sort_mode = 0;
     // Optional Details columns for every folder (ui/details_column_set.h bits).
     uint32_t details_columns = ui::kDetailsColumnsDefault;
-    // Where Pulse opens. home_folder is the default location; empty means This PC.
+    // 默认位置可为 pulse:home、文件夹路径或空字符串（此电脑）。
     // startup_open: 0 restore the last tabs, 1 open the default location.
     // new_tab_open: 0 the current folder, 1 the default location.
     int startup_open = 0;
-    int new_tab_open = 0;
+    int new_tab_open = 1;
     // external_open: where a folder opened from another program goes
     // (multi-window M7, plan §6): 0 smart, 1 always a tab, 2 always a new window.
     int external_open = 0;
@@ -70,7 +70,7 @@ struct AppPrefs {
     bool confirm_recycle_delete = false; // ask before Delete moves items to the Recycle Bin
     // Sign-in launches (Run value with --startup) stay hidden behind the tray icon.
     bool start_in_tray = false;
-    std::wstring home_folder;
+    std::wstring home_folder = L"pulse:home";
     // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
     int text_render = 0;
     // Interface font size in percent of the built-in sizes: 90 / 100 / 112 / 125.

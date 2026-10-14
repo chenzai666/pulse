@@ -108,6 +108,7 @@ void SpawnTrayPuffs(AppState& s);
 void MarkTrayExit(AppState& s, const std::vector<std::wstring>& paths, bool stagger);
 void RefreshStarredViews(AppState& s);
 void RefreshRecentViews(AppState& s);
+bool TickRecentViews(AppState& s);
 bool IsRecycleTab(const app::Tab* tab);
 std::wstring RecycleOccupancyText(const fs::RecycleBinInfo& info);
 void ApplyRecycleOccupancy(AppState& s);

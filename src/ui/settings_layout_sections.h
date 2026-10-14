@@ -161,12 +161,19 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     section(1);
     l.startup_row[0]=row(64); l.start_in_tray_row=row(64); l.startup_row[1]=row(64);
     l.notify_icon_card=row(narrow ? 98.0f : 64.0f); segments(l.notify_icon_card,l.notify_icon_row,3,282);
-    l.home_folder_card=row(narrow ? 98.0f : 64.0f);
+    l.home_folder_card=row(narrow ? 138.0f : 98.0f);
     {
         const float rw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::ThisPc)) : 80*scale;
         const float cw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::SettingsHomeFolderPick)) : 120*scale;
         l.home_folder_reset=D2D1::RectF(right-16*scale-rw,y-44*scale,right-16*scale,y-12*scale);
         l.home_folder_choose=D2D1::RectF(l.home_folder_reset.left-8*scale-cw,y-44*scale,l.home_folder_reset.left-8*scale,y-12*scale);
+        const float hw=painter ? painter->MeasureButtonWidth(l10n::Pick(L"主页",L"Home")) : 64*scale;
+        l.home_folder_home=D2D1::RectF(l.home_folder_choose.left-8*scale-hw,y-44*scale,l.home_folder_choose.left-8*scale,y-12*scale);
+        if(narrow) {
+            l.home_folder_home=D2D1::RectF(left+16*scale,y-88*scale,left+16*scale+hw,y-56*scale);
+            l.home_folder_reset=D2D1::RectF(l.home_folder_home.right+8*scale,y-88*scale,l.home_folder_home.right+8*scale+rw,y-56*scale);
+            l.home_folder_choose=D2D1::RectF(left+16*scale,y-44*scale,right-16*scale,y-12*scale);
+        }
     }
     l.startup_open_card=row(narrow ? 98.0f : 64.0f); segments(l.startup_open_card,l.startup_open_row,2,282);
     l.new_tab_open_card=row(narrow ? 98.0f : 64.0f); segments(l.new_tab_open_card,l.new_tab_open_row,2,282);

@@ -784,6 +784,8 @@ void SettingsController::HomeFolder(int action) {
         prefs_->home_folder = std::move(path);
     } else if (action == 1 && !prefs_->home_folder.empty()) {
         prefs_->home_folder.clear();
+    } else if (action == 2 && prefs_->home_folder != L"pulse:home") {
+        prefs_->home_folder = L"pulse:home";
     } else {
         return;
     }

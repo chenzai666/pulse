@@ -32,6 +32,12 @@ if ($FileUi) {
         'src/ui/ui_renderer_internal.h', 'src/ui/ui_settings_core.cpp',
         'src/app/home_widgets.cpp', 'src/app/home_widgets.h', 'src/app/home_widget_actions.cpp',
         'src/app/home_widgets_test.cpp', 'src/ui/home_widgets.cpp', 'src/ui/home_widgets.h')
+    $allowed += @('src/app/app_state.h','src/app/app_runtime.h','src/app/startup_location.h',
+        'src/app/resource.h','src/app/pulse.rc',
+        'assets/fluent/home_document_24_color.svg','assets/fluent/home_picture_24_color.svg',
+        'assets/fluent/home_music_24_color.svg','assets/fluent/home_video_24_color.svg',
+        'assets/fluent/home_folder_24_color.svg','assets/fluent/home_drive_24_color.svg',
+        'assets/fluent/home_download_24_color.svg')
 }
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {

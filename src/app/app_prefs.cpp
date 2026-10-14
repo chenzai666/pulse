@@ -75,13 +75,13 @@ void AppPrefs::ResetToDefaults() {
     folder_sort_mode = 0;
     details_columns = ui::kDetailsColumnsDefault;
     startup_open = 0;
-    new_tab_open = 0;
+    new_tab_open = 1;
     external_open = 0;
     close_window_with_last_tab = true;
     close_tab_on_double_click = false;
     confirm_recycle_delete = false;
     start_in_tray = false;
-    home_folder.clear();
+    home_folder = L"pulse:home";
     text_render = 0;
     ui_font_scale = 100;
     folder_views.Clear();
@@ -329,7 +329,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     details_columns = ui::NormalizeDetailsColumns(static_cast<uint32_t>(pulse::json::ExtractInt(
         json, L"details_columns", static_cast<int>(ui::kDetailsColumnsDefault))));
     startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
-    new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 0) == 1 ? 1 : 0;
+    new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 1) == 1 ? 1 : 0;
     external_open = pulse::json::ExtractInt(json, L"external_open", 0);
     if (external_open < 0 || external_open > 2) external_open = 0;
     // Missing key = preferences saved before the setting existed: keep their behavior.
@@ -337,7 +337,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     close_tab_on_double_click = pulse::json::ExtractBool(json, L"close_tab_on_double_click", false);
     confirm_recycle_delete = pulse::json::ExtractBool(json, L"confirm_recycle_delete", false);
     start_in_tray = pulse::json::ExtractBool(json, L"start_in_tray", false);
-    home_folder = pulse::json::ExtractString(json, L"home_folder");
+    home_folder = pulse::json::ExtractString(json, L"home_folder", L"pulse:home");
     text_render = pulse::json::ExtractInt(json, L"text_render", 0);
     if (text_render < 0 || text_render > 2) text_render = 0;
     ui_font_scale = NormalizeUiFontScale(pulse::json::ExtractInt(json, L"ui_font_scale", 100));

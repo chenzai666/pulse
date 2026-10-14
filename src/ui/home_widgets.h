@@ -36,6 +36,7 @@ struct HomeWidgetHit {
 
 // 绘制和命中共用布局；输入仅为应用已缓存的数据，不在 UI 线程访问磁盘或网络。
 float HomeWidgetsHeight(const HomeWidgets& widgets, float width, float scale);
+int HomeIconResource(std::wstring_view glyph);
 HomeWidgetHit HitHomeWidgets(const HomeWidgets& widgets, const D2D1_RECT_F& bounds,
                             float scroll, float scale, float x, float y);
 void DrawHomeWidgets(fluent::Painter& painter, Compositor& compositor, const Theme& theme,

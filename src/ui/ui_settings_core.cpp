@@ -283,10 +283,12 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             // Default location: buttons sit beside the text, or below it when narrow.
             const bool below=lay.home_folder_choose.top>lay.home_folder_card.top+40*scale_;
             label(lay.home_folder_card,l10n::Get(I::SettingsHomeFolder),
-                vm.settings_home_folder.empty() ? l10n::Get(I::ThisPc) : vm.settings_home_folder,L"\xE80F",
+                vm.settings_home_folder==L"pulse:home" ? l10n::Pick(L"主页",L"Home") :
+                    vm.settings_home_folder.empty() ? l10n::Get(I::ThisPc) : vm.settings_home_folder,L"\xE80F",
                 below ? lay.home_folder_card.right-16*scale_ : lay.home_folder_choose.left-12*scale_);
             button(lay.home_folder_choose,l10n::Get(I::SettingsHomeFolderPick),H::SettingsHomeFolder,0);
             button(lay.home_folder_reset,l10n::Get(I::ThisPc),H::SettingsHomeFolder,1,false,!vm.settings_home_folder.empty());
+            button(lay.home_folder_home,l10n::Pick(L"主页",L"Home"),H::SettingsHomeFolder,2,false,vm.settings_home_folder!=L"pulse:home");
             divider(lay.home_folder_card);
         }
         const I startup_open[]={I::StartupOpenLastTabs,I::OpenDefaultLocation};const int two_values[]={0,1};

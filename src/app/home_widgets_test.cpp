@@ -8,10 +8,58 @@
 #ifdef PULSE_WITH_SELFTEST
 #include "app_internal.h"
 #include "app_commands.h"
+#include "startup_location.h"
 #include "../ui/ui_renderer_internal.h"
 #include <memory>
 
 namespace {
+int VerifyHomeNavigation(pulse::AppState& state,const std::filesystem::path& directory,std::ofstream& log) {
+    using namespace pulse;
+    int failed=0;
+    auto check=[&](bool ok,const char* label){log<<(ok ? "[PASS] " : "[FAIL] ")<<label<<'\n';if(!ok)++failed;};
+    const auto fixture=directory/L"home-navigation-fixture";
+    std::filesystem::create_directories(fixture/L"visited-folder");
+    const auto folder=fs::NormalizePath((fixture/L"visited-folder").wstring());
+    const auto file=fs::NormalizePath((fixture/L"opened-file.txt").wstring());
+    std::ofstream(fixture/L"opened-file.txt")<<"recent fixture";
+    state.places.recent_items.clear();
+    state.worker.Start([&](app::WorkResult result) {
+        std::lock_guard lock(state.resultMutex);state.results.push(std::move(result));
+    });
+    const auto wait=[&](const std::function<bool()>& ready) {
+        const auto end=GetTickCount64()+5000;
+        while(GetTickCount64()<end) {
+            ProcessPendingResults(state);
+            if(ready()) return true;
+            Sleep(10);
+        }
+        return false;
+    };
+    NavigateTo(state,folder);
+    check(wait([&]{return ActiveTab(state) && !ActiveTab(state)->loading;}),"真实目录导航完成");
+    check(state.places.FindRecent(folder)!=nullptr,"真实导航立即写入最近访问记录");
+    OpenNewTab(state);
+    check(ActiveTab(state) && app::IsHomePath(ActiveTab(state)->current_path) && BuildVm(state,false).pane.is_home,
+        "从文件夹点击新标签页真正打开默认主页");
+    const auto home=BuildVm(state,false).home_widgets;
+    check(home.sections[4].items.size()==1 && home.sections[4].items[0].path==folder,"真实访问记录进入主页组件");
+    OpenTabAt(state,app::MakeRecentPath());
+    check(wait([&]{return ActiveTab(state) && !ActiveTab(state)->loading && ActiveTab(state)->EntryCount()==1;}),
+        "最近访问页面从真实记录异步加载目录");
+    auto* recent=ActiveTab(state);
+    const auto snapshot=recent->snapshot;
+    RecordRecentOpen(state,file,app::PlaceItemKind::File);
+    check(state.recentViewsRefreshPending && recent->snapshot==snapshot,"记录新文件时保留正在显示的快照并排队刷新");
+    check(TickRecentViews(state) && !state.recentViewsRefreshPending && recent->snapshot==snapshot,
+        "下一帧合并刷新最近访问且加载期间没有空白");
+    check(wait([&]{return !recent->loading && recent->EntryCount()==2;}),"无需重开标签即可看到新访问记录");
+    const auto entries=recent->snapshot;
+    check(entries && (*entries)[0].full_path==file && !(*entries)[0].is_dir && (*entries)[1].is_dir,
+        "最近访问真实列表按最新记录排序并区分文件和目录");
+    check(!TickRecentViews(state),"没有新记录时不重复枚举最近访问");
+    state.worker.Stop();
+    return failed;
+}
 int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& log) {
     using namespace pulse;
     int failures=0;
@@ -25,7 +73,7 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
         state->isolatedTest=true;state->scale=scale;
         state->places.persist=state->appPrefs.persist=state->ctxMenuPrefs.persist=state->searchHistory.persist=false;
         state->hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOREDIRECTIONBITMAP,wc.lpszClassName,L"",WS_POPUP,
-            -30000,-30000,static_cast<int>(1100*scale),static_cast<int>(920*scale),nullptr,nullptr,wc.hInstance,nullptr);
+            -30000,-30000,static_cast<int>(1320*scale),static_cast<int>(920*scale),nullptr,nullptr,wc.hInstance,nullptr);
         if(!check(state->hwnd && state->compositor.Init(state->hwnd),"初始化隔离主页渲染器")) {
             if(state->hwnd)DestroyWindow(state->hwnd);
             state->hwnd=nullptr;continue;
@@ -102,6 +150,16 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
             dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
             const auto settings=L"home-settings-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
             check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/settings).c_str()),"中文主页设置两主题截图");
+            vm.settings_scroll=0;
+            layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            vm.settings_scroll=layout.home_folder_card.top-layout.content.top-12*scale;
+            layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            const auto home_button=layout.home_folder_home;
+            const auto home_hit=state->renderer.HitTest(vm,bounds,(home_button.left+home_button.right)/2,(home_button.top+home_button.bottom)/2);
+            check(home_hit.region==ui::HitTestResult::SettingsHomeFolder && home_hit.index==2,"默认位置主页按钮命中正确");
+            dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            const auto location=L"home-default-location-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
+            check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/location).c_str()),"主页默认位置和新标签页设置截图");
             vm.settings_sidebar_hidden=1u<<static_cast<int>(app::SidebarSectionId::Tags);
             vm.settings_scroll=0;
             layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
@@ -127,6 +185,7 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
             const auto name=L"home-narrow-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
             check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/name).c_str()),"窄窗口主页卡片换行截图");
         }
+        if(scale==1.0f) failures+=VerifyHomeNavigation(*state,directory,log);
         const HWND hwnd=state->hwnd;state->hwnd=nullptr;DestroyWindow(hwnd);
     }
     UnregisterClassW(wc.lpszClassName,wc.hInstance);
@@ -140,6 +199,12 @@ int RunHomeWidgetsTest(const wchar_t* output) {
     int failed=0;
     auto check=[&](bool ok,const char* label){log<<(ok ? "[PASS] " : "[FAIL] ")<<label<<'\n';if(!ok)++failed;};
     app::AppPrefs prefs;prefs.persist=false;
+    check(prefs.new_tab_open==1 && app::IsHomePath(app::DefaultLocation(prefs)),"新配置默认新标签页打开主页");
+    app::AppPrefs explicit_prefs;explicit_prefs.persist=false;
+    explicit_prefs.FromJson(L"{\"new_tab_open\":0,\"home_folder\":\"\"}");
+    check(explicit_prefs.new_tab_open==0 && app::DefaultLocation(explicit_prefs).empty(),"保留用户显式选择的当前目录和此电脑");
+    explicit_prefs.home_folder=L"D:\\Chosen";explicit_prefs.new_tab_open=1;
+    check(app::NewTabLocation(explicit_prefs,L"C:\\Current")==L"D:\\Chosen","自定义默认目录仍被新标签页使用");
     check(prefs.FromJson(L"{}") && prefs.home_widgets_hidden==0,"旧配置默认启用全部主页组件");
     for(uint32_t mask=0;mask<32;++mask) {
         prefs.home_widgets_hidden=mask;
@@ -179,15 +244,17 @@ int RunHomeWidgetsTest(const wchar_t* output) {
         "磁盘卡片由缓存显示完整可用空间和总容量");
     const auto wide=ui::HitHomeWidgets(folders,D2D1::RectF(0,0,1100,700),0,1,1050,100);
     check(wide.index==5 && wide.path==sidebar.home_folders[5].path,"宽主页六列卡片绘制与点击位置一致");
+    const auto recent_hit=ui::HitHomeWidgets(all,D2D1::RectF(0,0,1100,900),0,1,40,344);
+    check(recent_hit.index==400000,"最近访问紧跟磁盘并在首屏提供实际点击入口");
     for(float scale:{1.0f,1.25f,2.0f}) {
         const auto bounds=D2D1::RectF(20,30,20+320*scale,30+600*scale);
-        const auto hit=ui::HitHomeWidgets(all,bounds,0,scale,bounds.left+30*scale,bounds.top+120*scale);
+        const auto hit=ui::HitHomeWidgets(all,bounds,0,scale,bounds.left+30*scale,bounds.top+100*scale);
         check(hit.index==0 && hit.path==shortcut.path,"窄窗口及不同缩放的图块命中与布局一致");
         const auto hidden=app::BuildHomeWidgets(sidebar,places,1);
-        const auto after=ui::HitHomeWidgets(hidden,bounds,0,scale,bounds.left+30*scale,bounds.top+120*scale);
+        const auto after=ui::HitHomeWidgets(hidden,bounds,0,scale,bounds.left+30*scale,bounds.top+100*scale);
         check(after.index==100000 && after.path==drive.path,"隐藏快速访问立即重排图块和命中");
         check(ui::HomeWidgetsHeight(hidden,320*scale,scale)<ui::HomeWidgetsHeight(all,320*scale,scale),"隐藏组件缩短滚动范围");
-        const auto scrolled=ui::HitHomeWidgets(all,bounds,100*scale,scale,bounds.left+30*scale,bounds.top+20*scale);
+        const auto scrolled=ui::HitHomeWidgets(all,bounds,80*scale,scale,bounds.left+30*scale,bounds.top+20*scale);
         check(scrolled.index==0,"滚动后命中仍对应原图块");
     }
     const auto none=app::BuildHomeWidgets(sidebar,places,31);

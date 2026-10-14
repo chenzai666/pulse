@@ -1605,7 +1605,7 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
             vm.hover_region == static_cast<int>(HitTestResult::HomeWidget) && vm.hover_pane_index == pane_index
                 ? vm.hover_control_index : -1,
             [this](std::wstring_view glyph,const D2D1_RECT_F& icon) {
-                const int svg=FluentSvgIdForGlyph(glyph);
+                const int svg=HomeIconResource(glyph);
                 return !IsHighContrast() && svg && DrawFluentSvg(svg,icon,1.0f,nullptr,true);
             });
         return;

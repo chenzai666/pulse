@@ -275,6 +275,7 @@ struct AppState : AppCoreOwner {
     uint32_t sidebarCollapsedMask = 0;
     ULONGLONG sidebarPeekArmAt = 0;     // rail hover start; 0 = not armed
     uint32_t sidebarHiddenMask = 0;  // Section menu: hidden groups are not drawn.
+    bool recentViewsRefreshPending = false;
     // Section display order (logical SidebarSectionId values). Header drags
     // rewrite it; the masks above are indexed by id, so they survive a reorder.
     std::vector<int> sidebarOrder = app::DefaultSidebarOrder();
