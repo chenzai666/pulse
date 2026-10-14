@@ -200,6 +200,75 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
     return failures;
 }
 }
+int RunHomePathDisplayTest(const wchar_t* output) {
+    using namespace pulse;
+    const auto directory = std::filesystem::absolute(output).parent_path();
+    std::filesystem::create_directories(directory);
+    std::ofstream log{std::filesystem::path(output)};
+    int failed = 0;
+    const auto check = [&](bool ok, const char* label) {
+        log << (ok ? "[PASS] " : "[FAIL] ") << label << '\n';
+        if (!ok) ++failed;
+        return ok;
+    };
+    const auto language = l10n::preference();
+    l10n::SetLanguage(L"zh-CN");
+    app::PlacesCatalog places; places.persist = false;
+    const std::wstring long_path = L"E:\\下载\\" + std::wstring(280, L'长') + L"\\说明.txt";
+    const std::vector<std::wstring> expected{
+        L"E:\\下载\\Satelite_1.0.46_x64-setup.exe", L"E:\\下载", L"\\\\server\\共享\\工作资料", long_path};
+    places.recent_items = {
+        {L"\\\\?\\" + expected[0], app::PlaceItemKind::File, 0},
+        {L"\\\\?\\" + expected[1], app::PlaceItemKind::Folder, 0},
+        {L"\\\\?\\UNC\\server\\共享\\工作资料", app::PlaceItemKind::Folder, 0},
+        {L"\\\\?\\" + expected[3], app::PlaceItemKind::File, 0}};
+    app::SidebarModel sidebar;
+    const auto widgets = app::BuildHomeWidgets(sidebar, places, 15);
+    check(widgets.sections[4].items.size() == expected.size(), "最近访问文件、文件夹、网络及超长路径全部保留");
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const auto& item = widgets.sections[4].items[i];
+        check(item.detail == expected[i], "卡片文字显示普通路径，网络路径保留双反斜线");
+        check(item.path == places.recent_items[i].path, "用于打开和固定的内部长路径保持原样");
+    }
+    places.recent_items = {{L"E:\\普通目录", app::PlaceItemKind::Folder, 0}};
+    check(app::BuildHomeWidgets(sidebar, places, 15).sections[4].items[0].detail == L"E:\\普通目录",
+        "普通路径显示不变");
+    const HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
+        L"STATIC", L"Pulse 路径显示测试", WS_POPUP, -30000, -30000, 1100, 680,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (check(window != nullptr, "创建隔离渲染窗口")) {
+        {
+            ui::Compositor compositor;
+            if (check(compositor.Init(window), "初始化主页渲染器")) {
+                ui::MainRenderer renderer; renderer.SetCompositor(&compositor);
+                for (float scale : {1.0f, 1.5f, 2.0f}) {
+                    compositor.RecreateTextFormats(scale); renderer.SetScale(scale);
+                    for (int width : {1100, 640}) {
+                        compositor.Resize(static_cast<int>(width * scale), static_cast<int>(680 * scale));
+                        const auto bounds = D2D1::RectF(0, 0, static_cast<float>(compositor.Width()),
+                            static_cast<float>(compositor.Height()));
+                        for (bool dark : {false, true}) {
+                            ui::WindowViewModel vm;
+                            vm.dark = dark; vm.home_widgets = widgets; vm.pane.is_home = true;
+                            vm.pane.path = app::kHomePath; vm.tabs.push_back({L"主页", true});
+                            auto* dc = compositor.Dc(); dc->BeginDraw();
+                            renderer.Render(vm, bounds, ui::MakeTheme(dark, ui::HexColor(0x0078D4)));
+                            const auto name = L"home-path-display-" + std::to_wstring(static_cast<int>(scale * 100)) +
+                                L"-" + std::to_wstring(width) + (dark ? L"-dark.png" : L"-light.png");
+                            check(SUCCEEDED(dc->EndDraw()) && compositor.SaveSnapshot((directory / name).c_str()),
+                                "最近访问路径在明暗主题、宽窄窗口及不同缩放下生成截图");
+                        }
+                    }
+                }
+            }
+        }
+        check(!IsWindowVisible(window), "验证没有打开可见窗口或修改用户数据");
+        DestroyWindow(window);
+    }
+    l10n::SetLanguage(l10n::LanguageId(language));
+    return failed ? 1 : 0;
+}
+
 int RunHomeMenuTest(const wchar_t* output) {
     using namespace pulse;
     const auto directory = std::filesystem::absolute(output).parent_path();

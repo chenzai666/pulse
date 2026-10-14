@@ -1,8 +1,9 @@
 #requires -Version 7.2
-param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi, [switch]$HomeWidgetsOnly, [switch]$HomeMenuOnly)
+param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi, [switch]$HomeWidgetsOnly, [switch]$HomeMenuOnly, [switch]$HomePathDisplayOnly)
 $ErrorActionPreference = 'Stop'
 if ($HomeWidgetsOnly -and -not $FileUi) { throw '主页设置定向验证需要 FileUi 构建范围' }
 if ($HomeMenuOnly -and -not $FileUi) { throw '最近访问菜单定向验证需要 FileUi 构建范围' }
+if ($HomePathDisplayOnly -and -not $FileUi) { throw '主页路径显示定向验证需要 FileUi 构建范围' }
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
@@ -138,7 +139,8 @@ if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-$testCases = if ($HomeMenuOnly) { @('home-menu') }
+$testCases = if ($HomePathDisplayOnly) { @('home-path-display') }
+    elseif ($HomeMenuOnly) { @('home-menu') }
     elseif ($HomeWidgetsOnly) { @('home-widgets') }
     elseif ($FileUi) { @('list-checkbox', 'recycle-place-menu', 'home-widgets') }
     else { @('tab-drag-input', 'tab-transfer', 'tab-pin-boundary') }

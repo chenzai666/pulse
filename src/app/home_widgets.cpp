@@ -2,6 +2,7 @@
 #include "app_model.h"
 #include "places.h"
 #include "../common/localization.h"
+#include "../common/display_path.h"
 #include <algorithm>
 
 namespace pulse::app {
@@ -76,7 +77,7 @@ ui::HomeWidgets BuildHomeWidgets(const SidebarModel& sidebar, const PlacesCatalo
     for(const auto& recent:places.recent_items) {
         // 已知类型才提供打开操作；不为未知记录同步探测文件系统。
         if(recent.kind==PlaceItemKind::Unknown) continue;
-        ui::HomeWidgetItem item;item.title=TabTitle(recent.path);item.detail=recent.path;
+        ui::HomeWidgetItem item;item.title=TabTitle(recent.path);item.detail=path::FriendlyPathText(recent.path);
         item.path=recent.path;item.file=recent.kind==PlaceItemKind::File;
         item.glyph=item.file ? L"\xE8A5" : L"\xE8B7";
         result.sections[4].items.push_back(std::move(item));
