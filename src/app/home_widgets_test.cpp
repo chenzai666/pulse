@@ -7,6 +7,7 @@
 
 #ifdef PULSE_WITH_SELFTEST
 #include "app_internal.h"
+#include "app_commands.h"
 #include "../ui/ui_renderer_internal.h"
 #include <memory>
 
@@ -42,6 +43,31 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
         state->places.tags.push_back({L"work",L"工作",0x0078D4,{L"C:\\fixture\\report.txt"}});
         state->places.recent_items.push_back({L"C:\\fixture\\项目说明.txt",app::PlaceItemKind::File,0});
         const auto bounds=D2D1::RectF(0,0,static_cast<float>(state->compositor.Width()),static_cast<float>(state->compositor.Height()));
+        const uint32_t all_sections=(1u<<app::kSidebarSectionCount)-1;
+        for(int section=0;section<app::kSidebarSectionCount;++section) {
+            const uint32_t bit=1u<<section;
+            // 与右键“隐藏分组”相同的状态，并保留其原来的折叠状态。
+            state->sidebarHiddenMask=all_sections;
+            state->sidebarCollapsedMask=all_sections;
+            state->sidebarQuickAccessHiddenMask=0xffffffffu;
+            auto vm=BuildVm(*state,false);
+            check(vm.settings_sidebar_hidden==all_sections,"设置开关读取右键隐藏的真实侧边栏状态");
+            ui::HitTestResult action;action.region=ui::HitTestResult::SettingsToggle;
+            action.index=ui::kSettingsSidebarToggleBase+section;
+            check(HandleSettingsControl(*state,action),"侧边栏恢复开关进入真实输入处理");
+            vm=BuildVm(*state,false);
+            check(vm.settings_sidebar_hidden==(all_sections&~bit) && state->sidebarCollapsedMask==(all_sections&~bit),
+                "恢复当前分组同时展开，其他分组保持原状");
+            const int group=app::SidebarSectionIndex(vm,section);
+            check(group>=0 && !vm.sidebar[group].hidden && !vm.sidebar[group].collapsed,"恢复后的真实侧边栏可见且展开");
+            check(state->appPrefs.home_widgets_hidden==0 && vm.home_widgets.sections[3].visible,
+                "侧边栏恢复不改变主页小组件开关");
+            if(section==static_cast<int>(app::SidebarSectionId::QuickAccess))
+                check(state->sidebarQuickAccessHiddenMask==0,"重新显示快速访问恢复内置入口");
+            HandleSettingsControl(*state,action);
+            check(BuildVm(*state,false).settings_sidebar_hidden==all_sections,"设置中再次关闭正确隐藏分组");
+        }
+        state->sidebarHiddenMask=state->sidebarCollapsedMask=state->sidebarQuickAccessHiddenMask=0;
         for(bool dark:{false,true}) {
             auto vm=BuildVm(*state,false);vm.dark=dark;
             check(vm.pane.is_home && vm.home_widgets.sections.size()==5,"真实视图模型绑定主页缓存");
@@ -59,12 +85,24 @@ int CaptureHomeWidgets(const std::filesystem::path& directory, std::ofstream& lo
                 const auto hit=state->renderer.HitTest(vm,bounds,r.right-38*scale,(r.top+r.bottom)/2);
                 check(hit.region==ui::HitTestResult::SettingsToggle && hit.index==40+i,"主页开关真实命中映射");
             }
-            const auto r=layout.sidebar_network_row;
-            const auto hit=state->renderer.HitTest(vm,bounds,r.right-38*scale,(r.top+r.bottom)/2);
-            check(hit.region==ui::HitTestResult::SettingsToggle && hit.index==45,"侧边栏网络恢复使用独立开关");
             dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
             const auto settings=L"home-settings-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
             check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/settings).c_str()),"中文主页设置两主题截图");
+            vm.settings_sidebar_hidden=1u<<static_cast<int>(app::SidebarSectionId::Tags);
+            vm.settings_scroll=0;
+            layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            vm.settings_scroll=layout.sidebar_sections_section.top-layout.content.top-12*scale;
+            layout=ui::MakeSettingsLayout(vm,bounds,scale,state->renderer.TitleBarHeight(),28*scale,&painter);
+            for(int i=0;i<ui::kSettingsSidebarSectionCount;++i) {
+                const auto r=layout.sidebar_section_row[i];
+                const auto hit=state->renderer.HitTest(vm,bounds,r.right-38*scale,(r.top+r.bottom)/2);
+                check(hit.region==ui::HitTestResult::SettingsToggle && hit.index==ui::kSettingsSidebarToggleBase+i,
+                    "八个侧边栏开关真实命中与分组标识一致");
+            }
+            check(layout.sidebar_sections_card.top>=layout.home_widgets_card.bottom,"侧边栏设置与主页设置没有重叠");
+            dc->BeginDraw();state->renderer.Render(vm,bounds,ui::MakeTheme(dark,ui::HexColor(0x0078D4)));
+            const auto sidebar=L"home-sidebar-settings-"+std::to_wstring(static_cast<int>(scale*100))+(dark ? L"-dark.png" : L"-light.png");
+            check(SUCCEEDED(dc->EndDraw()) && state->compositor.SaveSnapshot((directory/sidebar).c_str()),"侧边栏恢复设置明暗主题截图");
         }
         const HWND hwnd=state->hwnd;state->hwnd=nullptr;DestroyWindow(hwnd);
     }

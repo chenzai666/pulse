@@ -185,7 +185,10 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     const float home_top=y;
     for(auto& widget:l.home_widget_row) widget=row(64);
     l.home_widgets_card=D2D1::RectF(left,home_top,right,y);
-    y+=12*scale; l.sidebar_network_row=row(64);
+    y+=24*scale; l.sidebar_sections_section=row(28);
+    const float sidebar_top=y;
+    for(auto& sidebar_section:l.sidebar_section_row) sidebar_section=row(64);
+    l.sidebar_sections_card=D2D1::RectF(left,sidebar_top,right,y);
     y+=18*scale;
     l.disclosure[0]=row(64);
     if(vm.settings_expanded & 1u) {

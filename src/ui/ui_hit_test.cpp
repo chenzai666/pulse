@@ -263,8 +263,11 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         r.region = HitTestResult::SettingsToggle; r.index = 40 + i; return r;
                     }
                 }
-                if (ContainsPt(lay.sidebar_network_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle; r.index = 45; return r;
+                for (int i = 0; i < kSettingsSidebarSectionCount; ++i) {
+                    if (ContainsPt(lay.sidebar_section_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsToggle;
+                        r.index = kSettingsSidebarToggleBase + i; return r;
+                    }
                 }
                 const D2D1_RECT_F integration_rows[]={lay.default_manager_row,lay.startup_row[2],
                     lay.win_e_row,lay.this_pc_row,lay.explorer_windows_row};

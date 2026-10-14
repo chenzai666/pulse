@@ -323,13 +323,21 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+16*scale_,r.right-16*scale_,r.top+48*scale_),L"",st);
             if(i<4) divider(r);
         }
-        draw_card(lay.sidebar_network_row);
-        label(lay.sidebar_network_row,l10n::Pick(L"侧边栏：网络",L"Sidebar: Network"),
-            l10n::Pick(L"显示或恢复侧边栏中的网络分组",L"Show or restore the Network section in the sidebar"),L"\xE968");
-        fluent::ControlState network_st{};network_st.checked=vm.settings_sidebar_network;
-        network_st.hovered=IsHovered(vm,H::SettingsToggle,45);
-        painter_.DrawSwitch(D2D1::RectF(lay.sidebar_network_row.right-60*scale_,lay.sidebar_network_row.top+16*scale_,
-            lay.sidebar_network_row.right-16*scale_,lay.sidebar_network_row.top+48*scale_),L"",network_st);
+        text(l10n::Pick(L"侧边栏分组",L"Sidebar sections"),lay.sidebar_sections_section);
+        draw_card(lay.sidebar_sections_card);
+        const std::wstring sidebar_titles[]={l10n::Get(I::SidebarWorkspaces),l10n::Get(I::SidebarQuickAccess),
+            l10n::Get(I::SidebarSavedSearches),l10n::Get(I::SidebarDrives),l10n::Get(I::SidebarTags),
+            l10n::Pick(L"网络",L"Network"),L"OneDrive",l10n::Get(I::StarredItems)};
+        const wchar_t* sidebar_icons[]={L"\xE8A5",L"\xE8A9",L"\xE721",L"\xE977",L"\xE8EC",L"\xE968",L"\xE753",L"\xE734"};
+        static_assert(std::size(sidebar_titles)==kSettingsSidebarSectionCount);
+        for(int i=0;i<kSettingsSidebarSectionCount;++i) {
+            const auto r=lay.sidebar_section_row[i];
+            label(r,sidebar_titles[i],l10n::Pick(L"显示或恢复右键隐藏的侧边栏分组",L"Show or restore a sidebar section hidden from its context menu"),sidebar_icons[i]);
+            fluent::ControlState st{};st.checked=(vm.settings_sidebar_hidden&(1u<<i))==0;
+            st.hovered=IsHovered(vm,H::SettingsToggle,kSettingsSidebarToggleBase+i);
+            painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+16*scale_,r.right-16*scale_,r.top+48*scale_),L"",st);
+            if(i<kSettingsSidebarSectionCount-1) divider(r);
+        }
         disclosure(lay.disclosure[0],I::SettingsAdvanced,I::SettingsAdvancedDesc,L"\xE713",0,true);
         if(vm.settings_expanded & 1u) {
         draw_card(lay.wallpaper_card);

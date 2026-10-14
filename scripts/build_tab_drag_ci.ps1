@@ -1,6 +1,7 @@
 #requires -Version 7.2
-param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi)
+param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi, [switch]$HomeWidgetsOnly)
 $ErrorActionPreference = 'Stop'
+if ($HomeWidgetsOnly -and -not $FileUi) { throw '主页设置定向验证需要 FileUi 构建范围' }
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
@@ -130,7 +131,8 @@ if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-$testCases = if ($FileUi) { @('list-checkbox', 'recycle-place-menu', 'home-widgets') }
+$testCases = if ($HomeWidgetsOnly) { @('home-widgets') }
+    elseif ($FileUi) { @('list-checkbox', 'recycle-place-menu', 'home-widgets') }
     else { @('tab-drag-input', 'tab-transfer', 'tab-pin-boundary') }
 foreach ($testCase in $testCases) {
     $env:PULSE_SELFTEST_CASE = $testCase

@@ -126,8 +126,9 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     switch(hit.region) {
     case H::SettingsFind: FindSetting(s);break;
     case H::SettingsToggle: {
-        if(hit.index == 45) {
-            ToggleSidebarSection(s, static_cast<int>(app::SidebarSectionId::Networks));
+        if(hit.index >= ui::kSettingsSidebarToggleBase &&
+           hit.index < ui::kSettingsSidebarToggleBase + app::kSidebarSectionCount) {
+            ToggleSidebarSection(s, hit.index - ui::kSettingsSidebarToggleBase);
             InvalidateRect(s.hwnd, nullptr, FALSE);
             break;
         }

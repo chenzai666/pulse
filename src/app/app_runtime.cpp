@@ -1955,7 +1955,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_list_thumbnail_badges = s.appPrefs.list_thumbnail_badges;
     vm.settings_vertical_tabs = s.appPrefs.vertical_tabs;
     vm.settings_home_widgets_hidden = s.appPrefs.home_widgets_hidden;
-    vm.settings_sidebar_network = (s.sidebarHiddenMask & (1u << static_cast<int>(app::SidebarSectionId::Networks))) == 0;
+    static_assert(app::kSidebarSectionCount == ui::kSettingsSidebarSectionCount);
+    vm.settings_sidebar_hidden = s.sidebarHiddenMask;
     bool has_home = vm.pane.is_home;
     ForEachPane(s, [&](app::Pane& pane) {
         if(const auto* tab=pane.ActiveTab(); tab && app::IsHomePath(tab->current_path)) has_home=true;

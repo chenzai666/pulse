@@ -59,6 +59,9 @@ bool IsQuickAccessSection(int section) {
 void ToggleSidebarSection(AppState& s, int group) {
     if (group < 0 || group >= kSectionCount) return;
     s.sidebarHiddenMask ^= 1u << group;
+    // 重新显示时展开内容，避免恢复了标题却仍看不到分组中的项目。
+    if ((s.sidebarHiddenMask & (1u << group)) == 0)
+        s.sidebarCollapsedMask &= ~(1u << group);
     // Bringing Quick access back with every built-in link switched off would
     // leave nothing to right-click, so unhiding it also restores the links.
     if (group == static_cast<int>(app::SidebarSectionId::QuickAccess) &&

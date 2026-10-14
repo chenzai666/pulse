@@ -14,6 +14,10 @@ on:
         description: '先验证设置页相邻场景在旧实现失败，再验证修复版本'
         type: boolean
         default: false
+      home_widgets_only:
+        description: 'file-ui 范围中仅验证主页和侧边栏设置'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,7 +93,7 @@ jobs:
           if ('${{ inputs.validation_scope }}' -eq 'tab-drag-diagnostics') {
             ./scripts/build_tab_drag_ci.ps1 -DiagnosticsOnly
           } elseif ('${{ inputs.validation_scope }}' -eq 'file-ui') {
-            ./scripts/build_tab_drag_ci.ps1 -FileUi
+            ./scripts/build_tab_drag_ci.ps1 -FileUi -HomeWidgetsOnly:('${{ inputs.home_widgets_only }}' -eq 'true')
           } else {
             ./scripts/build_tab_drag_ci.ps1 -VerifySettingsRegression:('${{ inputs.verify_settings_regression }}' -eq 'true')
           }

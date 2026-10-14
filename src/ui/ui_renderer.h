@@ -48,6 +48,8 @@ namespace pulse::ui {
 inline constexpr int kSettingsMenuFixedHit = 99990;
 inline constexpr int kSettingsMenuRowHit = 100000;
 inline constexpr int kSettingsMenuOrderReset = 68;
+inline constexpr int kSettingsSidebarToggleBase = 80;
+inline constexpr int kSettingsSidebarSectionCount = 8;
 enum class PaneHeaderIcon;
 
 inline constexpr unsigned kSettingsContextExpandedMask = 0x1f00u;
@@ -794,7 +796,7 @@ struct WindowViewModel {
     int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
     int settings_startup_open = 0; // 0 last tabs, 1 default location
     uint32_t settings_home_widgets_hidden = 0;
-    bool settings_sidebar_network = true;
+    uint32_t settings_sidebar_hidden = 0;
     HomeWidgets home_widgets;
     int settings_notify_icon = 0;  // 0 always, 1 in the background, 2 never (#57)
     int settings_new_tab_open = 0; // 0 current folder, 1 default location
