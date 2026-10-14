@@ -632,6 +632,17 @@ static BOOL HandleInstanceCopyData(AppState& s, COPYDATASTRUCT* cds) {
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    if (s && (s->tabDropPending || s->tabDragPending || s->tabDragging) &&
+        (msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)) {
+        static ULONGLONG next_drag_trace = 0;
+        const ULONGLONG now = GetTickCount64();
+        if (msg == WM_LBUTTONUP || now >= next_drag_trace) {
+            next_drag_trace = now + 250;
+            diagnostics::runtime::Event("tab_drag_dispatch", {{"release", msg == WM_LBUTTONUP},
+                {"preview", s->tabDropPending}, {"capture", GetCapture() == hwnd},
+                {"message_down", (wParam & MK_LBUTTON) != 0}});
+        }
+    }
     if (s && HandleDroppedNavigationMessage(*s, msg, wParam, lParam)) return 0;
     if (s && HandleFileConversionMessage(*s, msg, wParam, lParam)) return 0;
     LRESULT listary_result = 0;

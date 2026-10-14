@@ -42,6 +42,7 @@ struct PendingDrop {
     std::unique_ptr<app::LayoutTab> pane_preview;
     POINT grab{};
     bool strip_dragging = false;
+    ULONGLONG next_trace = 0;
 };
 PendingDrop g_pending;
 // The window in our move loop, and the strip spot its tab would drop on
@@ -503,6 +504,8 @@ bool PendingSourceValid(const AppState& s) {
 }
 
 void ClearPendingPreview(AppState& s, bool restore_tab) {
+    diagnostics::runtime::Event("tab_preview_clear", {{"restore", restore_tab},
+        {"pending_owner", g_pending.window == s.hwnd}, {"capture", GetCapture() == s.hwnd}});
     const app::LayoutTab* const tab = g_pending.tab;
     const bool strip_dragging = g_pending.strip_dragging;
     g_pending = PendingDrop{};
@@ -670,6 +673,16 @@ bool UpdatePendingTabDrop(AppState& s, int mx, int my) {
     ClientToScreen(s.hwnd, &cursor);
     const app::LayoutTab* const incoming = g_pending.pane ? g_pending.pane_preview.get() : g_pending.tab;
     const Drop drop = FindDrop(s, cursor, true, incoming, true);
+    const ULONGLONG now = GetTickCount64();
+    if (now >= g_pending.next_trace) {
+        g_pending.next_trace = now + 250;
+        diagnostics::runtime::Event("tab_preview_move", {{"target", drop.window != nullptr},
+            {"same_window", drop.window == s.hwnd}, {"over_source", drop.over == s.hwnd},
+            {"zone", static_cast<uint64_t>(drop.zone)},
+            {"in_title", my >= 0 && my < s.renderer.TitleBarHeight()},
+            {"outside_client", mx < 0 || my < 0 || mx >= static_cast<int>(s.compositor.Width()) ||
+                my >= static_cast<int>(s.compositor.Height())}, {"capture", GetCapture() == s.hwnd}});
+    }
     if (!g_pending.pane && drop.window == s.hwnd && drop.zone == app::ContentDrop::None) {
         // Returning to the strip resumes the original sorter and its tentative
         // group/pin order; no cross-window transfer has happened yet.
@@ -682,6 +695,10 @@ bool UpdatePendingTabDrop(AppState& s, int mx, int my) {
 }
 
 bool FinishPendingTabDrop(AppState& s, int mx, int my) {
+    if (s.tabDragPending || s.tabDragging || s.tabDropPending)
+        diagnostics::runtime::Event("tab_preview_finish_entry", {{"preview", s.tabDropPending},
+            {"pending_owner", g_pending.window == s.hwnd}, {"capture", GetCapture() == s.hwnd},
+            {"in_title", my >= 0 && my < s.renderer.TitleBarHeight()}});
     if (!s.tabDropPending || g_pending.window != s.hwnd) return false;
     if (GetCapture() != s.hwnd || !PendingSourceValid(s)) return CancelPendingTabDrop(s);
     const auto old_index = IndexOf(s, g_pending.tab);

@@ -100,7 +100,7 @@ bool RunTabDragInputTest() {
             state->scale = scale;
             const int width = static_cast<int>(1000 * scale), height = static_cast<int>(700 * scale);
             state->hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP,
-                0, 0, width, height, nullptr, nullptr, wc.hInstance, nullptr);
+                256, 102, width, height, nullptr, nullptr, wc.hInstance, nullptr);
             if (!check(state->hwnd && state->compositor.Init(state->hwnd), "initialize real window and hit-test graphics")) {
                 if (state->hwnd) DestroyWindow(state->hwnd);
                 continue;
@@ -115,9 +115,12 @@ bool RunTabDragInputTest() {
             GetKeyboardState(saved);
             memcpy(held, saved, sizeof(held));
             held[VK_LBUTTON] |= 0x80;
-            for (bool reorder_first : {false, true}) {
+            for (int path_case : {0, 1, 2}) {
+                const bool reorder_first = path_case != 0;
+                const size_t count = path_case == 2 ? 4 : 2;
+                log << "path_case=" << path_case << std::endl;
                 log << "reorder_first=" << reorder_first << std::endl;
-                Seed(state->window_tabs, 2);
+                Seed(state->window_tabs, count);
                 BindCurrentLayout(*state);
                 const auto* dragged = state->window_tabs.items[1].get();
                 D2D1_RECT_F tab{};
@@ -135,6 +138,15 @@ bool RunTabDragInputTest() {
                 const auto content = state->renderer.ContentRect(static_cast<float>(width), static_cast<float>(height));
                 const int dx = static_cast<int>(content.right - 20 * scale);
                 const int dy = static_cast<int>((content.top + content.bottom) / 2);
+                if (path_case == 2) {
+                    bool preview_kept = true;
+                    for (int move_y = y + 1; move_y <= dy; ++move_y) {
+                        SendMessageW(state->hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x - 30, move_y));
+                        if (move_y >= static_cast<int>(content.top + 20 * scale))
+                            preview_kept &= state->tabDropPending && GetCapture() == state->hwnd;
+                    }
+                    check(preview_kept, "continuous movement across strip and toolbar retains preview capture");
+                }
                 SendMessageW(state->hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(dx, dy));
                 log << "after_move pending=" << state->tabDragPending << " preview=" << state->tabDropPending
                     << " sorter=" << state->tabDragging << " index=" << state->tabDragIndex
@@ -144,7 +156,7 @@ bool RunTabDragInputTest() {
                 check(state->contentDrop && !state->contentDropAsTab, "content edge offers a split before release");
                 SetKeyboardState(saved);
                 SendMessageW(state->hwnd, WM_LBUTTONUP, 0, MAKELPARAM(dx, dy));
-                check(state->window_tabs.items.size() == 1 && state->window_tabs.Active()->VisiblePanes().size() == 2,
+                check(state->window_tabs.items.size() == count - 1 && state->window_tabs.Active()->VisiblePanes().size() == 2,
                     "button release commits the actual same-window split");
                 check(!state->tabDropPending && !state->tabDragPending && GetCapture() != state->hwnd,
                     "release clears capture and every drag flag");
