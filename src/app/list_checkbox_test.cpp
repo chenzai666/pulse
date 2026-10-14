@@ -151,6 +151,12 @@ bool RunListCheckboxTest() {
             HandleLButtonUp(state.get(), state->hwnd, WM_LBUTTONUP, 0, second_lp);
             check(second->SelectedCount() == 1 && tab->SelectedCount() == 0 && ActiveTab(*state) == second,
                 "checkbox focuses and selects only the pane clicked");
+            state->renderer.SetEmbedded(48, 48);
+            const auto embedded_point = point_for(0);
+            const auto embedded_hit = state->renderer.HitTest(vm(), bounds,
+                static_cast<float>(embedded_point.x), static_cast<float>(embedded_point.y));
+            check(embedded_hit.region == R::Row,
+                "embedded folder picker retains ordinary row input without unsupported checkboxes");
             const HWND hwnd = state->hwnd;
             state->hwnd = nullptr;
             DestroyWindow(hwnd);

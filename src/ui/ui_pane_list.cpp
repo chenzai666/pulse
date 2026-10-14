@@ -1870,8 +1870,9 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
         check_state.checked = pane.visible_selected_count > 0;
         check_state.hovered = vm.hover_region == static_cast<int>(HitTestResult::SelectAllCheckbox) &&
             vm.hover_pane_index == pane_index;
-        painter_.DrawCheckBox(DetailsSelectionRect(check_cell, scale_), L"", check_state,
-            check_state.checked && static_cast<size_t>(pane.visible_selected_count) < pane.EntryCount());
+        if (!embedded_)
+            painter_.DrawCheckBox(DetailsSelectionRect(check_cell, scale_), L"", check_state,
+                check_state.checked && static_cast<size_t>(pane.visible_selected_count) < pane.EntryCount());
         if (pane_index >= 0 && pane_index < static_cast<int>(painted_columns_.size())) {
             uint32_t mask = columns.two_line ? (1u << 8) : 0u;
             for (int col = 0; col < columns.count; ++col)
@@ -2481,7 +2482,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     (bg.top + bg.bottom - bar_h) * 0.5f, 2.5f * scale_, bar_h, 1.25f * scale_);
             }
             if (draw_shapes && selected) selection_painter.Selected(bg);
-            if (draw_shapes && detailsView && (selected || hover)) {
+            if (!embedded_ && draw_shapes && detailsView && (selected || hover)) {
                 fluent::ControlState check_state;
                 check_state.checked = selected;
                 check_state.hovered = hover_region == static_cast<int>(HitTestResult::RowCheckbox) && hover;

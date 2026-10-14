@@ -1162,7 +1162,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             auto header = DetailsContentRect(paneRc, scale_);
             header.top = columnTop;
             header.bottom = listTop;
-            if (ContainsPt(DetailsSelectionRect(header, scale_), x, y)) {
+            if (!embedded_ && ContainsPt(DetailsSelectionRect(header, scale_), x, y)) {
                 out.region = HitTestResult::SelectAllCheckbox;
                 return out;
             }
@@ -1281,7 +1281,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 out.region=HitTestResult::Pane; return out;
             }
             if (idx >= 0) {
-                if (paneVm.view_mode == ViewMode::Details) {
+                if (!embedded_ && paneVm.view_mode == ViewMode::Details) {
                     const auto list = PaneListRect(paneRc, extra, paneVm.view_mode);
                     ViewLayout layout(paneVm.view_mode, list, paneVm.EntryCount(),
                         paneVm.scroll_x, paneVm.scroll_y, scale_, ListRowHeightDip(paneVm, list), paneVm.Groups());
