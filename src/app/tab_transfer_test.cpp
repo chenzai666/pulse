@@ -20,6 +20,10 @@
 #include <fstream>
 #include <memory>
 #include <set>
+#include <thread>
+#include <windowsx.h>
+
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 namespace pulse::app {
 namespace {
@@ -54,7 +58,114 @@ LRESULT CALLBACK CaptureAwareWndProc(HWND hwnd, UINT message, WPARAM wparam, LPA
         return HandleCaptureChanged(state, hwnd, message, wparam, lparam);
     return DefWindowProcW(hwnd, message, wparam, lparam);
 }
+
+LRESULT CALLBACK DragInputWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (GetWindowLongPtrW(hwnd, GWLP_USERDATA)) {
+        switch (message) {
+        case WM_LBUTTONDOWN: case WM_MOUSEMOVE: case WM_LBUTTONUP:
+        case WM_CAPTURECHANGED: case WM_CANCELMODE:
+            return ::WndProc(hwnd, message, wparam, lparam);
+        }
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
 }  // namespace
+
+bool RunTabDragInputTest() {
+    const auto output = std::filesystem::absolute(L"bench_data/tab-drag-input");
+    std::filesystem::create_directories(output);
+    std::ofstream log(output / L"results.log");
+    bool ok = log.good();
+    const auto check = [&](bool value, const char* label) {
+        log << (value ? "[PASS] " : "[FAIL] ") << label << std::endl;
+        ok &= value;
+        return value;
+    };
+    const auto name = L"PulseTabDragInput-" + std::to_wstring(GetCurrentProcessId());
+    HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    if (!check(desktop != nullptr, "create private desktop for real pointer message routing")) return false;
+    std::thread worker([&] {
+        if (!check(SetThreadDesktop(desktop) != FALSE, "attach isolated UI thread")) return;
+        const HRESULT ole = OleInitialize(nullptr);
+        WNDCLASSW wc{};
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpfnWndProc = DragInputWndProc;
+        wc.lpszClassName = L"PulseTabDragInputWindow";
+        RegisterClassW(&wc);
+        for (float scale : {1.0f, 1.5f, 2.0f}) {
+            log << "DPI scale=" << scale << std::endl;
+            auto core = std::make_unique<AppCore>();
+            auto state = std::make_unique<AppState>(*core);
+            state->isolatedTest = true;
+            state->scale = scale;
+            const int width = static_cast<int>(1000 * scale), height = static_cast<int>(700 * scale);
+            state->hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP,
+                0, 0, width, height, nullptr, nullptr, wc.hInstance, nullptr);
+            if (!check(state->hwnd && state->compositor.Init(state->hwnd), "initialize real window and hit-test graphics")) {
+                if (state->hwnd) DestroyWindow(state->hwnd);
+                continue;
+            }
+            state->compositor.RecreateTextFormats(scale);
+            state->renderer.SetCompositor(&state->compositor);
+            state->renderer.SetScale(scale);
+            core->windows.Add(state->hwnd, state.get());
+            SetWindowLongPtrW(state->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state.get()));
+            ShowWindow(state->hwnd, SW_SHOWNOACTIVATE);
+            BYTE saved[256]{}, held[256]{};
+            GetKeyboardState(saved);
+            memcpy(held, saved, sizeof(held));
+            held[VK_LBUTTON] |= 0x80;
+            for (bool reorder_first : {false, true}) {
+                log << "reorder_first=" << reorder_first << std::endl;
+                Seed(state->window_tabs, 2);
+                BindCurrentLayout(*state);
+                const auto* dragged = state->window_tabs.items[1].get();
+                D2D1_RECT_F tab{};
+                const auto vm = BuildVm(*state, false);
+                check(state->renderer.TabItemRect(vm, static_cast<float>(width), 1, &tab), "locate actual tab geometry");
+                const int x = static_cast<int>((tab.left + tab.right) / 2), y = static_cast<int>((tab.top + tab.bottom) / 2);
+                SetKeyboardState(held);
+                SendMessageW(state->hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+                check(state->tabDragPending && state->tabDragIndex == 1 && GetCapture() == state->hwnd,
+                    "real tab press arms dragging and owns mouse capture");
+                if (reorder_first) {
+                    SendMessageW(state->hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x - 30, y));
+                    check(state->tabDragging, "horizontal movement enters the existing sorter");
+                }
+                const auto content = state->renderer.ContentRect(static_cast<float>(width), static_cast<float>(height));
+                const int dx = static_cast<int>(content.right - 20 * scale);
+                const int dy = static_cast<int>((content.top + content.bottom) / 2);
+                SendMessageW(state->hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(dx, dy));
+                log << "after_move pending=" << state->tabDragPending << " preview=" << state->tabDropPending
+                    << " sorter=" << state->tabDragging << " index=" << state->tabDragIndex
+                    << " capture=" << (GetCapture() == state->hwnd) << " content=" << state->contentDrop << std::endl;
+                check(state->tabDropPending && state->dragGhost.on && GetCapture() == state->hwnd,
+                    "moving from strip into content preserves captured preview through WndProc");
+                check(state->contentDrop && !state->contentDropAsTab, "content edge offers a split before release");
+                SetKeyboardState(saved);
+                SendMessageW(state->hwnd, WM_LBUTTONUP, 0, MAKELPARAM(dx, dy));
+                check(state->window_tabs.items.size() == 1 && state->window_tabs.Active()->VisiblePanes().size() == 2,
+                    "button release commits the actual same-window split");
+                check(!state->tabDropPending && !state->tabDragPending && GetCapture() != state->hwnd,
+                    "release clears capture and every drag flag");
+                (void)dragged;
+                CancelPendingTabDrop(*state);
+            }
+            SetKeyboardState(saved);
+            CancelPendingTabDrop(*state);
+            core->windows.Remove(state->hwnd);
+            SetWindowLongPtrW(state->hwnd, GWLP_USERDATA, 0);
+            state->compositor.Shutdown();
+            DestroyWindow(state->hwnd);
+            state->hwnd = nullptr;
+        }
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        if (SUCCEEDED(ole)) OleUninitialize();
+    });
+    worker.join();
+    CloseDesktop(desktop);
+    return ok;
+}
 
 bool RunTabTransferTest() {
     const auto output = std::filesystem::absolute(L"bench_data/tab-transfer");
