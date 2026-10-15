@@ -44,6 +44,10 @@ if ($reference.Count -eq 0) {
 }
 if ($tagCommit -cne $SourceCommit) { throw '已有发布标签指向不同源码，拒绝移动标签或混用安装包' }
 $notes = Join-Path $InstallerDirectory 'release-notes.md'
+$componentNotes = ''
+if ($origin.components) {
+    $componentNotes = '主程序及界面验证复用未改动的源码 ' + $origin.components.app_source_commit + '（运行 ' + $origin.components.app_verification_run + '）；索引进程按本次源码重新编译并验证，组件摘要与来源记录在 provenance.json。'
+}
 @"
 # Pulse 定制版 v1.0.53
 
@@ -65,6 +69,8 @@ $notes = Join-Path $InstallerDirectory 'release-notes.md'
 ## 验证与边界
 
 本次定向验证：[运行 $VerificationRunId](https://github.com/$repository/actions/runs/$VerificationRunId)。安装器另已完成隔离 runner 上的安装、覆盖升级、卸载与文件摘要核对。
+
+$componentNotes
 
 不再附带或加载 Listary 集成插件。旧版系统索引服务不会由安装器自动移除，已有系统接管应在卸载前按实际归属恢复。
 

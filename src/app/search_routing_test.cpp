@@ -58,7 +58,7 @@ bool RunSearchRoutingTest() {
 
         if (edition::kCustom) {
             RequestSearchPage(*older, *search, L"report", true);
-            const auto request = search->pending_generation;
+            const auto request = static_cast<uint32_t>(search->pending_generation);
             check(request && core->pendingIndexSearches.contains(request) && search->banner_title != L"Listary",
                   "custom restored search dispatches to the native index provider");
             index::SearchResult result;

@@ -50,6 +50,11 @@ for key, name, output in [('PULSE_INSTALL_SOURCE_RUN','Pulse-Custom-complete','c
     if digest.hexdigest()!=expected: raise RuntimeError('构建产物摘要不匹配')
     records.append({'run':run_id,'artifact':item['id'],'sha256':expected})
 with zipfile.ZipFile(root/'verification.zip') as archive:
+    components = None
+    if 'build-custom/search-component-provenance.json' in archive.namelist():
+        components=json.loads(archive.read('build-custom/search-component-provenance.json').decode('utf-8-sig'))
+        if components['source_commit']!=os.environ['PULSE_INSTALL_SOURCE_COMMIT'] or components['app_source_commit']!='ddec85d91dddb3c8aca8ef6589554b7ab96dcdd6' or components['rebuilt_components']!=['Pulse.Index.exe']:
+            raise RuntimeError('组件复用来源不符')
     scope=os.environ['PULSE_INSTALL_VERIFY_SCOPE']
     required= ['build-custom/custom-index-storage.log','bench_data/search-routing/results.log','bench_data/search-settings/results.log'] if scope=='search' else ['bench_data/native-dialogs-wire.log','bench_data/native-dialogs-takeover.log','bench_data/native-dialogs-adapter.log','bench_data/native-dialogs-save-model.log','bench_data/native-dialogs-save-picker.log','bench_data/native-dialogs-settings-integration/results.log','bench_data/native-dialogs-settings-navigation/results.log']
     for name in required:
@@ -58,7 +63,7 @@ with zipfile.ZipFile(root/'verification.zip') as archive:
     if scope=='native-dialogs':
         takeover=archive.read(required[1]).decode('utf-8-sig')
         if 'SUMMARY failures=0' not in takeover: raise RuntimeError('缺少完整接管与恢复结果')
-(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'packaging_commit':os.environ.get('GITHUB_SHA',''),'verification_scope':scope,'artifacts':records},indent=2),encoding='utf-8')
+(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'packaging_commit':os.environ.get('GITHUB_SHA',''),'verification_scope':scope,'components':components,'artifacts':records},indent=2),encoding='utf-8')
 print('来源与所选定向验证均通过，产物摘要已验证')
 '@ | python -
 if ($LASTEXITCODE) { throw '安装载荷来源或验证证据校验失败' }

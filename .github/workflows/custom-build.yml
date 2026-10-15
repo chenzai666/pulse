@@ -44,6 +44,10 @@ on:
         type: choice
         options: [native-dialogs, search]
         default: native-dialogs
+      search_backend_only:
+        description: '仅重建索引进程；严格核对主界面源码未变并复用其成功验证'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -181,7 +185,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_search_ci.ps1
+        run: ./scripts/build_search_ci.ps1 -BackendOnly:('${{ inputs.search_backend_only }}' -eq 'true')
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -197,6 +201,7 @@ jobs:
           name: Pulse-Custom-build-diagnostics
           path: |
             build-custom/*.log
+            build-custom/search-component-provenance.json
             build-custom/pulse_custom_index_storage_test.exe
             build-custom/pulse_custom_index_storage_probe.exe
             build-custom/Pulse.Index.exe

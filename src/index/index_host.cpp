@@ -1169,7 +1169,7 @@ int InstallService() {
     return static_cast<int>(last_err);
 }
 
-bool IsElevated() {
+[[maybe_unused]] bool IsElevated() {
     HANDLE token = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
     TOKEN_ELEVATION elevation{};
@@ -1218,7 +1218,9 @@ bool ReloadService() {
 }
 
 int ConfigureCommand(const std::vector<std::wstring>& args) {
-    if (!edition::kCustom && !IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    if constexpr (!edition::kCustom) {
+        if (!IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    }
     struct ConfigurationLock {
         HANDLE handle = CreateMutexW(nullptr, FALSE, kConfigurationMutex);
         bool locked = false;
@@ -1262,7 +1264,9 @@ int ConfigureCommand(const std::vector<std::wstring>& args) {
 
 int ExportDiagnosticsCommand(const std::vector<std::wstring>& args) {
     if (args.size() != 3 && !(args.size() == 4 && args[3] == L"--include-dumps")) return ERROR_INVALID_PARAMETER;
-    if (!edition::kCustom && !IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    if constexpr (!edition::kCustom) {
+        if (!IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    }
     pulse::diagnostics::ExportOptions options;
     options.source_root = MachineDataRoot();
     options.destination = args[2];

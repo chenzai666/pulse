@@ -1,4 +1,5 @@
 #requires -Version 7.2
+param([switch]$BackendOnly)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -7,6 +8,13 @@ Set-Location $taskRepo
 $taskBuild = Join-Path $taskRepo 'build-custom'
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $baseCommit = '3b3e871a1c61252a1bc8f8c14f435c26c276d01d'
+$baseArtifact = '11954525144'
+$baseDigest = '792e88ee988b0433a927c78bde9a788869a317d2fa28a1953ab7d67b30de0836'
+if ($BackendOnly) {
+    $baseCommit = 'ddec85d91dddb3c8aca8ef6589554b7ab96dcdd6'
+    $baseArtifact = '11963381805'
+    $baseDigest = 'dbb24a291aa3d00e1482f26b1587228ad2f11879b311290cdca8d520cade4e29'
+}
 # 此固定包已包含当前预览、转换、Listary 和原生选择窗口；仅重建搜索依赖。
 $allowed = @('CMakeLists.txt', '.github/workflows/custom-build.yml',
     'installer/PulseCustomSetup.iss', 'integrations/Installer/README.md',
@@ -25,16 +33,26 @@ if ($LASTEXITCODE) { throw '无法取得固定运行时来源' }
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) { throw '无法比较固定运行时来源' }
 foreach ($file in $changed) {
+    if ($BackendOnly) {
+        if ($file -notin @('.github/workflows/custom-build.yml', 'scripts/build_search_ci.ps1',
+            'scripts/build_custom_installer_ci.ps1','scripts/publish_custom_release.ps1',
+            'src/index/index_engine.cpp','src/index/index_host.cpp','src/app/search_routing_test.cpp')) {
+            throw "主界面或接口源码发生变化，不能复用其验证：$file"
+        }
+        continue
+    }
     if ($file -in $allowed -or $file.StartsWith('src/index/') -or
         $file -eq 'src/common/custom_index_storage.h' -or $file -eq 'src/bench/custom_index_storage_test.cpp') { continue }
     throw "搜索构建范围之外的改动，停止复用旧组件：$file"
 }
 $env:PULSE_SEARCH_BUILD = $taskBuild
+$env:PULSE_SEARCH_BASE_ARTIFACT = $baseArtifact
+$env:PULSE_SEARCH_BASE_DIGEST = $baseDigest
 @'
 import hashlib, os, urllib.error, urllib.request
 from pathlib import Path
 token=os.environ['GH_TOKEN']
-request=urllib.request.Request('https://api.github.com/repos/chenzai666/pulse/actions/artifacts/11954525144/zip',headers={'Authorization':'Bearer '+token})
+request=urllib.request.Request('https://api.github.com/repos/chenzai666/pulse/actions/artifacts/'+os.environ['PULSE_SEARCH_BASE_ARTIFACT']+'/zip',headers={'Authorization':'Bearer '+token})
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args): return None
 try: reply=urllib.request.build_opener(NoRedirect).open(request,timeout=30)
@@ -44,7 +62,7 @@ location=reply.headers['Location'];reply.close()
 digest=hashlib.sha256()
 with urllib.request.urlopen(location,timeout=120) as reader, (Path(os.environ['PULSE_SEARCH_BUILD'])/'base.zip').open('xb') as writer:
     while block:=reader.read(1024*1024): digest.update(block);writer.write(block)
-if digest.hexdigest()!='792e88ee988b0433a927c78bde9a788869a317d2fa28a1953ab7d67b30de0836': raise RuntimeError('固定包摘要不匹配')
+if digest.hexdigest()!=os.environ['PULSE_SEARCH_BASE_DIGEST']: raise RuntimeError('固定包摘要不匹配')
 '@ | python -
 if ($LASTEXITCODE) { throw '固定运行时下载校验失败' }
 & python scripts/verify_custom_package.py (Join-Path $taskBuild 'base.zip') $baseCommit (Join-Path $taskBuild 'verified-base') |
@@ -75,6 +93,7 @@ if (-not $storage.WaitForExit(180000)) { $storage.Kill(); throw '安装目录索
 $storage.Refresh()
 Get-Content -LiteralPath $storageLog
 if ($storage.ExitCode) { throw '安装目录索引与隔离验证失败' }
+if (-not $BackendOnly) {
 $appBatch = Join-Path $taskBuild 'compile-search-app.bat'
 [IO.File]::WriteAllText($appBatch, [IO.File]::ReadAllText($buildBatch).Replace(
     '--target pulse_custom_index_storage_test', '--target pulse pulse_document pulse_preview pulse_shell pulse_integration pulse_elevated'), [Text.UTF8Encoding]::new($false))
@@ -100,20 +119,56 @@ try {
 } finally {
     Remove-Item Env:PULSE_TEST_SETTINGS_FLOW,Env:PULSE_TEST_SETTINGS_NAVIGATION,Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
 }
+} else {
+    # 生产主界面源码和接口未变；只复用已成功的同源码界面检查。
+    @'
+import hashlib,json,os,urllib.error,urllib.request,zipfile
+from pathlib import Path
+root=Path(os.environ['PULSE_SEARCH_BUILD'])
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args): return None
+request=urllib.request.Request('https://api.github.com/repos/chenzai666/pulse/actions/artifacts/11964210633/zip',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN']})
+try: reply=urllib.request.build_opener(NoRedirect).open(request,timeout=30)
+except urllib.error.HTTPError as error: reply=error
+if reply.code!=302: raise RuntimeError('无法读取已通过的界面验证')
+url=reply.headers['Location'];reply.close()
+data=urllib.request.urlopen(url,timeout=120).read()
+if hashlib.sha256(data).hexdigest()!='359dc39b96cf57a3b9f30740440a10a334b70b86e8f8e16059cae33918acfeb4': raise RuntimeError('界面验证摘要不符')
+(root/'base-ui-verification.zip').write_bytes(data)
+with zipfile.ZipFile(root/'base-ui-verification.zip') as archive:
+    for name in ['bench_data/search-routing/results.log','bench_data/search-settings/results.log']:
+        text=archive.read(name).decode('utf-8-sig')
+        if '[PASS]' not in text or '[FAIL]' in text: raise RuntimeError('基线界面验证未通过')
+        target=Path(name);target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_text('BASE_RUN=38714885389 BASE_COMMIT=ddec85d91dddb3c8aca8ef6589554b7ab96dcdd6\n'+text,encoding='utf-8')
+'@ | python -
+    if ($LASTEXITCODE) { throw '主界面验证复用校验失败' }
+    $objectBatch = Join-Path $taskBuild 'compile-search-routing-object.bat'
+    [IO.File]::WriteAllText($objectBatch, [IO.File]::ReadAllText($buildBatch).Replace(
+        '--target pulse_custom_index_storage_test', '--target CMakeFiles/pulse.dir/src/app/search_routing_test.cpp.obj'), [Text.UTF8Encoding]::new($false))
+    & $objectBatch
+    if ($LASTEXITCODE) { throw '搜索路由测试的类型转换修复编译失败' }
+    [ordered]@{source_commit=(& git rev-parse HEAD).Trim(); app_source_commit=$baseCommit;
+        app_verification_run='38714885389'; app_binary_sha256=(Get-FileHash -LiteralPath (Join-Path $payload 'pulse.exe')).Hash;
+        rebuilt_components=@('Pulse.Index.exe'); reason='仅索引实现警告及测试显式类型转换修复；主界面生产源码与接口未变'} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskBuild 'search-component-provenance.json') -Encoding utf8
+}
 $productionBatch = Join-Path $taskBuild 'compile-search-production.bat'
+$productionTargets = if ($BackendOnly) { 'pulse_index' } else { 'pulse pulse_index pulse_document pulse_preview pulse_shell pulse_integration pulse_elevated' }
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DPULSE_WITH_SELFTEST=OFF
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_index pulse_document pulse_preview pulse_shell pulse_integration pulse_elevated
+cmake --build "$taskBuild" --parallel 4 --target $productionTargets
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $productionBatch -Encoding utf8
 & $productionBatch
 if ($LASTEXITCODE) { throw '搜索正式载荷构建失败' }
 . "$PSScriptRoot/release_payload.ps1"
-foreach ($file in $PulseReleaseExecutables) {
+$replace = if ($BackendOnly) { @('Pulse.Index.exe') } else { $PulseReleaseExecutables }
+foreach ($file in $replace) {
     Copy-Item -LiteralPath (Join-Path $taskBuild $file) -Destination (Join-Path $payload $file)
 }
 & "$PSScriptRoot/package_custom.ps1" -BuildDir $payload

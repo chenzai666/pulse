@@ -3852,14 +3852,16 @@ void Engine::FullRebuild(const char* reason) {
 
     bool incomplete = false;
     const auto previous_count = indexed_.load();
-    if (!edition::kCustom && IsAdmin() && fixture_root_.empty()) {
-        for (const auto& volume : configured_volumes) {
-            if (!running_) break;
-            if (IndexVolumeMft(volume)) used_mft = true;
-            else {
-                const DWORD error = GetLastError();
-                if (!incomplete) build_error = error ? error : ERROR_READ_FAULT;
-                incomplete = true;
+    if constexpr (!edition::kCustom) {
+        if (IsAdmin() && fixture_root_.empty()) {
+            for (const auto& volume : configured_volumes) {
+                if (!running_) break;
+                if (IndexVolumeMft(volume)) used_mft = true;
+                else {
+                    const DWORD error = GetLastError();
+                    if (!incomplete) build_error = error ? error : ERROR_READ_FAULT;
+                    incomplete = true;
+                }
             }
         }
     }
@@ -4050,58 +4052,60 @@ void Engine::Worker() {
     PingNotify(true);
 
     bool fresh = false;
-    if (!edition::kCustom && have_cache && !needs_search_rebuild && IsAdmin()) {
-        bool have_vols = false;
-        {
-            std::shared_lock<std::shared_mutex> lock(mutex_);
-            have_vols = !vols_.empty();
-        }
-        if (have_vols) {
-            auto drives = initial_drives;
-            const auto mounted = EnumerateLocalVolumes(startup_config);
-            fresh = true;
+    if constexpr (!edition::kCustom) {
+        if (have_cache && !needs_search_rebuild && IsAdmin()) {
+            bool have_vols = false;
             {
                 std::shared_lock<std::shared_mutex> lock(mutex_);
-                for (const auto& drive : drives)
-                    if (std::none_of(vols_.begin(), vols_.end(), [&](const VolState& v) {
-                            return NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
-                        })) fresh = false;
-                for (const auto& v : vols_)
-                    if (std::any_of(mounted.begin(), mounted.end(), [&](const VolumeInfo& drive) {
-                            return !drive.enabled &&
-                                   NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
-                        })) fresh = false;
+                have_vols = !vols_.empty();
             }
-            if (fresh) {
-                std::vector<VolumeInfo> startup_failed;
-                std::unique_lock<std::shared_mutex> lock(mutex_);
-                for (auto& v : vols_) {
-                    const bool online = std::any_of(drives.begin(), drives.end(), [&](const VolumeInfo& drive) {
-                        return NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
-                    });
-                    if (!online) continue;
-                    lock.unlock();
-                    if (!CatchUpVolume(v, nullptr)) {
-                        auto it = std::find_if(drives.begin(), drives.end(), [&](const VolumeInfo& drive) {
+            if (have_vols) {
+                auto drives = initial_drives;
+                const auto mounted = EnumerateLocalVolumes(startup_config);
+                fresh = true;
+                {
+                    std::shared_lock<std::shared_mutex> lock(mutex_);
+                    for (const auto& drive : drives)
+                        if (std::none_of(vols_.begin(), vols_.end(), [&](const VolState& v) {
+                                return NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
+                            })) fresh = false;
+                    for (const auto& v : vols_)
+                        if (std::any_of(mounted.begin(), mounted.end(), [&](const VolumeInfo& drive) {
+                                return !drive.enabled &&
+                                       NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
+                            })) fresh = false;
+                }
+                if (fresh) {
+                    std::vector<VolumeInfo> startup_failed;
+                    std::unique_lock<std::shared_mutex> lock(mutex_);
+                    for (auto& v : vols_) {
+                        const bool online = std::any_of(drives.begin(), drives.end(), [&](const VolumeInfo& drive) {
                             return NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
                         });
-                        if (it != drives.end()) startup_failed.push_back(*it);
+                        if (!online) continue;
+                        lock.unlock();
+                        if (!CatchUpVolume(v, nullptr)) {
+                            auto it = std::find_if(drives.begin(), drives.end(), [&](const VolumeInfo& drive) {
+                                return NormalizeVolumeId(drive.id) == NormalizeVolumeId(v.volume_id);
+                            });
+                            if (it != drives.end()) startup_failed.push_back(*it);
+                        }
+                        lock.lock();
                     }
-                    lock.lock();
-                }
-                lock.unlock();
-                if (!startup_failed.empty()) {
-                    fresh = true;
-                    for (const auto& volume : startup_failed) {
-                        if (!RebuildVolumeMft(volume)) {
-                            fresh = false;
-                            break;
+                    lock.unlock();
+                    if (!startup_failed.empty()) {
+                        fresh = true;
+                        for (const auto& volume : startup_failed) {
+                            if (!RebuildVolumeMft(volume)) {
+                                fresh = false;
+                                break;
+                            }
                         }
                     }
                 }
+                if (fresh)
+                    SetStatus(StatusItemCount(indexed_.load(), L"实时更新"));
             }
-            if (fresh)
-                SetStatus(StatusItemCount(indexed_.load(), L"实时更新"));
         }
     }
     // Walk snapshots have no offline journal cursor. Replay provides a useful
