@@ -52,7 +52,7 @@ with zipfile.ZipFile(root/'verification.zip') as archive:
         if '[PASS]' not in text or '[FAIL]' in text: raise RuntimeError('定向验证日志未通过: '+name)
     takeover=archive.read(required[1]).decode('utf-8-sig')
     if 'SUMMARY failures=0' not in takeover: raise RuntimeError('缺少完整接管与恢复结果')
-(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'artifacts':records},indent=2),encoding='utf-8')
+(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'packaging_commit':os.environ.get('GITHUB_SHA',''),'artifacts':records},indent=2),encoding='utf-8')
 print('来源与接管定向验证均通过，产物摘要已验证')
 '@ | python -
 if ($LASTEXITCODE) { throw '安装载荷来源或验证证据校验失败' }

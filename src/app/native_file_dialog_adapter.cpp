@@ -40,6 +40,7 @@ struct Controls {
     HWND address = nullptr;
     HWND address_toolbar = nullptr;
     bool ambiguous_filter = false;
+    bool standard_filter = false;
     HWND confirm = nullptr;
     HWND cancel = nullptr;
 };
@@ -156,7 +157,17 @@ Controls FindControls(HWND window) {
         if (name == L"SHBrowseForFolder ShellNameSpace Control") result.browse = child;
         if (name == L"SysTreeView32") result.tree = child;
         const int identifier = GetDlgCtrlID(child);
-        if (name == L"ComboBox" && IsWindowVisible(child) &&
+        if (name == L"ComboBox" && IsWindowVisible(child) && identifier == cmb1) {
+            if (result.standard_filter) {
+                if (result.filter != child) result.ambiguous_filter = true;
+            } else {
+                result.filter = child;
+                result.standard_filter = true;
+                result.ambiguous_filter = false;
+            }
+        } else if (name == L"ComboBox" && IsWindowVisible(child) && !result.standard_filter &&
+            identifier != cmb13 && identifier != 41477 &&
+            !FindWindowExW(child, nullptr, L"Edit", nullptr) &&
             (GetWindowLongPtrW(child, GWL_STYLE) & 3) == CBS_DROPDOWNLIST) {
             if (result.filter && result.filter != child) result.ambiguous_filter = true;
             result.filter = child;
@@ -405,10 +416,23 @@ bool SelectionText(const NativeFileDialog& dialog, const std::vector<std::wstrin
 
 bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
     std::wstring& reason, const std::function<bool()>& cancelled = {}) {
+    ComPtr<IUIAutomation> automation;
+    std::wstring automation_reason;
+    ComPtr<IUIAutomationInvokePattern> invoke;
+    if (Automation(automation, automation_reason)) {
+        auto element = Element(automation.Get(), button);
+        if (element) element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke));
+    }
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
         GetDlgItem(dialog.window, identifier) != button || !IsWindowEnabled(button)) return false;
     if (Cancelled(cancelled, reason)) return false;
-    if (PostMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button))) return true;
+    if (invoke) {
+        if (SUCCEEDED(invoke->Invoke())) return true;
+        return Fail(reason, L"原生按钮调用失败；不重复触发可能已执行的请求。");
+    }
+    // Let the real Button route its command to its actual parent (a modern
+    // dialog may use a notification sink below the top-level #32770).
+    if (PostMessageW(button, BM_CLICK, 0, 0)) return true;
     return Fail(reason, L"无法向原生对话框发送按钮请求。");
 }
 

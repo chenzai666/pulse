@@ -20,6 +20,18 @@ using namespace pulse::app;
 using Microsoft::WRL::ComPtr;
 int failures = 0;
 
+void Diagnostic(std::wstring_view text) {
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(),
+        static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return;
+    std::string utf8(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
+        utf8.data(), size, nullptr, nullptr) == size) {
+        std::fprintf(stderr, "[DETAIL] %s\n", utf8.c_str());
+        std::fflush(stderr);
+    }
+}
+
 void Check(bool passed, const char* label) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", label);
     std::fflush(stdout);
@@ -81,6 +93,8 @@ struct Driver {
                 if (window && InspectNativeFileDialog(window, inspected, reason)) {
                     std::printf("[STAGE] driver inspected native dialog; applying selection/cancel\n");
                     passed = action(inspected, reason);
+                    std::printf("[STAGE] native action returned accepted=%u\n", static_cast<unsigned>(passed.load()));
+                    if (!reason.empty()) Diagnostic(reason);
                     attempted = true;
                     break;
                 }
@@ -90,7 +104,14 @@ struct Driver {
                 while (!finished && std::chrono::steady_clock::now() < deadline)
                     std::this_thread::sleep_for(std::chrono::milliseconds(30));
             }
-            if (!finished) CloseOwnedDialog(window ? window : OwnedDialog());
+            if (!finished) {
+                if (attempted && passed) {
+                    passed = false;
+                    reason = L"原生请求已发送，但对话框未在期限内完成；fixture 清理将取消窗口。";
+                }
+                if (!reason.empty()) Diagnostic(reason);
+                CloseOwnedDialog(window ? window : OwnedDialog());
+            }
             CoUninitialize();
         });
         ready = initialized_driver.get();
@@ -100,7 +121,7 @@ struct Driver {
     void Finish() {
         finished = true;
         if (thread.joinable()) thread.join();
-        if (!passed) std::fwprintf(stderr, L"适配失败: %ls\n", reason.c_str());
+        if (!passed && !reason.empty()) Diagnostic(reason);
     }
 };
 
@@ -182,6 +203,7 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
     });
     if (!driver.ready) { driver.Finish(); Check(false, "driver joins fixture desktop before COM and modal dialog"); return; }
     const HRESULT shown = native->Show(nullptr);
+    std::printf("[RESULT] modern Show HRESULT=0x%08lX\n", static_cast<unsigned long>(shown));
     driver.Finish();
     Check(guarded && driver.passed, "system dialog checks identity, relative paths and cancellation before submission");
     if (cancel) { Check(shown == HRESULT_FROM_WIN32(ERROR_CANCELLED), "native host receives cancellation"); return; }
@@ -194,7 +216,9 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
     CoTaskMemFree(result);
     if (!folder) {
         UINT index = 0;
-        Check(SUCCEEDED(native->GetFileTypeIndex(&index)) && index == 1, "native host retains the selected file type");
+        const HRESULT type_result = native->GetFileTypeIndex(&index);
+        std::printf("[RESULT] native filter HRESULT=0x%08lX index=%u\n", static_cast<unsigned long>(type_result), index);
+        Check(SUCCEEDED(type_result) && index == 1, "native host retains the selected file type");
     }
     if (kind == NativeDialogKind::Save)
         Check(!std::filesystem::exists(expected), "save adapter does not create or overwrite a file");

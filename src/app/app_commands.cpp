@@ -2104,7 +2104,8 @@ void ShowOmnibar(AppState& s, OmnibarMode mode) {
             folders_only = true;
             prefix = ProjectSearchRoot(s);
         }
-        const bool run_search = !edition::kCustom && parsed.kind != app::OmnibarQuery::Kind::Command &&
+        bool run_search = false;
+        if constexpr (!edition::kCustom) run_search = parsed.kind != app::OmnibarQuery::Kind::Command &&
                                 (!parsed.needle.empty() || project_only) &&
                                 (parsed.kind == app::OmnibarQuery::Kind::Search ||
                                  !app::LooksLikeFilesystemPath(parsed.needle));

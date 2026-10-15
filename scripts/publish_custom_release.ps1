@@ -78,7 +78,7 @@ if ($LASTEXITCODE -eq 0) {
     & gh release edit $tag --repo $repository --notes-file $notes
     if ($LASTEXITCODE) { throw '更新草稿说明失败' }
 } else {
-    & gh release create $tag $installer $checksum $provenance --repo $repository --verify-tag --draft --title 'Pulse 定制版 v1.0.53' --notes-file $notes
+    & gh release create $tag $installer $checksum $provenance --repo $repository --target $SourceCommit --verify-tag --draft --title 'Pulse 定制版 v1.0.53' --notes-file $notes
     if ($LASTEXITCODE) { throw '创建 Release 草稿失败' }
 }
 $published = & gh release view $tag --repo $repository --json assets

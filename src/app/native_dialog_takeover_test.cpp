@@ -196,10 +196,19 @@ struct SourceWindow {
     DWORD process = 0, thread = 0;
 };
 
+bool FixtureOwnerMatches(HWND window, DWORD fixture_process) {
+    const HWND owner = GetWindow(window, GW_OWNER);
+    DWORD owner_process = 0;
+    const auto owner_class = ClassName(owner);
+    return owner && GetWindowThreadProcessId(owner, &owner_process) && owner_process == fixture_process &&
+        CompareStringOrdinal(owner_class.c_str(), static_cast<int>(owner_class.size()), L"STATIC", 6, TRUE) == CSTR_EQUAL;
+}
+
 bool SourceMatches(const SourceWindow& source) {
     DWORD process = 0;
     return source.window && GetWindowThreadProcessId(source.window, &process) == source.thread &&
-        process == source.process && ClassName(source.window) == L"#32770";
+        process == source.process && ClassName(source.window) == L"#32770" &&
+        FixtureOwnerMatches(source.window, source.process);
 }
 
 SourceWindow FindSource(HDESK desktop, DWORD fixture_process) {
@@ -207,12 +216,10 @@ SourceWindow FindSource(HDESK desktop, DWORD fixture_process) {
     struct Context { DWORD fixture; SourceWindow* output; } enumeration{fixture_process, &result};
     EnumDesktopWindows(desktop, [](HWND window, LPARAM data) -> BOOL {
         auto& context = *reinterpret_cast<Context*>(data);
-        DWORD process = 0, owner_process = 0;
+        DWORD process = 0;
         const DWORD thread = GetWindowThreadProcessId(window, &process);
-        const HWND owner = GetWindow(window, GW_OWNER);
         if (process == context.fixture && IsWindowVisible(window) && ClassName(window) == L"#32770" &&
-            owner && GetWindowThreadProcessId(owner, &owner_process) && owner_process == context.fixture &&
-            ClassName(owner) == L"STATIC") {
+            FixtureOwnerMatches(window, context.fixture)) {
             *context.output = {window, process, thread};
             return FALSE;
         }
@@ -291,7 +298,8 @@ void Diagnostics(TestLog& log, HDESK desktop, ChildProcess& child, const std::st
             " PID=" + std::to_string(process) + " class=" + Utf8(ClassName(window)) +
             " visible=" + (IsWindowVisible(window) ? "true" : "false") +
             " enabled=" + (IsWindowEnabled(window) ? "true" : "false") +
-            " owner=" + std::to_string(reinterpret_cast<uintptr_t>(owner)));
+            " owner=" + std::to_string(reinterpret_cast<uintptr_t>(owner)) +
+            " owner_class=" + Utf8(ClassName(owner)));
         if (process == context.fixture && ClassName(window) == L"#32770") {
             NativeFileDialog inspected;
             std::wstring reason;
@@ -328,7 +336,9 @@ bool AwaitPicker(TestLog& log, HDESK desktop, ChildProcess& child, const std::ws
         if (!source.window) return false;
         if (!reported_source) {
             log.Detail(branch + ": found native source HWND=" + std::to_string(reinterpret_cast<uintptr_t>(source.window)) +
-                " PID=" + std::to_string(source.process) + " class=" + Utf8(ClassName(source.window)));
+                " PID=" + std::to_string(source.process) + " class=" + Utf8(ClassName(source.window)) +
+                " enabled=" + (IsWindowEnabled(source.window) ? "true" : "false") +
+                " owner_class=" + Utf8(ClassName(GetWindow(source.window, GW_OWNER))));
             reported_source = true;
         }
         picker = FindPicker(desktop, source, executable);

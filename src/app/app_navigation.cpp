@@ -2634,7 +2634,9 @@ void OpenSettingsTab(AppState& s, int page) {
     s.settings.SelectPage(page);
     const std::wstring path = app::MakeSettingsPath(
         app::SettingsController::PageName(s.settings.page()));
-    if (!edition::kCustom && s.settings.page() == 1) s.index.RefreshVolumesAsync();
+    if constexpr (!edition::kCustom) {
+        if (s.settings.page() == 1) s.index.RefreshVolumesAsync();
+    }
     if (s.settings.page() == 5) ui::DetectPreviewCodecs(true, s.hwnd);
     for (size_t i = 0; i < s.window_tabs.items.size(); ++i) {
         app::LayoutTab& layout = *s.window_tabs.items[i];
@@ -2650,7 +2652,9 @@ void OpenSettingsTab(AppState& s, int page) {
             tab->virtual_title = l10n::Get(l10n::StringId::Settings);
         }
         s.settings.SelectPage(page);
-        if (!edition::kCustom && s.settings.page() == 1) s.index.RefreshVolumesAsync();
+        if constexpr (!edition::kCustom) {
+            if (s.settings.page() == 1) s.index.RefreshVolumesAsync();
+        }
         if (s.settings.page() == 5) ui::DetectPreviewCodecs(true, s.hwnd);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return;

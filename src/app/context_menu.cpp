@@ -670,33 +670,34 @@ std::vector<ui::FluentMenuItem> BuildCommandPalette(const std::wstring& query,
         add_cmd(CmdSelectWildcard, l10n::Get(l10n::StringId::SelectWildcard).c_str(), kGlyphWildcard, L"Ctrl+Shift+A");
     }
     std::unordered_set<std::wstring> seen_paths;
-    const bool has_content = index::QueryHasContent(index::ParseQuery(needle));
     if (edition::kCustom && !command_mode && !needle.empty() && !path_like) {
         if (!items.empty()) items.back().separator_after = true;
         items.push_back(Item(CmdSearchAll, L"Listary", kGlyphSearch));
     }
-    if (!edition::kCustom && !command_mode && (!hits.empty() || total > 0 || has_content)) {
-        if (!items.empty()) items.back().separator_after = true;
-        for (size_t i = 0; i < hits.size() && i < 48; ++i) {
-            items.push_back(Item(CmdIndexBase + static_cast<int>(i),
-                hits[i].name.c_str(), hits[i].is_dir ? kGlyphFolder : kGlyphNewFile));
-            items.back().text = hits[i].name;
-            items.back().shortcut = DisplayPath(hits[i].path);
-            items.back().shortcut_inline = true;
-            const std::wstring n = fs::NormalizePath(hits[i].path);
-            if (!n.empty()) seen_paths.insert(n);
-        }
-        if (!needle.empty() && !project_only) {
+    if constexpr (!edition::kCustom) {
+        const bool has_content = index::QueryHasContent(index::ParseQuery(needle));
+        if (!command_mode && (!hits.empty() || total > 0 || has_content)) {
             if (!items.empty()) items.back().separator_after = true;
-            wchar_t count[64];
-            swprintf_s(count, l10n::Get(l10n::StringId::SearchCount).c_str(), total);
-            items.push_back(Item(CmdSearchAll,
-                l10n::Get(has_content ? l10n::StringId::SearchContentResults
-                                      : l10n::StringId::ShowAllResults).c_str(),
-                kGlyphSearch, count));
+            for (size_t i = 0; i < hits.size() && i < 48; ++i) {
+                items.push_back(Item(CmdIndexBase + static_cast<int>(i),
+                    hits[i].name.c_str(), hits[i].is_dir ? kGlyphFolder : kGlyphNewFile));
+                items.back().text = hits[i].name;
+                items.back().shortcut = DisplayPath(hits[i].path);
+                items.back().shortcut_inline = true;
+                const std::wstring n = fs::NormalizePath(hits[i].path);
+                if (!n.empty()) seen_paths.insert(n);
+            }
+            if (!needle.empty() && !project_only) {
+                if (!items.empty()) items.back().separator_after = true;
+                wchar_t count[64];
+                swprintf_s(count, l10n::Get(l10n::StringId::SearchCount).c_str(), total);
+                items.push_back(Item(CmdSearchAll,
+                    l10n::Get(has_content ? l10n::StringId::SearchContentResults
+                                          : l10n::StringId::ShowAllResults).c_str(),
+                    kGlyphSearch, count));
+            }
         }
     }
-
     const std::wstring current_n = current_path.empty() ? L"" : fs::NormalizePath(current_path);
     constexpr size_t kMaxRecent = 6;
     size_t recent_added = 0;
