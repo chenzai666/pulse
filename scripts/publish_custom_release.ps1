@@ -6,7 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repository = 'chenzai666/pulse'
-$tag = 'v1.0.53'
+$tag = 'custom-v1.0.53'
 $installerName = 'Pulse-Custom-Setup-v1.0.53-x64.exe'
 $installer = Join-Path $InstallerDirectory $installerName
 $checksum = $installer + '.sha256'
@@ -18,6 +18,30 @@ $expectedHash = ((Get-Content -LiteralPath $checksum -Raw).Trim() -split '\s+')[
 if ($expectedHash -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ine $expectedHash) {
     throw '发布前安装包 SHA256 不匹配'
 }
+$origin = Get-Content -LiteralPath $provenance -Raw | ConvertFrom-Json
+if ($origin.source_commit -cne $SourceCommit -or $origin.artifacts[1].run -ne $VerificationRunId) {
+    throw '发布参数与已验证的构建来源不一致'
+}
+$referenceName = 'refs/tags/' + $tag
+$references = & gh api "repos/$repository/git/matching-refs/tags/$tag"
+if ($LASTEXITCODE) { throw '无法核实发布标签，停止发布' }
+$reference = @($references | ConvertFrom-Json | Where-Object ref -EQ $referenceName)
+if ($reference.Count -gt 1) { throw '发布标签不是唯一引用' }
+if ($reference.Count -eq 0) {
+    & gh api --method POST "repos/$repository/git/refs" -f "ref=$referenceName" -f "sha=$SourceCommit" > $null
+    if ($LASTEXITCODE) { throw '创建独立定制版标签失败，不移动已有标签' }
+    $tagCommit = $SourceCommit
+} else {
+    $tagObject = $reference[0].object
+    for ($depth=0; $tagObject.type -eq 'tag' -and $depth -lt 8; ++$depth) {
+        $annotation = & gh api "repos/$repository/git/tags/$($tagObject.sha)"
+        if ($LASTEXITCODE) { throw '无法解析已有发布标签' }
+        $tagObject = ($annotation | ConvertFrom-Json).object
+    }
+    if ($tagObject.type -ne 'commit') { throw '发布标签不能解析为提交' }
+    $tagCommit = $tagObject.sha
+}
+if ($tagCommit -cne $SourceCommit) { throw '已有发布标签指向不同源码，拒绝移动标签或混用安装包' }
 $notes = Join-Path $InstallerDirectory 'release-notes.md'
 @"
 # Pulse 定制版 v1.0.53
@@ -54,7 +78,7 @@ if ($LASTEXITCODE -eq 0) {
     & gh release edit $tag --repo $repository --notes-file $notes
     if ($LASTEXITCODE) { throw '更新草稿说明失败' }
 } else {
-    & gh release create $tag $installer $checksum $provenance --repo $repository --target $SourceCommit --draft --title 'Pulse 定制版 v1.0.53' --notes-file $notes
+    & gh release create $tag $installer $checksum $provenance --repo $repository --verify-tag --draft --title 'Pulse 定制版 v1.0.53' --notes-file $notes
     if ($LASTEXITCODE) { throw '创建 Release 草稿失败' }
 }
 $published = & gh release view $tag --repo $repository --json assets

@@ -42,6 +42,8 @@ function SharedState {
 $before = SharedState
 $target = Join-Path $env:LOCALAPPDATA 'Programs\PulseCustom'
 if (Test-Path -LiteralPath $target) { throw '隔离 runner 已有定制版安装，停止覆盖' }
+$customUninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{BF0350A3-5F01-44CD-AC64-C9AF030CC430}_is1'
+if (Test-Path -LiteralPath $customUninstallKey) { throw '隔离 runner 已有定制版卸载项，停止覆盖' }
 $prefsRoot = Join-Path $env:LOCALAPPDATA 'PulseCustom'
 New-Item -ItemType Directory -Path $prefsRoot -Force | Out-Null
 $canary = Join-Path $prefsRoot ('installer-canary-' + [guid]::NewGuid().ToString('N') + '.txt')
@@ -64,6 +66,10 @@ foreach ($round in 1,2) {
     $process = Start-Process -FilePath $installer[0].FullName -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (-not $process.WaitForExit(180000)) { throw '安装器超时；保留现场，不强杀其他程序' }
     Check ($process.ExitCode -eq 0) "第 $round 次安装成功"
+    Check (Test-Path -LiteralPath $customUninstallKey) '安装创建独立的当前用户卸载项'
+    $registered = Get-ItemProperty -LiteralPath $customUninstallKey
+    Check ($registered.DisplayName -eq 'Pulse 定制版' -and
+        $registered.InstallLocation.TrimEnd('\') -ieq $target) '独立卸载项指向当前用户的定制版目录'
     VerifyInstalled
     Check ((Get-FileHash -LiteralPath $canary).Hash -eq $canaryHash) "第 $round 次安装保留配置"
     Check ((SharedState) -eq $before) "第 $round 次安装不改变原版卸载、索引服务或打开关联"
@@ -75,6 +81,7 @@ $process = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList @('/V
 if (-not $process.WaitForExit(180000)) { throw '卸载器超时；保留现场' }
 Check ($process.ExitCode -eq 0) '定制版卸载成功'
 Check (-not (Test-Path -LiteralPath (Join-Path $target 'pulse.exe'))) '卸载移除本安装目录程序'
+Check (-not (Test-Path -LiteralPath $customUninstallKey)) '卸载移除自己的卸载项'
 Check ((Get-FileHash -LiteralPath $canary).Hash -eq $canaryHash) '卸载保留用户配置'
 Check ((SharedState) -eq $before) '卸载不改变原版卸载、索引服务或打开关联'
 Add-Content -LiteralPath $log -Value 'SUMMARY failures=0'
