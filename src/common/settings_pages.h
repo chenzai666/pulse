@@ -3,7 +3,7 @@
 namespace pulse::settings {
 inline constexpr int kPageCount = 6;
 #ifdef PULSE_CUSTOM_EDITION
-inline constexpr int kNavigationPages[] = {0, 2, 5, 3};
+inline constexpr int kNavigationPages[] = {0, 1, 2, 5, 3};
 #else
 inline constexpr int kNavigationPages[] = {0, 1, 2, 4, 5, 3};
 #endif

@@ -656,7 +656,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 index::IndexConfig defaults;
                 index_volumes = index::EnumerateLocalVolumes(defaults);
                 if (!vm.settings_index_installed) vm.settings_index_service = true;
-                vm.settings_index_path = L"C:\\ProgramData\\Pulse\\Index";
+                if (!edition::kCustom) vm.settings_index_path = L"C:\\ProgramData\\Pulse\\Index";
             }
             for (const auto& volume : index_volumes) {
                 ui::IndexVolumeRowView row;
@@ -679,7 +679,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 row.raw_state = volume.state;
                 row.state = l10n::ServiceText(volume.state);
                 row.checked = volume.enabled;
-                row.enabled = vm.settings_index_service && volume.supported;
+                row.enabled = (edition::kCustom || vm.settings_index_service) && volume.supported;
                 row.pending = s.settings.VolumePending(volume.id);
                 row.progress = volume.progress;
                 vm.settings_index_volumes.push_back(std::move(row));
@@ -1800,7 +1800,6 @@ void HandleTeachButton(AppState& s, int button) {
 }
 
 void SearchFilterInSubfolders(AppState& s) {
-    if (edition::kCustom) { OpenListarySearch(s); return; }
     app::Tab* tab = ActiveTab(s);
     if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return;
     std::wstring text = tab->filter_text;

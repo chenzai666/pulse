@@ -75,6 +75,9 @@ private:
     bool stopping_ = false;
 };
 bool InternalContentPath(const std::wstring& path) {
+#ifdef PULSE_CUSTOM_EDITION
+    return ContentPathUnder(ContentScopeKey(path), ContentScopeKey(custom_storage::RootPath()));
+#else
     std::wstring profile(256, L'\0');
     DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", profile.data(), static_cast<DWORD>(profile.size()));
     if (n >= profile.size()) {
@@ -84,6 +87,7 @@ bool InternalContentPath(const std::wstring& path) {
     if (!n || n >= profile.size()) return false;
     profile.resize(n);
     return ContentPathUnder(ContentScopeKey(path), ContentScopeKey(profile + L"\\Pulse"));
+#endif
 }
 bool ExcludedContentPath(const ContentIndexConfig& config, const std::wstring& path) {
     return InternalContentPath(path) || ContentPathExcluded(config, path);
@@ -183,7 +187,11 @@ bool Open(const std::wstring& path, sqlite3** db, bool readonly) {
     sqlite3_create_collation(*db, "PULSE_ORDINAL", SQLITE_UTF16, nullptr, OrdinalCollation);
     sqlite3_create_function_v2(*db, "pulse_filename", 1, SQLITE_UTF16 | SQLITE_DETERMINISTIC, nullptr, SqlFilename, nullptr, nullptr, nullptr);
     sqlite3_create_function_v2(*db,"pulse_extension",1,SQLITE_UTF16|SQLITE_DETERMINISTIC,nullptr,SqlExtension,nullptr,nullptr,nullptr);
+#ifdef PULSE_CUSTOM_EDITION
+    return RegisterTokenizer(*db) && Exec(*db, readonly ? "PRAGMA cache_size=-8192; PRAGMA temp_store=MEMORY;" : "PRAGMA cache_size=-32768; PRAGMA temp_store=MEMORY;");
+#else
     return RegisterTokenizer(*db) && Exec(*db, readonly ? "PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;" : "PRAGMA cache_size=-32768; PRAGMA temp_store=FILE;");
+#endif
 }
 std::wstring LongPath(const std::wstring& p) {
     return p.starts_with(L"\\\\?\\") ? p : L"\\\\?\\" + p;

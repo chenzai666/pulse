@@ -1,4 +1,5 @@
 #include "content_timing.h"
+#include "custom_index_storage.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -134,6 +135,10 @@ void PruneForeignLogs(const std::filesystem::path& directory) noexcept {
     } catch (...) {}
 }
 std::wstring LogPath() {
+#ifdef PULSE_CUSTOM_EDITION
+    auto directory = custom_storage::Directory(L"logs");
+    if (directory.empty()) return {};
+#else
     auto directory = Environment(L"PULSE_CONTENT_TIMING_DIR");
     if (directory.empty()) {
         directory = Environment(L"LOCALAPPDATA");
@@ -143,6 +148,7 @@ std::wstring LogPath() {
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     if (error) return {};
+#endif
     PruneForeignLogs(directory);
     return (std::filesystem::path(directory) /
         (L"content-timing-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl")).wstring();

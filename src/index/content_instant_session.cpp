@@ -2,6 +2,7 @@
 #include "content_scope.h"
 #include "document_reader.h"
 #include "index_feed.h"
+#include "custom_index_storage.h"
 #include "../fs/fs_watch.h"
 #include <algorithm>
 #include <condition_variable>
@@ -40,6 +41,11 @@ void LogSubscriptionFailure(const Changes& state, uint64_t generation, size_t pe
     try {
         const char* names[]{"none", "queue_overflow", "feed_connect", "feed_not_ready", "feed_gap",
             "watch_overflow", "watch_not_ready", "transport", "metadata", "directory_enumeration", "reconcile"};
+#ifdef PULSE_CUSTOM_EDITION
+        const auto private_logs = custom_storage::Directory(L"logs");
+        if (private_logs.empty()) return;
+        std::filesystem::path root(private_logs);
+#else
         wchar_t directory[32768]{};
         DWORD count = GetEnvironmentVariableW(L"PULSE_CONTENT_TIMING_DIR", directory, ARRAYSIZE(directory));
         std::filesystem::path root;
@@ -52,6 +58,7 @@ void LogSubscriptionFailure(const Changes& state, uint64_t generation, size_t pe
         std::error_code error;
         std::filesystem::create_directories(root, error);
         if (error) return;
+#endif
         const auto path = root / (L"content-subscription-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl");
         SYSTEMTIME utc{}; GetSystemTime(&utc);
         char record[768]{};

@@ -53,6 +53,7 @@ $canary = Join-Path $prefsRoot ('installer-canary-' + [guid]::NewGuid().ToString
 [IO.File]::WriteAllText($canary, '保留用户配置', [Text.UTF8Encoding]::new($false))
 $canaryHash = (Get-FileHash -LiteralPath $canary).Hash
 $manifest = Get-Content -LiteralPath (Join-Path $package 'package-manifest.json') -Raw | ConvertFrom-Json
+$indexCanary = Join-Path $target 'index\installer-canary.bin'
 function VerifyInstalled {
     foreach ($entry in $manifest.files) {
         $path = Join-Path $target $entry.path
@@ -76,6 +77,13 @@ foreach ($round in 1,2) {
         $registered.InstallLocation.TrimEnd('\') -ieq $target) '独立卸载项指向所选非默认目录，升级沿用原路径'
     Check (-not (Test-Path -LiteralPath $defaultTarget)) '自定义安装和升级未写入默认目录'
     VerifyInstalled
+    if ($round -eq 1) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $indexCanary) -Force | Out-Null
+        [IO.File]::WriteAllText($indexCanary, '保留安装目录下的生成索引', [Text.UTF8Encoding]::new($false))
+        $indexCanaryHash = (Get-FileHash -LiteralPath $indexCanary).Hash
+    } else {
+        Check ((Get-FileHash -LiteralPath $indexCanary).Hash -eq $indexCanaryHash) '升级保留安装目录下的生成索引'
+    }
     Check ((Get-FileHash -LiteralPath $canary).Hash -eq $canaryHash) "第 $round 次安装保留配置"
     Check ((SharedState) -eq $before) "第 $round 次安装不改变原版卸载、索引服务或打开关联"
     Check (@(Get-Process pulse -ErrorAction SilentlyContinue | Where-Object Path -EQ (Join-Path $target 'pulse.exe')).Count -eq 0) '静默安装不自动启动主程序'
@@ -121,5 +129,6 @@ Check (-not (Test-Path -LiteralPath (Join-Path $target 'pulse.exe'))) '卸载移
 Check (-not (Test-Path -LiteralPath $customUninstallKey)) '卸载移除自己的卸载项'
 Check (-not (Test-Path -LiteralPath $defaultTarget)) '自定义目录卸载未写入默认目录'
 Check ((Get-FileHash -LiteralPath $canary).Hash -eq $canaryHash) '卸载保留用户配置'
+Check ((Get-FileHash -LiteralPath $indexCanary).Hash -eq $indexCanaryHash) '卸载保留安装目录下的生成索引'
 Check ((SharedState) -eq $before) '卸载不改变原版卸载、索引服务或打开关联'
 Add-Content -LiteralPath $log -Value 'SUMMARY failures=0'

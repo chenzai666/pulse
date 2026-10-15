@@ -1810,3 +1810,12 @@ add_executable(pulse_item_properties_test
     src/bench/item_properties_test.cpp
     src/fs/item_properties.cpp)
 target_link_libraries(pulse_item_properties_test PRIVATE advapi32)
+
+if(PULSE_CUSTOM_EDITION)
+    add_executable(pulse_custom_index_storage_test
+        src/bench/custom_index_storage_test.cpp
+        src/index/index_config.cpp
+        src/index/index_paths.cpp)
+    target_link_libraries(pulse_custom_index_storage_test PRIVATE advapi32 shell32)
+    add_dependencies(pulse_custom_index_storage_test pulse_index)
+endif()

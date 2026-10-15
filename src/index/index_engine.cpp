@@ -13,6 +13,7 @@
 #include "index_volume_fault_hooks.h"
 #include "index_mft_enum_page.h"
 #include "index_paths.h"
+#include "custom_index_storage.h"
 #include "index_delta.h"
 #include "index_shard.h"
 #include "../fs/fs_enum.h"
@@ -492,6 +493,9 @@ void Engine::PublishExcludedPaths(const IndexConfig& config,
                                  const std::function<void()>& locked_action) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     excluded_paths_ = config.excluded_paths;
+#ifdef PULSE_CUSTOM_EDITION
+    excluded_paths_.push_back(custom_storage::RootPath());
+#endif
     for (auto& path : SystemExclusionPaths(config)) excluded_paths_.push_back(std::move(path));
     hide_node_modules_ = HidesNodeModules(config);
     // Rebuild initialization remains atomic with configuration publication.
@@ -519,7 +523,7 @@ std::wstring Engine::Status() const {
 void Engine::RequestRebuild() {
     IndexConfig config;
     std::wstring config_error;
-    if (MachineIndexScope() && !LoadMachineConfig(config, &config_error)) {
+    if (UsesLocalIndexConfig() && !LoadMachineConfig(config, &config_error)) {
         SetStatus(config_error);
         PingNotify(true);
         return;
@@ -537,7 +541,7 @@ void Engine::RequestRebuild() {
 
 std::vector<VolumeInfo> Engine::Volumes() const {
     IndexConfig config;
-    if (MachineIndexScope() && !LoadMachineConfig(config, nullptr)) return {};
+    if (UsesLocalIndexConfig() && !LoadMachineConfig(config, nullptr)) return {};
     auto result = EnumerateLocalVolumes(config);
     std::shared_lock<std::shared_mutex> lock(mutex_);
     for (auto& volume : result) {
@@ -553,8 +557,13 @@ std::vector<VolumeInfo> Engine::Volumes() const {
         } else if (volume.enabled && building_) {
             volume.state = L"正在建立索引";
         } else if (volume.enabled && ready_) {
+#ifdef PULSE_CUSTOM_EDITION
+            volume.progress = 100;
+            volume.state = L"用户权限目录索引 · 自动更新";
+#else
             volume.state = L"索引失败";
             volume.error = L"无法读取该磁盘的文件变更记录";
+#endif
         }
     }
     for (const auto& state : vols_) {
@@ -3732,7 +3741,7 @@ bool Engine::RebuildVolumeMft(const VolumeInfo& volume) {
 }
 
 void Engine::WalkTree(int32_t parent, const std::wstring& dir, int depth) {
-    if (!running_ || depth > 18) return;
+    if (!running_ || depth > (edition::kCustom ? 256 : 18)) return;
     std::vector<fs::DirEntry> entries;
     try {
         fs::EnumerateDirectory(dir, entries);
@@ -3808,7 +3817,11 @@ void Engine::FullRebuild(const char* reason) {
 #ifdef PULSE_INDEX_VOLUME_FAULT_TEST
     config_loaded = !volume_fault_test::SnapshotFault(5);
 #endif
-    if (config_loaded && MachineIndexScope()) config_loaded = LoadMachineConfig(config, &config_error);
+    if (config_loaded && UsesLocalIndexConfig()) config_loaded = LoadMachineConfig(config, &config_error);
+    if (!fixture_root_.empty()) {
+        config.excluded_paths.clear();
+        config.system_groups.clear();
+    }
     if (!config_loaded) {
         build_error = GetLastError();
         if (!build_error) build_error = ERROR_INVALID_DATA;
@@ -3837,7 +3850,7 @@ void Engine::FullRebuild(const char* reason) {
 
     bool incomplete = false;
     const auto previous_count = indexed_.load();
-    if (IsAdmin() && fixture_root_.empty()) {
+    if (!edition::kCustom && IsAdmin() && fixture_root_.empty()) {
         for (const auto& volume : configured_volumes) {
             if (!running_) break;
             if (IndexVolumeMft(volume)) used_mft = true;
@@ -3857,11 +3870,20 @@ void Engine::FullRebuild(const char* reason) {
             int32_t parent = EnsureChainLocked(build_, path, true, false);
             if (parent >= 0) WalkTree(parent, path, 0);
         };
+#ifndef PULSE_CUSTOM_EDITION
         wchar_t profile[MAX_PATH] = {};
+#endif
         if (!fixture_root_.empty()) walk_root(fixture_root_);
+#ifdef PULSE_CUSTOM_EDITION
+        else for (const auto& volume : configured_volumes) {
+            if (!running_) break;
+            walk_root(Display(fs::NormalizePath(volume.mount_point)));
+        }
+#else
         else if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profile)))
             walk_root(Display(fs::NormalizePath(profile)));
         // R2: non-admin default is the user profile only (RDCW can actually watch it).
+#endif
     }
 
     if (running_ && !incomplete) {
@@ -4001,7 +4023,7 @@ void Engine::Worker() {
     ResolveIndexDirFrn();
     IndexConfig startup_config;
     std::wstring config_error;
-    if (MachineIndexScope() && !LoadMachineConfig(startup_config, &config_error)) {
+    if (UsesLocalIndexConfig() && !LoadMachineConfig(startup_config, &config_error)) {
         SetStatus(config_error); PingNotify(true);
         SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END); return;
     }
@@ -4016,13 +4038,13 @@ void Engine::Worker() {
     }
     // A config from before the system folder exclusions gets the defaults
     // persisted once; its snapshot still shows those folders, so rebuild it.
-    if (MachineIndexScope() && !startup_config.system_groups_saved &&
+    if (UsesLocalIndexConfig() && !startup_config.system_groups_saved &&
         SaveMachineConfig(startup_config) && have_cache)
         needs_search_rebuild = true;
     PingNotify(true);
 
     bool fresh = false;
-    if (have_cache && !needs_search_rebuild && IsAdmin()) {
+    if (!edition::kCustom && have_cache && !needs_search_rebuild && IsAdmin()) {
         bool have_vols = false;
         {
             std::shared_lock<std::shared_mutex> lock(mutex_);
@@ -4100,9 +4122,13 @@ void Engine::Worker() {
     if (running_ && walk_mode && watches_.empty()) {
         std::vector<std::wstring> roots = walk_roots_;
         if (roots.empty()) {
+#ifdef PULSE_CUSTOM_EDITION
+            for (const auto& volume : initial_drives) roots.push_back(Display(fs::NormalizePath(volume.mount_point)));
+#else
             wchar_t profile[MAX_PATH] = {};
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profile)))
                 roots.push_back(Display(fs::NormalizePath(profile)));
+#endif
         }
         StartWalkWatches(roots);
     }
@@ -4142,8 +4168,15 @@ void Engine::Worker() {
         if (fixture_root_.empty() && loop_tick - topology_tick >= 30000) {
             const auto timing = FilenameTiming::Begin();
             IndexConfig topology_config;
-            if (!MachineIndexScope() || LoadMachineConfig(topology_config, nullptr))
-                online = ConfiguredVolumes(topology_config);
+            if (!UsesLocalIndexConfig() || LoadMachineConfig(topology_config, nullptr)) {
+                auto next = ConfiguredVolumes(topology_config);
+#ifdef PULSE_CUSTOM_EDITION
+                if (next.size() != online.size() || !std::equal(next.begin(), next.end(), online.begin(),
+                    [](const VolumeInfo& a, const VolumeInfo& b) { return a.id == b.id && a.mount_point == b.mount_point; }))
+                    rebuild_requested_ = true;
+#endif
+                online = std::move(next);
+            }
             topology_tick = loop_tick;
             filename_timing_.End(FilenameStage::Topology, timing, online.size(), ERROR_SUCCESS, "periodic");
         }

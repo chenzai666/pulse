@@ -22,7 +22,7 @@ bool IsFile(const std::wstring& path) {
 // service while they copy the index and start it again themselves. The mutex
 // exists exactly while one runs; an elevated owner may deny us SYNCHRONIZE.
 bool IndexConfigurationRunning() {
-    HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\PulseIndexConfiguration");
+    HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, kConfigurationMutex);
     if (mutex) {
         CloseHandle(mutex);
         return true;
@@ -38,7 +38,11 @@ std::wstring IndexClient::ExePath() {
     wchar_t* slash = wcsrchr(exe, L'\\');
     const std::wstring sibling = slash ? std::wstring(exe, slash + 1) + L"Pulse.Index.exe" : L"Pulse.Index.exe";
     if (IsFile(sibling)) return sibling;  // common case: no service query
+#ifdef PULSE_CUSTOM_EDITION
+    return sibling;
+#else
     return ResolveIndexExecutable(sibling, InstalledServiceCommand(kServiceName), IsFile);
+#endif
 }
 
 void IndexClient::Start(HWND notify, UINT status_msg, UINT search_msg, std::wstring pipe_name) {
@@ -111,6 +115,13 @@ void IndexClient::StartStoppedService() {
 
 bool IndexClient::SpawnHelper() {
     if (pipe_name_ != kPipeName) return false;
+#ifdef PULSE_CUSTOM_EDITION
+    if (!custom_storage::Writable()) {
+        std::lock_guard<std::mutex> lock(mu_);
+        status_ = L"索引目录不可写或权限不安全：" + custom_storage::RootPath();
+        return false;
+    }
+#endif
     if (ServiceInstalled()) {
         StartStoppedService();
         {
@@ -150,6 +161,9 @@ bool IndexClient::EnsureConnected() {
         HANDLE h = CreateFileW(pipe_name_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                                OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+#ifdef PULSE_CUSTOM_EDITION
+        if (!agent::AuthorizedServer(h)) { CloseHandle(h); SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+#endif
         DWORD mode = PIPE_READMODE_BYTE;
         SetNamedPipeHandleState(h, &mode, nullptr, nullptr);
         return h;
@@ -396,7 +410,7 @@ void IndexClient::Worker() {
         if (!EnsureConnected()) {
             {
                 std::lock_guard<std::mutex> lock(mu_);
-                if (status_ != L"找不到 Pulse.Index.exe")
+                if (status_ != L"找不到 Pulse.Index.exe" && status_.rfind(L"索引目录", 0) != 0)
                     status_ = L"索引未连接";
             }
             for (int i = 0; i < 10 && running_; ++i) Sleep(100);
@@ -514,6 +528,9 @@ void IndexClient::CancelSession(uint64_t session_id) {
 }
 
 bool IndexClient::ServiceInstalled() const {
+#ifdef PULSE_CUSTOM_EDITION
+    return false;
+#else
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) return false;
     SC_HANDLE svc = OpenServiceW(scm, kServiceName, SERVICE_QUERY_STATUS);
@@ -521,6 +538,7 @@ bool IndexClient::ServiceInstalled() const {
     if (svc) CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return ok;
+#endif
 }
 
 bool IndexClient::RequestInstallService() {
@@ -542,7 +560,7 @@ bool RunElevatedIndexCommand(const std::wstring& exe, const std::wstring& parame
     }
     SHELLEXECUTEINFOW sei{ sizeof(sei) };
     sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"runas";
+    sei.lpVerb = edition::kCustom ? L"open" : L"runas";
     sei.lpFile = exe.c_str();
     sei.lpParameters = parameters.c_str();
     sei.nShow = SW_HIDE;
@@ -583,10 +601,20 @@ bool IndexClient::RebuildElevated() {
 }
 
 bool IndexClient::InstallServiceElevated(DWORD* error) {
+#ifdef PULSE_CUSTOM_EDITION
+    if (error) *error = ERROR_NOT_SUPPORTED;
+    return false;
+#else
     return RunElevatedIndexCommand(ExePath(), L"--install", error);
+#endif
 }
 
 bool IndexClient::ConfigureIndexPathElevated(const std::wstring& path, std::wstring* error) {
+#ifdef PULSE_CUSTOM_EDITION
+    (void)path;
+    if (error) *error = L"定制版索引固定保存在程序安装目录下的 index 文件夹";
+    return false;
+#else
     DWORD code = 0;
     if (RunElevatedIndexCommand(ExePath(), L"--set-index-path " + QuoteCommandArg(path), &code)) return true;
     if (error) {
@@ -610,6 +638,7 @@ bool IndexClient::ConfigureIndexPathElevated(const std::wstring& path, std::wstr
         }
     }
     return false;
+#endif
 }
 
 bool IndexClient::ConfigureExcludePathElevated(const std::wstring& path, bool enabled) {

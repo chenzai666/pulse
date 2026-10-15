@@ -1,6 +1,7 @@
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
 #include "../common/settings_pages.h"
+#include "../common/edition.h"
 #include "settings_controller.h"
 #include "blank_pane_click.h"
 #include "default_file_manager.h"
@@ -579,7 +580,8 @@ bool SettingsController::StartTask(SettingsTask task, SettingsTaskOperation oper
 
 bool SettingsController::StartUiTask(SettingsTask task) {
 #ifdef PULSE_CUSTOM_EDITION
-    if (task.kind != SettingsTaskKind::DiagnosticsExport) return false;
+    if (task.kind == SettingsTaskKind::InstallService ||
+        task.kind == SettingsTaskKind::ConfigureIndexPath) return false;
 #endif
     if (!ui_.task_completion) return false;
     auto* network = network_;
@@ -1189,7 +1191,7 @@ void SettingsController::ToggleVolume(int position) {
     const auto volumes = index_->Volumes();
     if (position < 0 || position >= static_cast<int>(volumes.size())) return;
     const auto& volume = volumes[static_cast<size_t>(position)];
-    if (!index_->ServiceMode() || !volume.supported) return;
+    if ((!edition::kCustom && !index_->ServiceMode()) || !volume.supported) return;
     ClearError();
     SettingsTask task{SettingsTaskKind::Volume};
     task.key = volume.id;
@@ -1198,7 +1200,7 @@ void SettingsController::ToggleVolume(int position) {
 }
 
 void SettingsController::AddExclude() {
-    if (!index_ || !index_->ServiceMode() || !ui_.pick_folder || !ui_.task_completion) return;
+    if (!index_ || (!edition::kCustom && !index_->ServiceMode()) || !ui_.pick_folder || !ui_.task_completion) return;
     std::wstring path;
     if (!ui_.pick_folder(path, l10n::Get(l10n::StringId::SettingsPickExclude).c_str())) return;
     ClearError();
@@ -1209,7 +1211,7 @@ void SettingsController::AddExclude() {
 }
 
 void SettingsController::RemoveExclude(int position) {
-    if (!index_ || !index_->ServiceMode() || !ui_.task_completion) return;
+    if (!index_ || (!edition::kCustom && !index_->ServiceMode()) || !ui_.task_completion) return;
     const auto paths = index_->ExcludedPaths();
     if (position < 0 || position >= static_cast<int>(paths.size())) return;
     ClearError();
@@ -1223,7 +1225,7 @@ void SettingsController::SystemExclusionAction(int action) {
         system_exclusion_expanded_ = !system_exclusion_expanded_;
         return;
     }
-    if (!index_ || !index_->ServiceMode() || !ui_.task_completion) return;
+    if (!index_ || (!edition::kCustom && !index_->ServiceMode()) || !ui_.task_completion) return;
     bool enabled = false;
     std::vector<std::wstring> groups;
     if (!index_->SystemExclusion(enabled, groups)) return;
@@ -1243,9 +1245,6 @@ void SettingsController::SystemExclusionAction(int action) {
 }
 
 void SettingsController::IndexAction(int action) {
-#ifdef PULSE_CUSTOM_EDITION
-    (void)action;
-#else
     if (!index_) return;
     if (action != 1 && migration_pending()) return;
     if (action == 1) {
@@ -1254,6 +1253,10 @@ void SettingsController::IndexAction(int action) {
         return;
     }
     if ((action != 0 && action != 2) || !ui_.task_completion) return;
+#ifdef PULSE_CUSTOM_EDITION
+    if (action == 0 && index_->RequestRebuild()) ClearError();
+    return;
+#else
     std::wstring path;
     const bool set_path = action == 2 && index_->ServiceMode();
     if (set_path && (!ui_.pick_folder ||
@@ -1268,10 +1271,6 @@ void SettingsController::IndexAction(int action) {
 }
 
 void SettingsController::NetworkAction(int action, bool pin_after_add) {
-#ifdef PULSE_CUSTOM_EDITION
-    (void)action;
-    (void)pin_after_add;
-#else
     if (!network_ || !ui_.task_completion) return;
     if (action == 1) {
         ClearError();
@@ -1286,7 +1285,6 @@ void SettingsController::NetworkAction(int action, bool pin_after_add) {
     task.path = std::move(path);
     task.pin = pin_after_add;
     StartUiTask(std::move(task));
-#endif
 }
 
 void SettingsController::RemoveNetwork(int position) {

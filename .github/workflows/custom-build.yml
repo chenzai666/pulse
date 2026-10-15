@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: '验证范围：完整集成、属性界面或标签／回收站／原生预览／搜索修复'
         type: choice
-        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, installer]
+        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, search, installer]
         default: full
       verify_settings_regression:
         description: '先验证设置页相邻场景在旧实现失败，再验证修复版本'
@@ -39,6 +39,11 @@ on:
       source_commit:
         description: '安装器应用载荷的完整提交 SHA'
         type: string
+      verification_scope:
+        description: '安装器来源验证范围'
+        type: choice
+        options: [native-dialogs, search]
+        default: native-dialogs
 
 permissions:
   contents: read
@@ -50,7 +55,7 @@ concurrency:
 
 jobs:
   build:
-    if: inputs.validation_scope != 'installer'
+    if: inputs.validation_scope != 'installer' && inputs.validation_scope != 'search'
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -163,6 +168,39 @@ jobs:
             build-custom/native-image-ui.png
             bench_data/listary-search-entry/*.log
           if-no-files-found: ignore
+  search:
+    if: inputs.validation_scope == 'search'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 恢复内置搜索并验证安装目录索引
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_search_ci.ps1
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Custom-complete
+          path: |
+            dist/Pulse-Custom-*.zip
+            dist/Pulse-Custom-*.sha256
+            dist/custom-build.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Pulse-Custom-build-diagnostics
+          path: |
+            build-custom/*.log
+            bench_data/search-routing/**
+            bench_data/search-settings/**
+            bench_data/custom-index-storage/**
+          if-no-files-found: ignore
   installer:
     if: inputs.validation_scope == 'installer'
     runs-on: windows-2022
@@ -182,14 +220,18 @@ jobs:
           INSTALL_SOURCE_RUN: ${{ inputs.source_run_id }}
           INSTALL_VERIFY_RUN: ${{ inputs.verification_run_id }}
           INSTALL_SOURCE_COMMIT: ${{ inputs.source_commit }}
-        run: ./scripts/build_custom_installer_ci.ps1 -SourceRunId $env:INSTALL_SOURCE_RUN -VerificationRunId $env:INSTALL_VERIFY_RUN -SourceCommit $env:INSTALL_SOURCE_COMMIT
+          INSTALL_VERIFY_SCOPE: ${{ inputs.verification_scope }}
+        run: ./scripts/build_custom_installer_ci.ps1 -SourceRunId $env:INSTALL_SOURCE_RUN -VerificationRunId $env:INSTALL_VERIFY_RUN -SourceCommit $env:INSTALL_SOURCE_COMMIT -VerificationScope $env:INSTALL_VERIFY_SCOPE
       - name: 发布固定版本 v1.0.53 安装包
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           INSTALL_SOURCE_COMMIT: ${{ inputs.source_commit }}
           INSTALL_VERIFY_RUN: ${{ inputs.verification_run_id }}
-        run: ./scripts/publish_custom_release.ps1 -InstallerDirectory dist-installer -SourceCommit $env:INSTALL_SOURCE_COMMIT -VerificationRunId $env:INSTALL_VERIFY_RUN
+          INSTALL_VERIFY_SCOPE: ${{ inputs.verification_scope }}
+        run: |
+          $releaseTag = if ($env:INSTALL_VERIFY_SCOPE -eq 'search') { 'custom-v1.0.53-search' } else { 'custom-v1.0.53' }
+          ./scripts/publish_custom_release.ps1 -InstallerDirectory dist-installer -SourceCommit $env:INSTALL_SOURCE_COMMIT -VerificationRunId $env:INSTALL_VERIFY_RUN -ReleaseTag $releaseTag
       - uses: actions/upload-artifact@v4
         if: success()
         with:

@@ -1,6 +1,7 @@
 #include "document_reader.h"
 #include "document_protocol.h"
 #include "document_admission.h"
+#include "custom_index_storage.h"
 #include "../common/runtime_log.h"
 #include <shlobj.h>
 #include <psapi.h>
@@ -40,6 +41,11 @@ bool Equal(std::wstring_view a, std::wstring_view b) noexcept {
         b.data(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
 bool AdmissionDirectory(std::wstring& directory, DWORD& error) {
+#ifdef PULSE_CUSTOM_EDITION
+    directory = custom_storage::Directory(L"document-slots-v1");
+    if (directory.empty()) { error = GetLastError(); return false; }
+    return true;
+#else
     wchar_t isolated[32768]{};
     const DWORD isolated_length = GetEnvironmentVariableW(L"PULSE_DOCUMENT_ADMISSION_DIR", isolated, ARRAYSIZE(isolated));
     if (isolated_length >= ARRAYSIZE(isolated)) { error = ERROR_BAD_PATHNAME; return false; }
@@ -67,6 +73,7 @@ bool AdmissionDirectory(std::wstring& directory, DWORD& error) {
     }
     directory = std::move(resolved);
     return true;
+#endif
 }
 class DocumentWorker {
 public:

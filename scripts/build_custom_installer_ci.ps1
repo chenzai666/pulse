@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9]+$')][string]$SourceRunId,
     [Parameter(Mandatory)][ValidatePattern('^[0-9]+$')][string]$VerificationRunId,
-    [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit
+    [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit,
+    [ValidateSet('native-dialogs','search')][string]$VerificationScope = 'native-dialogs'
 )
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
@@ -14,6 +15,7 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 $env:PULSE_INSTALL_SOURCE_RUN = $SourceRunId
 $env:PULSE_INSTALL_VERIFY_RUN = $VerificationRunId
 $env:PULSE_INSTALL_SOURCE_COMMIT = $SourceCommit
+$env:PULSE_INSTALL_VERIFY_SCOPE = $VerificationScope
 $env:PULSE_INSTALL_WORK = $work
 # 仅接受同仓库、同源码的成功构建，并逐个验证 GitHub artifact 摘要。
 @'
@@ -48,14 +50,16 @@ for key, name, output in [('PULSE_INSTALL_SOURCE_RUN','Pulse-Custom-complete','c
     if digest.hexdigest()!=expected: raise RuntimeError('构建产物摘要不匹配')
     records.append({'run':run_id,'artifact':item['id'],'sha256':expected})
 with zipfile.ZipFile(root/'verification.zip') as archive:
-    required=['bench_data/native-dialogs-wire.log','bench_data/native-dialogs-takeover.log','bench_data/native-dialogs-adapter.log','bench_data/native-dialogs-save-model.log','bench_data/native-dialogs-save-picker.log','bench_data/native-dialogs-settings-integration/results.log','bench_data/native-dialogs-settings-navigation/results.log']
+    scope=os.environ['PULSE_INSTALL_VERIFY_SCOPE']
+    required= ['build-custom/custom-index-storage.log','bench_data/search-routing/results.log','bench_data/search-settings/results.log'] if scope=='search' else ['bench_data/native-dialogs-wire.log','bench_data/native-dialogs-takeover.log','bench_data/native-dialogs-adapter.log','bench_data/native-dialogs-save-model.log','bench_data/native-dialogs-save-picker.log','bench_data/native-dialogs-settings-integration/results.log','bench_data/native-dialogs-settings-navigation/results.log']
     for name in required:
         text=archive.read(name).decode('utf-8-sig',errors='strict')
         if '[PASS]' not in text or '[FAIL]' in text: raise RuntimeError('定向验证日志未通过: '+name)
-    takeover=archive.read(required[1]).decode('utf-8-sig')
-    if 'SUMMARY failures=0' not in takeover: raise RuntimeError('缺少完整接管与恢复结果')
-(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'packaging_commit':os.environ.get('GITHUB_SHA',''),'artifacts':records},indent=2),encoding='utf-8')
-print('来源与接管定向验证均通过，产物摘要已验证')
+    if scope=='native-dialogs':
+        takeover=archive.read(required[1]).decode('utf-8-sig')
+        if 'SUMMARY failures=0' not in takeover: raise RuntimeError('缺少完整接管与恢复结果')
+(root/'provenance.json').write_text(json.dumps({'source_commit':os.environ['PULSE_INSTALL_SOURCE_COMMIT'],'packaging_commit':os.environ.get('GITHUB_SHA',''),'verification_scope':scope,'artifacts':records},indent=2),encoding='utf-8')
+print('来源与所选定向验证均通过，产物摘要已验证')
 '@ | python -
 if ($LASTEXITCODE) { throw '安装载荷来源或验证证据校验失败' }
 & python scripts/verify_custom_package.py (Join-Path $work 'complete.zip') $SourceCommit (Join-Path $work 'verified') |

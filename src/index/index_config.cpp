@@ -1,5 +1,6 @@
 #include "index_config.h"
 #include "index_directory_security.h"
+#include "custom_index_storage.h"
 #include "../common/config_json.h"
 #include "../common/json_utils.h"
 #include "../common/utf8_file.h"
@@ -15,7 +16,7 @@
 namespace pulse::index {
 namespace {
 
-bool EnsureDirectory(const std::wstring& path) {
+[[maybe_unused]] bool EnsureDirectory(const std::wstring& path) {
     if (path.empty()) return false;
     if (!CreateDirectoryW(path.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
         return false;
@@ -25,7 +26,7 @@ bool EnsureDirectory(const std::wstring& path) {
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
 }
 
-bool EnsureMachineDirectory(const std::wstring& path, bool user_readable = true) {
+[[maybe_unused]] bool EnsureMachineDirectory(const std::wstring& path, bool user_readable = true) {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     // SYSTEM + Administrators full; Authenticated Users can list/read (logs,
     // diagnostics). Protected DACL still blocks unintended ProgramData inherit.
@@ -193,7 +194,7 @@ void AddProfileFolders(const std::wstring& suffix, std::vector<std::wstring>& ou
     RegCloseKey(list);
 }
 
-bool IsNtfs(const std::wstring& fs) {
+[[maybe_unused]] bool IsNtfs(const std::wstring& fs) {
     return CompareStringOrdinal(fs.c_str(), -1, L"NTFS", -1, TRUE) == CSTR_EQUAL;
 }
 
@@ -266,19 +267,27 @@ std::wstring NormalizeVolumeId(std::wstring id) {
 }
 
 std::wstring MachineDataRoot() {
+#ifdef PULSE_CUSTOM_EDITION
+    return custom_storage::Directory();
+#else
     std::wstring root = KnownFolder(CSIDL_COMMON_APPDATA);
     if (root.empty()) return {};
     const std::wstring pulse = root + L"\\Pulse";
     if (!EnsureMachineDirectory(pulse)) return {};
     return pulse;
+#endif
 }
 
 std::wstring MachineIndexRoot() {
+#ifdef PULSE_CUSTOM_EDITION
+    return custom_storage::Directory();
+#else
     const std::wstring pulse = MachineDataRoot();
     if (pulse.empty()) return {};
     const std::wstring index = pulse + L"\\Index";
     if (!EnsureMachineDirectory(index, false)) return {};
     return index;
+#endif
 }
 
 bool ProtectIndexDirectory(const std::wstring& path) {
@@ -286,11 +295,15 @@ bool ProtectIndexDirectory(const std::wstring& path) {
 }
 
 std::wstring UserIndexRoot() {
+#ifdef PULSE_CUSTOM_EDITION
+    return custom_storage::Directory();
+#else
     std::wstring root = KnownFolder(CSIDL_LOCAL_APPDATA);
     if (root.empty()) return {};
     const std::wstring pulse = root + L"\\Pulse";
     if (!EnsureDirectory(pulse)) return {};
     return pulse;
+#endif
 }
 
 std::wstring MachineConfigPath() {
@@ -371,6 +384,18 @@ bool LoadIndexConfigFrom(const std::wstring& path, const std::wstring& default_i
 }
 
 bool LoadMachineConfig(IndexConfig& config, std::wstring* error) {
+#ifdef PULSE_CUSTOM_EDITION
+    const auto root = custom_storage::Directory();
+    if (root.empty()) {
+        config.load_failed = true;
+        SetError(error, L"无法创建或访问安装目录下的 index 文件夹，请检查目录写入权限");
+        return false;
+    }
+    if (!LoadIndexConfigFrom(root + L"\\index-config.json", root, config, error)) return false;
+    // A copied or edited config cannot redirect this edition into another tree.
+    config.index_path = root;
+    return true;
+#else
     const std::wstring root = MachineDataRoot();
     std::wstring path = MachineConfigPath();
     if (path.empty()) {
@@ -382,6 +407,7 @@ bool LoadMachineConfig(IndexConfig& config, std::wstring* error) {
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND)
         path = root + L"\\Index\\config.json";
     return LoadIndexConfigFrom(path, root + L"\\Index", config, error);
+#endif
 }
 
 bool SaveMachineConfig(const IndexConfig& config, std::wstring* error) {
@@ -394,10 +420,15 @@ bool SaveMachineConfig(const IndexConfig& config, std::wstring* error) {
         SetError(error, L"无法定位 ProgramData 索引目录");
         return false;
     }
-    if (!pulse::WriteUtf8FileAtomic(path, ConfigJson(config))) {
+    IndexConfig stored = config;
+#ifdef PULSE_CUSTOM_EDITION
+    stored.index_path = custom_storage::RootPath();
+#endif
+    if (!pulse::WriteUtf8FileAtomic(path, ConfigJson(stored))) {
         SetError(error, Win32Error(L"保存索引配置失败"));
         return false;
     }
+#ifndef PULSE_CUSTOM_EDITION
     const std::wstring legacy_root = MachineDataRoot() + L"\\Index";
     const DWORD attributes = GetFileAttributesW(legacy_root.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
@@ -406,6 +437,7 @@ bool SaveMachineConfig(const IndexConfig& config, std::wstring* error) {
         if (CompareStringOrdinal(config.index_path.c_str(), -1, legacy_root.c_str(), -1, TRUE) != CSTR_EQUAL)
             RemoveDirectoryW(legacy_root.c_str());
     }
+#endif
     return true;
 }
 
@@ -424,6 +456,12 @@ bool ConfigureVolume(const std::wstring& id, bool enabled, std::wstring* error) 
 }
 
 bool ConfigureIndexPath(const std::wstring& path, std::wstring* error) {
+#ifdef PULSE_CUSTOM_EDITION
+    (void)path;
+    SetError(error, L"定制版索引固定保存在程序安装目录下的 index 文件夹");
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return false;
+#else
     if (path.empty()) {
         SetError(error, L"索引路径不能为空");
         return false;
@@ -442,6 +480,7 @@ bool ConfigureIndexPath(const std::wstring& path, std::wstring* error) {
     config.index_path = path;
     ++config.generation;
     return SaveMachineConfig(config, error);
+#endif
 }
 
 bool ConfigureExcludePath(const std::wstring& path, bool enabled, std::wstring* error) {
@@ -511,7 +550,11 @@ std::vector<VolumeInfo> EnumerateLocalVolumes(const IndexConfig& config) {
             info.label = label;
             info.file_system = fs;
         }
+#ifdef PULSE_CUSTOM_EDITION
+        info.supported = info.online;
+#else
         info.supported = info.online && IsNtfs(info.file_system);
+#endif
         const bool auto_include = info.kind == VolumeKind::Fixed
             ? config.include_fixed_ntfs : config.include_removable_ntfs;
         info.enabled = info.supported && auto_include && !config.IsExcluded(info.id);

@@ -5,6 +5,7 @@
 #include "bloom_accent_picker.h"
 #include "../common/localization.h"
 #include "../common/settings_pages.h"
+#include "../common/edition.h"
 #include "typography.h"
 #include "title_chrome_layout.h"
 #include "name_highlight.h"
@@ -2189,7 +2190,7 @@ SettingsLayout MakeSettingsLayout(const WindowViewModel& vm, const D2D1_RECT_F& 
         const std::wstring index_actions[] = {
             pulse::l10n::Get(pulse::l10n::StringId::Rebuild),
             pulse::l10n::Get(pulse::l10n::StringId::OpenLocation),
-            pulse::l10n::Get(vm.settings_index_service
+            edition::kCustom ? l10n::Pick(L"跟随安装目录", L"Installation folder") : pulse::l10n::Get(vm.settings_index_service
                 ? pulse::l10n::StringId::ChangeLocation
                 : pulse::l10n::StringId::InstallService),
         };

@@ -105,7 +105,6 @@ void ExitAddressSearch(AppState& s) {
 }
 
 void ShowAddressSearch(AppState& s) {
-    if (edition::kCustom) { ShowFilterEditor(s); return; }
     if (s.addressSearching && s.hwndAddressEdit) {
         SetForegroundWindow(GetAncestor(s.hwndAddressEdit, GA_ROOT));
         SetFocus(s.hwndAddressEdit);

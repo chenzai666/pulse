@@ -685,8 +685,8 @@ int RunSettingsNavigationTest(AppState& s, const wchar_t* output) {
     }
     check(stable, "visible page IDs round-trip; unavailable page routes safely fall back to general");
 #ifdef PULSE_CUSTOM_EDITION
-    check(std::size(settings::kNavigationPages) == 4 && !settings::PageAvailable(1) && !settings::PageAvailable(4),
-        "custom edition removes search/index and duplicate page entries");
+    check(std::size(settings::kNavigationPages) == 5 && settings::PageAvailable(1) && !settings::PageAvailable(4),
+        "custom edition restores search/index and keeps duplicates unavailable");
     {
         app::SettingsController actions;
         app::ContextMenuPrefs context;
@@ -704,10 +704,9 @@ int RunSettingsNavigationTest(AppState& s, const wchar_t* output) {
         };
         callbacks.export_diagnostics = [&](const std::wstring&, bool, bool, std::wstring&) { ++exports; return true; };
         actions.BindUi(prefs, context, s.index, s.networkIndex, std::move(callbacks));
-        for (int action = 0; action < 3; ++action) actions.IndexAction(action);
-        actions.NetworkAction(0, true); actions.NetworkAction(1);
+        actions.IndexAction(2);
         check(dialogs == 0 && opened == 0 && completions == 0 && !actions.network_pending() && !actions.migration_pending(),
-            "custom direct index and network actions do not prompt, open paths, or submit work");
+            "custom fixed index directory cannot prompt for a move or install the shared service");
         actions.DiagnosticsAction(2);
         actions.Stop();
         check(exports == 1 && completions == 1 && !actions.diagnostics_pending(),

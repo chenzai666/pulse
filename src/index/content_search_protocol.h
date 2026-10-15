@@ -10,7 +10,13 @@ enum Message : uint32_t {
     REQ_SUBSCRIBE = 9,
     RSP_BATCH = 101, RSP_STATUS = 102,
 };
-inline std::wstring PipeName(std::wstring_view token) { return L"\\\\.\\pipe\\PulseContentSearch." + std::wstring(token); }
+inline std::wstring PipeName(std::wstring_view token) {
+#ifdef PULSE_CUSTOM_EDITION
+    return L"\\\\.\\pipe\\PulseCustomContentSearch." + std::wstring(token);
+#else
+    return L"\\\\.\\pipe\\PulseContentSearch." + std::wstring(token);
+#endif
+}
 inline ipc::MsgHeader Header(uint32_t type, uint32_t size) {
     ipc::MsgHeader h; h.magic = kMagic; h.type = type; h.payload_size = size; return h;
 }

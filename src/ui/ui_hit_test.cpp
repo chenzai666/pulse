@@ -10,6 +10,7 @@
 #include "../app/resource.h"
 #include "../app/places.h"
 #include "../common/text_format.h"
+#include "../common/edition.h"
 #include <windowsx.h>
 #include <d2d1effects.h>
 #include <shlwapi.h>
@@ -472,6 +473,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     r.region = HitTestResult::SettingsContentIndex; return r;
                 }
                 for (int i = 0; i < 3; ++i) {
+                    if (edition::kCustom && i == 2) continue;
                     if (ContainsPt(lay.index_action[i], x, y)) {
                         r.region = HitTestResult::SettingsIndexAction;
                         r.index = i;

@@ -9,6 +9,7 @@
 #include "../app/resource.h"
 #include "../app/places.h"
 #include "../common/text_format.h"
+#include "../common/edition.h"
 #include <windowsx.h>
 #include <d2d1effects.h>
 #include <shlwapi.h>
@@ -145,6 +146,11 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
             : pulse::l10n::Get(vm.settings_index_installed
                 ? pulse::l10n::StringId::SettingsServiceWaiting
                 : pulse::l10n::StringId::SettingsUserIndexDesc);
+        if (edition::kCustom) {
+            info.title = l10n::Pick(L"本地磁盘索引", L"Local drive index");
+            info.message = l10n::Pick(L"后台索引可读目录，数据保存在安装目录的 index 文件夹。",
+                L"Indexes readable folders in the background; data stays in the installation's index folder.");
+        }
         info.kind = vm.settings_index_error.empty() ? fluent::InfoBarKind::Informational
                                                      : fluent::InfoBarKind::Error;
         if (!vm.settings_index_error.empty()) info.message = vm.settings_index_error;
@@ -181,13 +187,14 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
         const std::wstring actions[] = {
             pulse::l10n::Get(pulse::l10n::StringId::Rebuild),
             pulse::l10n::Get(pulse::l10n::StringId::OpenLocation),
-            pulse::l10n::Get(vm.settings_index_service
+            edition::kCustom ? l10n::Pick(L"跟随安装目录", L"Installation folder") : pulse::l10n::Get(vm.settings_index_service
                 ? pulse::l10n::StringId::ChangeLocation
                 : pulse::l10n::StringId::InstallService),
         };
         for (int i = 0; i < 3; ++i) {
             fluent::ControlState st{};
-            st.enabled = (i == 2 || vm.settings_index_service) && (!vm.settings_index_migrating || i == 1);
+            st.enabled = (edition::kCustom ? i != 2 : (i == 2 || vm.settings_index_service)) &&
+                         (!vm.settings_index_migrating || i == 1);
             st.hovered = st.enabled && IsHovered(vm, HitTestResult::SettingsIndexAction, i);
             painter_.DrawButton({ lay.index_action[i], actions[i], {},
                                   i == 2 ? fluent::ButtonKind::Primary : fluent::ButtonKind::Standard,
@@ -246,7 +253,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
                      lay.content.left + pad, lay.index_exclude_action.top + 5.0f * scale_,
                      160.0f * scale_, 22.0f * scale_);
         fluent::ControlState add_exclude{};
-        add_exclude.enabled = vm.settings_index_service;
+        add_exclude.enabled = edition::kCustom || vm.settings_index_service;
         add_exclude.hovered = add_exclude.enabled &&
             IsHovered(vm, HitTestResult::SettingsIndexExcludeAction, 0);
         painter_.DrawButton({ lay.index_exclude_action,
@@ -256,7 +263,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
             lay.index_system_card.bottom > lay.index_system_card.top) {
             draw_card(lay.index_system_card);
             const auto& row = lay.index_system_row;
-            const bool service = vm.settings_index_service;
+            const bool service = edition::kCustom || vm.settings_index_service;
             const bool on = vm.settings_index_exclude_system;
             if (service && IsHovered(vm, HitTestResult::SettingsIndexExcludeAction, 1)) {
                 MakeBrush(dc, theme.fill_hover, brFillHover_);
@@ -426,7 +433,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
                          std::max(40.0f * scale_, remove_rc.left - 8.0f * scale_ -
                                   (row.left + 16.0f * scale_)), 22.0f * scale_);
             fluent::ControlState remove{};
-            remove.enabled = vm.settings_index_service;
+            remove.enabled = edition::kCustom || vm.settings_index_service;
             remove.hovered = remove.enabled &&
                 IsHovered(vm, HitTestResult::SettingsIndexExcludeRemove, static_cast<int>(i));
             painter_.DrawButton({ remove_rc,

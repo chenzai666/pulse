@@ -1,6 +1,7 @@
 #include "crash_reporter.h"
 #include "runtime_log.h"
 #include "edition.h"
+#include "../index/custom_index_storage.h"
 #include "pulse_version.h"
 
 #include <dbghelp.h>
@@ -104,6 +105,11 @@ bool EnsureDirectory(const std::wstring& path) noexcept {
 }
 
 std::wstring DefaultDataRoot(bool machine_scope) {
+#ifdef PULSE_CUSTOM_EDITION
+    if (g_config.role == ProcessRole::IndexHelper || g_config.role == ProcessRole::IndexService ||
+        g_config.role == ProcessRole::NetworkAgent || g_config.role == ProcessRole::ContentAgent)
+        return pulse::index::custom_storage::Directory();
+#endif
     wchar_t path[MAX_PATH]{};
     const int csidl = machine_scope ? CSIDL_COMMON_APPDATA : CSIDL_LOCAL_APPDATA;
     if (FAILED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, path))) return {};

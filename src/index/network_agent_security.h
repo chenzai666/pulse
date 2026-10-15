@@ -4,6 +4,7 @@
 #include <string>
 #include <cstdint>
 #include <vector>
+#include "custom_index_storage.h"
 
 namespace pulse::index::agent {
 struct Identity {
@@ -59,15 +60,29 @@ inline bool SameIdentity(const Identity& a, const Identity& b) {
 }
 inline std::wstring EndpointSuffix(const Identity& owner) {
     if (!owner.valid()) return {};
+#ifdef PULSE_CUSTOM_EDITION
+    return custom_storage::InstallationKey() + L"-" + owner.Suffix();
+#else
     return owner.Suffix();
+#endif
 }
 inline std::wstring PipeName(const Identity& owner = ProcessIdentity()) {
     const auto suffix = EndpointSuffix(owner);
-    return suffix.empty() ? std::wstring{} : L"\\\\.\\pipe\\PulseNetworkIndex-" + suffix;
+    return suffix.empty() ? std::wstring{} :
+#ifdef PULSE_CUSTOM_EDITION
+        L"\\\\.\\pipe\\PulseCustomNetworkIndex-" + suffix;
+#else
+        L"\\\\.\\pipe\\PulseNetworkIndex-" + suffix;
+#endif
 }
 inline std::wstring SingletonName(const Identity& owner = ProcessIdentity()) {
     const auto suffix = EndpointSuffix(owner);
-    return suffix.empty() ? std::wstring{} : L"Local\\Pulse.Index.NetworkAgent-" + suffix;
+    return suffix.empty() ? std::wstring{} :
+#ifdef PULSE_CUSTOM_EDITION
+        L"Local\\PulseCustom.Index.NetworkAgent-" + suffix;
+#else
+        L"Local\\Pulse.Index.NetworkAgent-" + suffix;
+#endif
 }
 class EndpointSecurity {
 public:

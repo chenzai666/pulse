@@ -1,6 +1,7 @@
 #include "network_index.h"
 #include "network_crawl_schedule.h"
 #include "index_config.h"
+#include "custom_index_storage.h"
 #include "index_query.h"
 #include "../common/utf8_file.h"
 #include "../common/json_utils.h"
@@ -180,12 +181,16 @@ std::wstring Hex64(uint64_t value) {
 }
 
 std::wstring NetworkDataDir() {
+#ifdef PULSE_CUSTOM_EDITION
+    return custom_storage::Directory(L"NetworkIndex");
+#else
     const std::wstring base = UserIndexRoot();
     if (base.empty()) return {};
     const std::wstring dir = base + L"\\NetworkIndex";
     if (!CreateDirectoryW(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
         return {};
     return dir;
+#endif
 }
 
 std::wstring ShardPath(const std::wstring& root, int slot = -1) {

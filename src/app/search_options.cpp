@@ -125,7 +125,6 @@ void StartIndexedContentSearch(AppState& s, app::Tab& tab, const std::wstring& r
 }
 
 void ShowSearchOptions(AppState& s, bool management) {
-    if (edition::kCustom) { OpenListarySearch(s); return; }
     if (management) { OpenSettingsTab(s, 1); return; }
     if (s.searchHistoryOpen) {
         s.searchOptionsPending = true;

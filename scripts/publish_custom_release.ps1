@@ -2,11 +2,12 @@
 param(
     [Parameter(Mandatory)][string]$InstallerDirectory,
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit,
-    [Parameter(Mandatory)][ValidatePattern('^[0-9]+$')][string]$VerificationRunId
+    [Parameter(Mandatory)][ValidatePattern('^[0-9]+$')][string]$VerificationRunId,
+    [ValidatePattern('^custom-v1\.0\.53(?:-[a-z0-9-]+)?$')][string]$ReleaseTag = 'custom-v1.0.53'
 )
 $ErrorActionPreference = 'Stop'
 $repository = 'chenzai666/pulse'
-$tag = 'custom-v1.0.53'
+$tag = $ReleaseTag
 $installerName = 'Pulse-Custom-Setup-v1.0.53-x64.exe'
 $installer = Join-Path $InstallerDirectory $installerName
 $checksum = $installer + '.sha256'
@@ -56,14 +57,14 @@ $notes = Join-Path $InstallerDirectory 'release-notes.md'
 
 ## 本次调整
 
-- 设置移除“搜索与索引”和“重复文件”；停止定制版内置索引及重复扫描后台任务。全局搜索使用现有 Listary，当前目录保留筛选。
+- 恢复 Pulse 内置全局搜索、地址栏搜索和“搜索与索引”设置；索引保存在安装目录的 ``index`` 文件夹，升级保留。普通用户后台进程扫描可读的本地磁盘，不注册共享系统索引服务。“重复文件”页继续隐藏。
 - 新标签页默认打开主页，软件的项目主页和版本入口指向本仓库。
 - 支持可识别的 Windows 标准打开、保存和选择文件夹窗口；设置关闭接管可恢复原版。不支持或权限不同的窗口保留原生流程。
 - 保留既有标签分栏、独立窗口、放到“＋”合并、预览、文件转换及状态中心。
 
 ## 验证与边界
 
-接管、恢复及相关定向验证：[运行 $VerificationRunId](https://github.com/$repository/actions/runs/$VerificationRunId)。安装器另已完成隔离 runner 上的安装、覆盖升级、卸载与文件摘要核对。
+本次定向验证：[运行 $VerificationRunId](https://github.com/$repository/actions/runs/$VerificationRunId)。安装器另已完成隔离 runner 上的安装、覆盖升级、卸载与文件摘要核对。
 
 Listary 需用户已有安装；插件随包提供。旧版系统索引服务不会由安装器自动移除，已有系统接管应在卸载前按实际归属恢复。
 

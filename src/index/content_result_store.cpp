@@ -1,6 +1,7 @@
 #include "content_sort_sql.h"
 #include "content_result_store.h"
 #include "../common/current_user_security.h"
+#include "custom_index_storage.h"
 #include "../../third_party/sqlite/sqlite3.h"
 #include <algorithm>
 #include <atomic>
@@ -127,8 +128,14 @@ struct ContentResultStore::Impl {
     }
     bool Open() {
         if(db) return true;
+#ifdef PULSE_CUSTOM_EDITION
+        const auto result_directory = custom_storage::Directory(L"Results");
+        if (result_directory.empty()) return false;
+        const auto directory = result_directory + L"\\";
+#else
         wchar_t directory[32768]{};
         if(!GetTempPathW(ARRAYSIZE(directory),directory)) return false;
+#endif
         GUID id{}; if(FAILED(CoCreateGuid(&id))) return false;
         wchar_t token[40]{}; StringFromGUID2(id,token,40);
         path=std::wstring(directory)+L"Pulse-results-"+token+L".sqlite";
@@ -139,7 +146,13 @@ struct ContentResultStore::Impl {
         if(sqlite3_open16(path.c_str(),&db)!=SQLITE_OK) return false;
         sqlite3_create_collation(db,"PULSE_ORDINAL",SQLITE_UTF16,nullptr,OrdinalCollation);
         sqlite3_create_function_v2(db,"pulse_extension",1,SQLITE_UTF16|SQLITE_DETERMINISTIC,nullptr,SqlExtension,nullptr,nullptr,nullptr);
-        return Exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA cache_size=-2048; PRAGMA temp_store=FILE; CREATE TABLE hits(seq INTEGER PRIMARY KEY,name TEXT,path TEXT,size INTEGER,mtime INTEGER,line INTEGER,snippet TEXT,file_id INTEGER NOT NULL DEFAULT 0); CREATE UNIQUE INDEX hits_identity ON hits(file_id) WHERE file_id<>0; CREATE TABLE visible(pos INTEGER PRIMARY KEY,seq INTEGER);");
+        return Exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA cache_size=-2048; "
+#ifdef PULSE_CUSTOM_EDITION
+            "PRAGMA temp_store=MEMORY; "
+#else
+            "PRAGMA temp_store=FILE; "
+#endif
+            "CREATE TABLE hits(seq INTEGER PRIMARY KEY,name TEXT,path TEXT,size INTEGER,mtime INTEGER,line INTEGER,snippet TEXT,file_id INTEGER NOT NULL DEFAULT 0); CREATE UNIQUE INDEX hits_identity ON hits(file_id) WHERE file_id<>0; CREATE TABLE visible(pos INTEGER PRIMARY KEY,seq INTEGER);");
     }
     void Enqueue(std::function<void()> task) {
         { std::lock_guard lock(mu); if(stopping) return; tasks.push_back(std::move(task)); }

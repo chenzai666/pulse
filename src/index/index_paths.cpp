@@ -31,6 +31,9 @@ std::wstring DataDir() {
         std::lock_guard<std::mutex> lock(g_directory_mutex);
         if (!g_active_directory.empty()) return g_active_directory;
     }
+#ifdef PULSE_CUSTOM_EDITION
+    return UserIndexRoot();
+#else
     if (MachineIndexScope()) {
         IndexConfig config;
         if (LoadMachineConfig(config, nullptr) && !config.index_path.empty()) {
@@ -40,6 +43,7 @@ std::wstring DataDir() {
         return MachineIndexRoot();
     }
     return UserIndexRoot();
+#endif
 }
 
 std::wstring CacheFilePath() {

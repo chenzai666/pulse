@@ -2,6 +2,7 @@
 #include "index_config.h"
 #include "index_migration.h"
 #include "index_directory_security.h"
+#include "../common/edition.h"
 #include <windows.h>
 #include <winsvc.h>
 
@@ -64,6 +65,7 @@ DWORD StopAndWait(SC_HANDLE service) {
 }
 
 int ConfigureServiceIndexPath(const std::wstring& path) {
+    if (edition::kCustom) return ERROR_NOT_SUPPORTED;
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
     IndexConfig previous;
     if (!LoadMachineConfig(previous, nullptr)) return ERROR_INVALID_DATA;

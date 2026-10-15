@@ -664,17 +664,13 @@ std::vector<ui::FluentMenuItem> BuildCommandPalette(const std::wstring& query,
         add_cmd(CmdExitPulse, l10n::Get(l10n::StringId::ExitPulse).c_str(), L"\xE7E8", nullptr);
         add_cmd(CmdOpenRecycle, l10n::Get(l10n::StringId::RecycleBin).c_str(), kGlyphRecycle, nullptr);
         add_cmd(CmdBatchRename, l10n::Get(l10n::StringId::BatchRename).c_str(), kGlyphRename, L"Ctrl+Shift+R");
-        add_cmd(CmdAdvancedSearch, edition::kCustom ? L"Listary" : l10n::Get(l10n::StringId::AdvancedSearch).c_str(), kGlyphSearch, L"Ctrl+Shift+F");
+        add_cmd(CmdAdvancedSearch, l10n::Get(l10n::StringId::AdvancedSearch).c_str(), kGlyphSearch, L"Ctrl+Shift+F");
         add_cmd(CmdSelectAll, l10n::Get(l10n::StringId::SelectAll).c_str(), kGlyphSelectAll, L"Ctrl+A");
         add_cmd(CmdInvertSelection, l10n::Get(l10n::StringId::InvertSelection).c_str(), kGlyphInvert, L"Ctrl+I");
         add_cmd(CmdSelectWildcard, l10n::Get(l10n::StringId::SelectWildcard).c_str(), kGlyphWildcard, L"Ctrl+Shift+A");
     }
     std::unordered_set<std::wstring> seen_paths;
-    if (edition::kCustom && !command_mode && !needle.empty() && !path_like) {
-        if (!items.empty()) items.back().separator_after = true;
-        items.push_back(Item(CmdSearchAll, L"Listary", kGlyphSearch));
-    }
-    if constexpr (!edition::kCustom) {
+    {
         const bool has_content = index::QueryHasContent(index::ParseQuery(needle));
         if (!command_mode && (!hits.empty() || total > 0 || has_content)) {
             if (!items.empty()) items.back().separator_after = true;

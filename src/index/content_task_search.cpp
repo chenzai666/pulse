@@ -4,7 +4,9 @@
 #include "document_reader.h"
 #include "text_task_reader.h"
 #include "index_feed.h"
+#include "custom_index_storage.h"
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -94,6 +96,16 @@ struct JobQueue {
             return false;
         }
         if (file == INVALID_HANDLE_VALUE) {
+#ifdef PULSE_CUSTOM_EDITION
+            const auto folder = custom_storage::Directory(L"Tasks");
+            if (folder.empty()) return false;
+            static std::atomic<uint64_t> next{0};
+            const auto path = folder + L"\\content-task-" + std::to_wstring(GetCurrentProcessId()) +
+                L"-" + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(++next) + L".tmp";
+            file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+            if (file == INVALID_HANDLE_VALUE) return false;
+#else
             wchar_t folder[MAX_PATH]{}, path[MAX_PATH]{};
             if (!GetTempPathW(MAX_PATH, folder) || !GetTempFileNameW(folder, L"pct", 0, path))
                 return false;
@@ -105,6 +117,7 @@ struct JobQueue {
                 SetLastError(error);
                 return false;
             }
+#endif
         }
         if (!Transfer(&size, sizeof(size), write_at, true) ||
             !Transfer(const_cast<uint8_t *>(payload.data().data()), size, write_at + sizeof(size), true))

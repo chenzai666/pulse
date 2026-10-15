@@ -43,6 +43,7 @@
 #pragma comment(lib, "shlwapi.lib")
 
 using namespace pulse::index;
+namespace edition = pulse::edition;
 using pulse::ipc::MsgHeader;
 using pulse::ipc::PayloadReader;
 using pulse::ipc::PayloadWriter;
@@ -183,6 +184,10 @@ void SetSvc(DWORD state, DWORD win32 = NO_ERROR) {
 }
 
 SECURITY_ATTRIBUTES* PipeSa() {
+#ifdef PULSE_CUSTOM_EDITION
+    static agent::EndpointSecurity security(agent::ProcessIdentity());
+    return security.get();
+#else
     // The caller-filter test uses the service DACL so other callers can connect.
     if(!g.as_service && !g.caller_filter_test) {
         static pulse::CurrentUserSecurityAttributes owner;
@@ -199,6 +204,7 @@ SECURITY_ATTRIBUTES* PipeSa() {
         sa.bInheritHandle = FALSE;
     }
     return sd ? &sa : nullptr;
+#endif
 }
 
 bool ClientIo(Client& client, HANDLE pipe, uint8_t* bytes, DWORD size, bool write, ULONGLONG deadline = 0) {
@@ -312,7 +318,7 @@ std::vector<uint8_t> SearchPayload(const SearchResult& sr) {
 std::vector<uint8_t> VolumesPayload() {
     PayloadWriter w;
     IndexConfig config;
-    if (g.as_service) LoadMachineConfig(config, nullptr);
+    if (g.as_service || edition::kCustom) LoadMachineConfig(config, nullptr);
     const auto volumes = g.engine.Volumes();
     w.PutU32(g.as_service ? 1u : 0u);
     w.PutString(DataDir());
@@ -333,7 +339,7 @@ std::vector<uint8_t> VolumesPayload() {
         w.PutU32(static_cast<uint32_t>(volume.indexed_items));
         w.PutU32(static_cast<uint32_t>(volume.indexed_items >> 32));
     }
-    if (g.as_service) {
+    if (g.as_service || edition::kCustom) {
         // Sent after the volume rows so newer clients receive the exclusion list.
         w.PutU32(static_cast<uint32_t>(config.excluded_paths.size()));
         for (const auto& path : config.excluded_paths) w.PutString(path);
@@ -665,8 +671,15 @@ void ClientThread(std::shared_ptr<Client> c) {
             !ClientIo(*c, pipe, payload.data(), hdr.payload_size, false))
             break;
         // Impersonation needs a completed read; searches are queued only after this.
+#ifdef PULSE_CUSTOM_EDITION
+        if (!agent::AuthorizedClient(pipe, agent::ProcessIdentity())) break;
+#endif
         if (!c->caller_token && CallerFilter()) c->caller_token = CaptureCallerToken(pipe);
-        if(hdr.type==8) {
+        if (hdr.type == REQ_IDX_REBUILD && edition::kCustom) {
+            if (!payload.empty()) break;
+            g.engine.RequestRebuild();
+            WriteFrame(*c, RSP_IDX_STATUS, hdr.request_id, StatusPayload());
+        } else if(hdr.type==8) {
             PayloadReader reader(payload.data(),payload.size());uint64_t session=0;
             if(!reader.GetU64(session)) break;
             std::lock_guard lock(c->subscriptions_mu);
@@ -887,6 +900,20 @@ int RunHost(bool as_service, bool test_mode = false,
     g.mutex_name = std::move(mutex_name);
     ServiceTrace(L"RunHost entered");
     SetMachineIndexScope(as_service);
+#ifdef PULSE_CUSTOM_EDITION
+    if (as_service) return ERROR_NOT_SUPPORTED;
+    if (!custom_storage::Writable()) return static_cast<int>(GetLastError());
+    struct WriterLock {
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        ~WriterLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } writer_lock;
+    if (!test_mode) {
+        const auto lock_path = custom_storage::RootPath() + L"\\filename-writer.lock";
+        writer_lock.handle = CreateFileW(lock_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+        if (writer_lock.handle == INVALID_HANDLE_VALUE) return static_cast<int>(GetLastError());
+    }
+#endif
     PrivateIndexDirectoryLock index_directory_lock;
     if (as_service) {
         (void)MachineDataRoot();
@@ -1155,6 +1182,26 @@ bool IsElevated() {
 }
 
 bool ReloadService() {
+#ifdef PULSE_CUSTOM_EDITION
+    HANDLE pipe = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE) return false;
+    constexpr uint32_t request_id = 0x434d0001;
+    auto header = MakeIndexHdr(REQ_IDX_REBUILD, request_id, 0);
+    const auto deadline = GetTickCount64() + 3000;
+    auto transfer = [&](void* bytes, DWORD length, bool write) {
+        return pulse::ipc::DeadlinePipeIo(pipe, static_cast<uint8_t*>(bytes), length, write, deadline, [] { return false; });
+    };
+    bool ok = agent::AuthorizedServer(pipe) && transfer(&header, sizeof(header), true);
+    while (ok) {
+        ok = transfer(&header, sizeof(header), false) && header.magic == kIndexMagic && header.payload_size <= 65536;
+        if (!ok) break;
+        std::vector<uint8_t> payload(header.payload_size);
+        if (!payload.empty()) ok = transfer(payload.data(), header.payload_size, false);
+        if (!ok || (header.type == RSP_IDX_STATUS && header.request_id == request_id)) break;
+    }
+    CloseHandle(pipe); return ok;
+#else
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) return false;
     SC_HANDLE svc = OpenServiceW(scm, kServiceName, SERVICE_USER_DEFINED_CONTROL);
@@ -1167,12 +1214,13 @@ bool ReloadService() {
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
     return ok;
+#endif
 }
 
 int ConfigureCommand(const std::vector<std::wstring>& args) {
-    if (!IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    if (!edition::kCustom && !IsElevated()) return ERROR_ELEVATION_REQUIRED;
     struct ConfigurationLock {
-        HANDLE handle = CreateMutexW(nullptr, FALSE, L"Global\\PulseIndexConfiguration");
+        HANDLE handle = CreateMutexW(nullptr, FALSE, kConfigurationMutex);
         bool locked = false;
         ~ConfigurationLock() {
             if (locked) ReleaseMutex(handle);
@@ -1192,6 +1240,7 @@ int ConfigureCommand(const std::vector<std::wstring>& args) {
         if (!enabled && !disabled) return ERROR_INVALID_PARAMETER;
         ok = ConfigureVolume(args[2], enabled, &error);
     } else if (args.size() >= 3 && args[1] == L"--set-index-path") {
+        if (edition::kCustom) return ERROR_NOT_SUPPORTED;
         return ConfigureServiceIndexPath(args[2]);
     } else if (args.size() >= 3 && args[1] == L"--configure-exclude") {
         const bool enabled = args.size() >= 4 && args[3] == L"--enable";
@@ -1213,7 +1262,7 @@ int ConfigureCommand(const std::vector<std::wstring>& args) {
 
 int ExportDiagnosticsCommand(const std::vector<std::wstring>& args) {
     if (args.size() != 3 && !(args.size() == 4 && args[3] == L"--include-dumps")) return ERROR_INVALID_PARAMETER;
-    if (!IsElevated()) return ERROR_ELEVATION_REQUIRED;
+    if (!edition::kCustom && !IsElevated()) return ERROR_ELEVATION_REQUIRED;
     pulse::diagnostics::ExportOptions options;
     options.source_root = MachineDataRoot();
     options.destination = args[2];
@@ -1272,6 +1321,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     std::wstring a1 = args.size() >= 2 ? args[1] : L"";
     if (argv) LocalFree(argv);
+
+    // Portable, user-writable installs must never become a SYSTEM service.
+    if (edition::kCustom && (a1 == L"--install" || a1 == L"--uninstall" || a1 == L"--service"))
+        return ERROR_NOT_SUPPORTED;
 
     const bool service_mode = a1 == L"--service";
     const auto role = service_mode ? pulse::crash::ProcessRole::IndexService

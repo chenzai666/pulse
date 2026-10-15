@@ -1,12 +1,17 @@
 #pragma once
 #include "content_search_protocol.h"
 #include "../common/current_user_security.h"
+#include "custom_index_storage.h"
 #include <algorithm>
 #include <cwctype>
 
 namespace pulse::index::config_storage {
 inline bool SameStoredPath(const std::wstring& a, const std::wstring& b) { return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL; }
 inline std::wstring DatabasePath() {
+#ifdef PULSE_CUSTOM_EDITION
+    const auto dir = custom_storage::Directory(L"ContentIndex");
+    return dir.empty() ? std::wstring{} : dir + L"\\content-v1.sqlite";
+#else
     wchar_t base[32768]{};
     const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, ARRAYSIZE(base));
     if (!n || n >= ARRAYSIZE(base)) return {};
@@ -16,6 +21,7 @@ inline std::wstring DatabasePath() {
     dir += L"\\ContentIndex";
     CreateDirectoryW(dir.c_str(), security ? security.get() : nullptr);
     return dir + L"\\content-v1.sqlite";
+#endif
 }
 inline std::wstring ObjectName(const std::wstring& path, const wchar_t* kind) {
     wchar_t absolute[32768]{};

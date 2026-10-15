@@ -78,10 +78,6 @@ void ToggleNativeGlobalSearch(AppState& s) {
 
 void ToggleGlobalSearch(AppState& s) {
     if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
-    if (edition::kCustom) {
-        OpenListarySearch(s);
-        return;
-    }
     ToggleNativeGlobalSearch(s);
 }
 

@@ -2,6 +2,7 @@
 #include "../ipc/protocol.h"
 #include "change_tracking.h"
 #include "folder_size_protocol.h"
+#include "index_endpoints.h"
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -34,9 +35,12 @@ public:
         if (pipe_ == INVALID_HANDLE_VALUE) {
             wchar_t override_name[256]{};
             const auto n = GetEnvironmentVariableW(L"PULSE_INDEX_FEED_PIPE", override_name, 256);
-            const std::wstring name = n && n < 256 ? override_name : L"\\\\.\\pipe\\PulseIndex";
+            const std::wstring name = n && n < 256 ? override_name : kPipeName;
             pipe_ = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
             if (pipe_ == INVALID_HANDLE_VALUE) return false;
+#ifdef PULSE_CUSTOM_EDITION
+            if (!agent::AuthorizedServer(pipe_)) { Close(); return false; }
+#endif
         }
         ipc::PayloadWriter request;
         request.PutU32(1); request.PutU32(static_cast<uint32_t>(paths.size()));
@@ -63,9 +67,12 @@ public:
         if (pipe_ == INVALID_HANDLE_VALUE) {
             wchar_t override_name[256]{};
             const auto n = GetEnvironmentVariableW(L"PULSE_INDEX_FEED_PIPE",override_name,256);
-            const std::wstring name = n && n < 256 ? override_name : L"\\\\.\\pipe\\PulseIndex";
+            const std::wstring name = n && n < 256 ? override_name : kPipeName;
             pipe_ = CreateFileW(name.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
             if (pipe_ == INVALID_HANDLE_VALUE) return false;
+#ifdef PULSE_CUSTOM_EDITION
+            if (!agent::AuthorizedServer(pipe_)) { Close(); return false; }
+#endif
         }
         ipc::PayloadWriter request;
         request.PutU32(1); request.PutU32(changes ? 1u : 0u); request.PutString(root); request.PutU64(epoch); request.PutU64(cursor);
