@@ -199,7 +199,7 @@ int Probe() {
 }
 }
 
-int wmain(int argc, wchar_t** argv) {
+int StorageTestMain(int argc, wchar_t** argv) {
     std::cout << std::unitbuf;
     if (argc == 2 && (std::wstring_view(argv[1]) == L"--probe" || std::wstring_view(argv[1]) == L"--expect-unwritable")) {
         std::ofstream result(fs::path(custom_storage::InstallDirectory()) / L"probe-result.log", std::ios::binary | std::ios::trunc);
@@ -227,7 +227,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto test = install / L"storage-test.exe";
     const auto host = install / L"Pulse.Index.exe";
     const auto source = fs::path(custom_storage::InstallDirectory());
-    fs::copy_file(source / L"pulse_custom_index_storage_test.exe", test);
+    fs::copy_file(source / L"pulse_custom_index_storage_probe.exe", test);
     fs::copy_file(argc == 2 ? fs::path(argv[1]) : source / L"Pulse.Index.exe", host);
     {
         Process child;
@@ -359,3 +359,19 @@ int wmain(int argc, wchar_t** argv) {
     if (cleanup) std::wcerr << L"[INFO] test fixture retained at " << scratch << L"\n";
     return failures ? 1 : 0;
 }
+
+#ifdef PULSE_STORAGE_WIN32_PROBE
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    auto** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return static_cast<int>(GetLastError());
+    const bool valid = argc == 2 && (std::wstring_view(argv[1]) == L"--probe" || std::wstring_view(argv[1]) == L"--expect-unwritable");
+    const int result = valid ? StorageTestMain(argc, argv) : ERROR_INVALID_PARAMETER;
+    LocalFree(argv);
+    return result;
+}
+#else
+int wmain(int argc, wchar_t** argv) {
+    return StorageTestMain(argc, argv);
+}
+#endif

@@ -1813,10 +1813,18 @@ add_executable(pulse_item_properties_test
 target_link_libraries(pulse_item_properties_test PRIVATE advapi32)
 
 if(PULSE_CUSTOM_EDITION)
+    # Match the production helper's Windows subsystem when testing a restricted
+    # token. Keep the console driver for CI output and preserve both manifests.
+    add_executable(pulse_custom_index_storage_probe WIN32
+        src/bench/custom_index_storage_test.cpp
+        src/index/index_config.cpp
+        src/index/index_paths.cpp)
+    target_compile_definitions(pulse_custom_index_storage_probe PRIVATE PULSE_STORAGE_WIN32_PROBE=1)
+    target_link_libraries(pulse_custom_index_storage_probe PRIVATE advapi32 shell32)
     add_executable(pulse_custom_index_storage_test
         src/bench/custom_index_storage_test.cpp
         src/index/index_config.cpp
         src/index/index_paths.cpp)
     target_link_libraries(pulse_custom_index_storage_test PRIVATE advapi32 shell32)
-    add_dependencies(pulse_custom_index_storage_test pulse_index)
+    add_dependencies(pulse_custom_index_storage_test pulse_index pulse_custom_index_storage_probe)
 endif()
