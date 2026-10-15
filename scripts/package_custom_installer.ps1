@@ -95,10 +95,13 @@ if (-not $IsccPath) {
 }
 $taskIscc = (Resolve-Path -LiteralPath $IsccPath).Path
 $taskVersionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($taskExecutable)
-$taskVersion = '{0}.{1}.{2}.{3}' -f $taskVersionInfo.FileMajorPart, $taskVersionInfo.FileMinorPart,
-    $taskVersionInfo.FileBuildPart, $taskVersionInfo.FilePrivatePart
+$taskVersion = '{0}.{1}.{2}' -f $taskVersionInfo.FileMajorPart, $taskVersionInfo.FileMinorPart,
+    $taskVersionInfo.FileBuildPart
+if ($taskVersion -ne '1.0.53' -or $taskVersionInfo.FilePrivatePart -ne 0) {
+    throw '当前按用户要求固定 v1.0.53，安装载荷版本不匹配'
+}
 $taskCommit = $taskManifest.commit.Substring(0, 9)
-$taskName = "Pulse-Custom-Setup-$taskCommit"
+$taskName = "Pulse-Custom-Setup-v$taskVersion-x64"
 $taskInstaller = Join-Path $taskOutput ($taskName + '.exe')
 if ((Test-Path -LiteralPath $taskInstaller) -or (Test-Path -LiteralPath ($taskInstaller + '.sha256'))) {
     throw '安装器或摘要已存在，停止覆盖'
