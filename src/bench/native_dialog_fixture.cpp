@@ -232,7 +232,7 @@ DialogResult ShowLegacy(HWND owner, const std::wstring& initial_path) {
     browse.lpfn = BrowseCallback;
     browse.lParam = reinterpret_cast<LPARAM>(initial_path.c_str());
     PIDLIST_ABSOLUTE raw = SHBrowseForFolderW(&browse);
-    std::unique_ptr<ITEMIDLIST, TaskFree> owned(raw);
+    std::unique_ptr<ITEMIDLIST, TaskFree> owned(reinterpret_cast<ITEMIDLIST*>(raw));
     DialogResult result;
     if (!raw) { result.error = HRESULT_FROM_WIN32(ERROR_CANCELLED); return result; }
     ComPtr<IShellItem> item;
