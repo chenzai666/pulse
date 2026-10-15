@@ -11,6 +11,7 @@
 #include <iterator>
 #include <map>
 #include <shlobj.h>
+#include <shellapi.h>
 
 namespace fs = std::filesystem;
 using namespace pulse::index;
