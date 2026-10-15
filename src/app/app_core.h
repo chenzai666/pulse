@@ -17,6 +17,7 @@
 #include "app_change_tracking.h"
 #include "app_model.h"
 #include "app_prefs.h"
+#include "native_dialog_takeover.h"
 #include "app_worker.h"
 #include "closed_tabs.h"
 #include "closed_windows.h"
@@ -193,6 +194,7 @@ struct AppCore {
     std::unique_ptr<app::ShellWindowRegistry> shell_windows;
     std::vector<app::ShellWindowEntry> shell_windows_published;
     std::unique_ptr<app::ExplorerWindowTakeover> explorer_takeover;   // experimental (B站 #1 2b)
+    std::unique_ptr<app::NativeDialogTakeover> native_dialog_takeover;
 
     // Cut state mirrored into list rows (ui.md §5.2 rule 6: 55% opacity).
     std::vector<std::wstring> cutPaths;

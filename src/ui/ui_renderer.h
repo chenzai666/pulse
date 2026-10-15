@@ -820,6 +820,7 @@ struct WindowViewModel {
     bool settings_integration_win_e = false;
     bool settings_integration_this_pc = false;
     bool settings_integration_recycle_bin = false;
+    bool settings_integration_file_dialogs = false;
     bool settings_integration_experimental = false;
     int settings_integration_state = 0; // 0 off, 1 on, 2 partial, 3 failed
     std::wstring settings_integration_summary;
@@ -1000,7 +1001,7 @@ struct HitTestResult {
         StatusBarCancelSearch,
         SettingsNav,
         SettingsToggle,
-        SettingsIntegration, // 0 master, 1 folders, 2 Win+E, 3 This PC, 4 experimental, 5 retry, 6 restore
+        SettingsIntegration, // 0 master, 1 folders, 2 Win+E, 3 This PC, 4 experimental, 5 retry, 6 restore, 7 Recycle Bin, 8 file dialogs
         SettingsGlobalSearchHotkey,
         SettingsChangeDays,
         SettingsRestore,

@@ -1,4 +1,5 @@
 #include "app_diagnostics.h"
+#include <cstdlib>
 #include "../common/windows_compat.h"
 #include "../ui/FluentTokens.h"
 #include "quick_access.h"
@@ -2831,6 +2832,7 @@ bool SkipSingletonFromArgv() {
     for (int i = 1; i < __argc; ++i) {
         if (wcscmp(__wargv[i], L"--selftest") == 0 ||
             wcscmp(__wargv[i], L"--picker-live") == 0 ||
+            wcscmp(__wargv[i], L"--native-dialog-picker") == 0 ||
             wcscmp(__wargv[i], L"--material-selftest") == 0 ||
             wcscmp(__wargv[i], L"--seed-shell-verbs") == 0 ||
             wcscmp(__wargv[i], L"--shot") == 0 ||
@@ -2848,10 +2850,15 @@ int RunFilePickerOperationsTest();
 #ifdef PULSE_WITH_SELFTEST
 int RunUiModuleAuditTest();
 int RunQuickPreviewAuditTest();
+int RunNativeDialogTakeoverTestHost(const wchar_t* desktop_name, HANDLE ready_event);
 #endif
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 #ifdef PULSE_WITH_SELFTEST
+    if (__argc == 4 && wcscmp(__wargv[1], L"--native-dialog-test-host") == 0) {
+        const auto ready = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wcstoui64(__wargv[3], nullptr, 10)));
+        return RunNativeDialogTakeoverTestHost(__wargv[2], ready);
+    }
     std::optional<CLSID> tag_com_audit_class;
     if (!app::shell_tags::PrepareCommandAudit(__argc, __wargv, tag_com_audit_class)) return 2;
 #endif
@@ -2871,6 +2878,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     pulse::compat::EnableDpiAwareness();
     // OLE init (drag & drop + clipboard); implies STA COM init.
     OleInitialize(nullptr);
+    if (__argc > 1 && wcscmp(__wargv[1], L"--native-dialog-picker") == 0) {
+        HANDLE handles[3]{};
+        bool valid = __argc == 5;
+        for (int i = 0; valid && i < 3; ++i) {
+            const wchar_t* text = __wargv[i + 2];
+            if (!*text || wcsspn(text, L"0123456789") != wcslen(text)) { valid = false; break; }
+            wchar_t* end = nullptr;
+            const uint64_t raw = _wcstoui64(text, &end, 10);
+            valid = raw && end && !*end && raw <= UINTPTR_MAX;
+            handles[i] = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(raw));
+        }
+        const int result = valid ? app::RunNativeDialogPicker(handles[0], handles[1], handles[2]) : ERROR_INVALID_PARAMETER;
+        OleUninitialize(); return result;
+    }
     for (int i = 1; i < __argc; ++i) {
         if (wcscmp(__wargv[i], L"--material-selftest") == 0) {
             const int rc = ui::RunMaterialSelfTest();

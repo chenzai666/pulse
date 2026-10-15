@@ -243,23 +243,24 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
                 painter_.DrawText(l10n::Get(I::IntegrationScope),D2D1::RectF(r.left+54*scale_,r.top+8*scale_,r.right-16*scale_,r.bottom),
                     compositor_->SmallFormat(),theme.text_secondary);
             }
-            auto item=[&](D2D1_RECT_F r,I title,I desc,const wchar_t* icon,bool on,int action) {
+            auto item=[&](D2D1_RECT_F r,std::wstring_view title,std::wstring_view desc,const wchar_t* icon,bool on,int action) {
                 fluent::ControlState state{};
                 state.checked=on;state.hovered=IsHovered(vm,H::SettingsIntegration,action);
                 if(state.hovered) hover_fill(D2D1::RectF(r.left+40*scale_,r.top,r.right-6*scale_,r.bottom));
                 const float x=r.left+54*scale_, text_left=r.left+112*scale_;
                 painter_.DrawCheckBox(D2D1::RectF(x,r.top+11*scale_,x+20*scale_,r.top+31*scale_),L"",state);
                 DrawIconText(x+30*scale_,r.top+11*scale_,20*scale_,20*scale_,icon,L"",theme.text_secondary,master_on ? 0.85f : 0.6f);
-                painter_.DrawText(l10n::Get(title),D2D1::RectF(text_left,r.top+9*scale_,r.right-16*scale_,r.top+31*scale_),
+                painter_.DrawText(title,D2D1::RectF(text_left,r.top+9*scale_,r.right-16*scale_,r.top+31*scale_),
                     compositor_->TextFormat(),master_on ? theme.text : theme.text_secondary);
-                painter_.DrawWrappedCaption(l10n::Get(desc),D2D1::Point2F(text_left,r.top+31*scale_),
+                painter_.DrawWrappedCaption(desc,D2D1::Point2F(text_left,r.top+31*scale_),
                     (std::max)(40*scale_,r.right-16*scale_-text_left),theme.text_secondary);
             };
-            item(lay.startup_row[2],I::IntegrationFolders,I::IntegrationFoldersDesc,L"\xE8B7",vm.settings_integration_folders,1);
-            item(lay.this_pc_row,I::SettingsThisPc,I::SettingsThisPcDesc,L"\xE7F4",vm.settings_integration_this_pc,3);
-            item(lay.recycle_bin_row,I::SettingsRecycleBin,I::SettingsRecycleBinDesc,L"\xE74D",vm.settings_integration_recycle_bin,7);
-            item(lay.win_e_row,I::SettingsWinE,I::SettingsWinEDesc,L"\xE765",vm.settings_integration_win_e,2);
-            item(lay.explorer_windows_row,I::IntegrationExperimental,I::IntegrationExperimentalDesc,L"\xE8A7",vm.settings_integration_experimental,4);
+            item(lay.startup_row[2],l10n::Get(I::IntegrationFolders),l10n::Get(I::IntegrationFoldersDesc),L"\xE8B7",vm.settings_integration_folders,1);
+            item(lay.this_pc_row,l10n::Get(I::SettingsThisPc),l10n::Get(I::SettingsThisPcDesc),L"\xE7F4",vm.settings_integration_this_pc,3);
+            item(lay.recycle_bin_row,l10n::Get(I::SettingsRecycleBin),l10n::Get(I::SettingsRecycleBinDesc),L"\xE74D",vm.settings_integration_recycle_bin,7);
+            item(lay.win_e_row,l10n::Get(I::SettingsWinE),l10n::Get(I::SettingsWinEDesc),L"\xE765",vm.settings_integration_win_e,2);
+            item(lay.file_dialogs_row,IntegrationFileDialogsTitle(),IntegrationFileDialogsDescription(),L"\xE8A5",vm.settings_integration_file_dialogs,8);
+            item(lay.explorer_windows_row,l10n::Get(I::IntegrationExperimental),l10n::Get(I::IntegrationExperimentalDesc),L"\xE8A7",vm.settings_integration_experimental,4);
             for(int i=0;i<4;++i) {
                 fluent::BadgeSpec chip{};
                 chip.bounds=lay.integration_chip[i];chip.text=l10n::Get(kIntegrationChips[i]);

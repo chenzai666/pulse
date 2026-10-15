@@ -15,7 +15,7 @@
 
 namespace pulse::ui {
 
-enum class PickerMode { Folder, Image, File };
+enum class PickerMode { Folder, Image, File, Save };
 enum class PickerEntryKind { Folder, Image, Drive, File };
 
 struct PickerFilter { std::wstring label; std::wstring pattern; };
@@ -27,6 +27,7 @@ struct PickerOptions {
     std::wstring search;
     PickerSort sort = PickerSort::Name;
     bool descending = false;
+    std::wstring default_extension;
 };
 
 struct PickerEntry {
@@ -60,6 +61,8 @@ DWORD FollowPickerShortcutChain(std::wstring& path,
     const std::function<DWORD(std::wstring&, bool& followed)>& read_next,
     const std::function<bool()>& cancelled = {});
 bool ParsePickerNames(std::wstring_view text, std::vector<std::wstring>& names);
+std::wstring PickerSaveFilename(std::wstring_view name, const PickerOptions& options = {});
+bool IsValidPickerSaveFilename(std::wstring_view name);
 bool PickerShowsEntry(DWORD attributes, std::wstring_view name, PickerMode mode,
                       const PickerOptions& options = {});
 // Folders first, then names in Explorer's numeric-aware order.

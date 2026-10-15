@@ -112,6 +112,39 @@ bool ParsePickerNames(std::wstring_view text, std::vector<std::wstring>& names) 
     return true;
 }
 
+bool IsValidPickerSaveFilename(std::wstring_view name) {
+    if (name.empty() || name == L"." || name == L".." || name.back() == L'.' ||
+        std::iswspace(name.back()) || name.find_first_of(L"\\/:*?\"<>|") != std::wstring_view::npos)
+        return false;
+    for (wchar_t ch : name) if (ch < 32) return false;
+    auto stem = name.substr(0, name.find(L'.'));
+    while (!stem.empty() && std::iswspace(stem.back())) stem.remove_suffix(1);
+    std::wstring upper(stem);
+    for (auto& ch : upper) ch = static_cast<wchar_t>(std::towupper(ch));
+    if (upper == L"CON" || upper == L"PRN" || upper == L"AUX" || upper == L"NUL") return false;
+    return !(upper.size() == 4 && (upper.substr(0, 3) == L"COM" || upper.substr(0, 3) == L"LPT") &&
+        ((upper[3] >= L'1' && upper[3] <= L'9') || upper[3] == L'\xB9' ||
+         upper[3] == L'\xB2' || upper[3] == L'\xB3'));
+}
+
+std::wstring PickerSaveFilename(std::wstring_view name, const PickerOptions& options) {
+    std::wstring result(name);
+    if (name.empty() || name.find(L'.') != std::wstring_view::npos) return result;
+    std::wstring extension = options.default_extension;
+    if (!extension.empty() && extension.front() == L'.') extension.erase(0, 1);
+    if (extension.empty() && !options.filters.empty()) {
+        auto pattern = std::wstring_view(options.filters[
+            std::min(options.filter_index, options.filters.size() - 1)].pattern);
+        while (!pattern.empty() && std::iswspace(pattern.front())) pattern.remove_prefix(1);
+        while (!pattern.empty() && std::iswspace(pattern.back())) pattern.remove_suffix(1);
+        if (pattern.starts_with(L"*.")) extension.assign(pattern.substr(2));
+    }
+    if (extension.empty() || extension.front() == L'.' || extension.back() == L'.' ||
+        extension.find_first_of(L"\\/:*?\"<>|;") != std::wstring::npos) return result;
+    for (wchar_t ch : extension) if (ch < 32 || std::iswspace(ch)) return result;
+    return result + L'.' + extension;
+}
+
 bool PickerShowsEntry(DWORD attributes, std::wstring_view name, PickerMode mode, const PickerOptions& options) {
     if (name.empty() || name == L"." || name == L"..") return false;
     if (!options.show_hidden && (attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) return false;
@@ -204,7 +237,7 @@ std::wstring PickerChosenPath(PickerMode mode, std::wstring_view current,
         CompareStringOrdinal(selected->name.data() + selected->name.size() - 4, 4, L".lnk", 4, TRUE) == CSTR_EQUAL;
     if (shortcut) return selected->path;
     if (mode != PickerMode::Folder) {
-        return selected && (selected->kind == PickerEntryKind::Image || (mode == PickerMode::File && selected->kind == PickerEntryKind::File)) ? selected->path
+        return selected && (selected->kind == PickerEntryKind::Image || ((mode == PickerMode::File || mode == PickerMode::Save) && selected->kind == PickerEntryKind::File)) ? selected->path
                                                                      : std::wstring();
     }
     if (selected && (selected->kind == PickerEntryKind::Folder || selected->kind == PickerEntryKind::Drive)) return selected->path;

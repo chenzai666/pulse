@@ -150,12 +150,56 @@ PickerValidation ValidatePaths(const std::wstring& current, const std::vector<st
                                PickerMode mode, const PickerOptions& options, const std::function<bool()>& cancelled) {
     PickerValidation result;
     if (names.empty()) { result.error = ERROR_INVALID_NAME; return result; }
+    if (mode == PickerMode::Save && names.size() != 1) {
+        result.error = ERROR_INVALID_PARAMETER;
+        return result;
+    }
     for (const auto& name : names) {
         if (cancelled()) { result.error = ERROR_CANCELLED; break; }
         auto path = ResolvePath(current, name);
         result.failed_path = path.empty() ? name : path;
         if (path.empty()) { result.error = ERROR_INVALID_NAME; break; }
         DWORD attributes = GetFileAttributesW(NativePath(path).c_str());
+        if (mode == PickerMode::Save) {
+            if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                result.navigate = path;
+                continue;
+            }
+            if (attributes == INVALID_FILE_ATTRIBUTES) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                    result.error = error;
+                    break;
+                }
+            }
+            const auto leaf = path.substr(path.find_last_of(L'\\') + 1);
+            if (!IsValidPickerSaveFilename(leaf)) { result.error = ERROR_INVALID_NAME; break; }
+            const auto parent = PickerParent(path);
+            if (parent.empty()) { result.error = ERROR_PATH_NOT_FOUND; break; }
+            const auto save_name = PickerSaveFilename(leaf, options);
+            if (!IsValidPickerSaveFilename(save_name)) { result.error = ERROR_INVALID_NAME; break; }
+            if (save_name != leaf) {
+                path = parent + (parent.back() == L'\\' ? L"" : L"\\") + save_name;
+                result.failed_path = path;
+                attributes = GetFileAttributesW(NativePath(path).c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES) {
+                    const DWORD error = GetLastError();
+                    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                        result.error = error;
+                        break;
+                    }
+                } else if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    result.error = ERROR_DIRECTORY;
+                    break;
+                }
+            }
+            if (cancelled()) { result.error = ERROR_CANCELLED; break; }
+            const DWORD parent_attributes = GetFileAttributesW(NativePath(parent).c_str());
+            if (parent_attributes == INVALID_FILE_ATTRIBUTES) { result.error = GetLastError(); break; }
+            if (!(parent_attributes & FILE_ATTRIBUTE_DIRECTORY)) { result.error = ERROR_DIRECTORY; break; }
+            result.paths.push_back(std::move(path));
+            continue;
+        }
         if (attributes == INVALID_FILE_ATTRIBUTES) { result.error = GetLastError(); break; }
         result.error = ResolveShortcuts(path, attributes, cancelled);
         if (result.error != ERROR_SUCCESS) break;

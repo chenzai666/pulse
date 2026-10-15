@@ -7,6 +7,7 @@
 #include "app_column_view.h"
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
+#include "shell_window_sync.h"
 #include "sidebar_navigation.h"
 #include "recycle_place_commands.h"
 #include "app_file_conversion.h"
@@ -2435,6 +2436,7 @@ static void RefreshEditFonts(AppState& s) {
 }
 
 void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
+    if (app::HasEffect(effects, app::SettingsEffect::FileDialogs)) SyncShellWindows(s);
     if (app::HasEffect(effects, app::SettingsEffect::FileVisibility)) {
         ForEachPane(s, [&](app::Pane& pane) {
             if (auto* tab = pane.ActiveTab()) {

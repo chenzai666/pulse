@@ -26,6 +26,10 @@ on:
         description: 'file-ui 范围中仅验证主页最近访问路径显示'
         type: boolean
         default: false
+      native_dialogs_only:
+        description: 'file-ui 范围中仅验证第三方文件选择窗口、保存模式和关闭接管恢复'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -101,7 +105,7 @@ jobs:
           if ('${{ inputs.validation_scope }}' -eq 'tab-drag-diagnostics') {
             ./scripts/build_tab_drag_ci.ps1 -DiagnosticsOnly
           } elseif ('${{ inputs.validation_scope }}' -eq 'file-ui') {
-            ./scripts/build_tab_drag_ci.ps1 -FileUi -HomeWidgetsOnly:('${{ inputs.home_widgets_only }}' -eq 'true') -HomeMenuOnly:('${{ inputs.home_menu_only }}' -eq 'true') -HomePathDisplayOnly:('${{ inputs.home_path_display_only }}' -eq 'true')
+            ./scripts/build_tab_drag_ci.ps1 -FileUi -HomeWidgetsOnly:('${{ inputs.home_widgets_only }}' -eq 'true') -HomeMenuOnly:('${{ inputs.home_menu_only }}' -eq 'true') -HomePathDisplayOnly:('${{ inputs.home_path_display_only }}' -eq 'true') -NativeDialogsOnly:('${{ inputs.native_dialogs_only }}' -eq 'true')
           } else {
             ./scripts/build_tab_drag_ci.ps1 -VerifySettingsRegression:('${{ inputs.verify_settings_regression }}' -eq 'true')
           }
@@ -134,6 +138,9 @@ jobs:
             bench_data/recycle-toolbar/**
             bench_data/home-widgets*
             bench_data/home-*.png
+            bench_data/native-dialogs*
+            bench_data/native-dialogs*/**
+            bench_data/picker*/*
             bench_data/home-widgets/**
             bench_data/m10005_tab_pin_boundary.log
             bench_data/file-conversion-ui.log

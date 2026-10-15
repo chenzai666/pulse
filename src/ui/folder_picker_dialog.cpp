@@ -59,8 +59,8 @@ constexpr int kGroupDrives = 3;
 
 // Where the last pick of each mode was made, and how it was viewed, for this
 // session.
-std::wstring g_last_folder[3];
-ViewMode g_last_view[3] = {ViewMode::Details, ViewMode::LargeIcons, ViewMode::Details};
+std::wstring g_last_folder[4];
+ViewMode g_last_view[4] = {ViewMode::Details, ViewMode::LargeIcons, ViewMode::Details, ViewMode::Details};
 
 bool KeyDown(int key) { return (GetKeyState(key) & 0x8000) != 0; }
 
@@ -229,9 +229,10 @@ public:
         accent_ = accent;
         spec_ = spec;
         mode_ = spec.mode;
-        mode_index_ = mode_ == PickerMode::Image ? 1 : mode_ == PickerMode::File ? 2 : 0;
-        allow_multiselect_ = spec.allow_multiselect && mode_ != PickerMode::Folder;
+        mode_index_ = mode_ == PickerMode::Save ? 3 : mode_ == PickerMode::Image ? 1 : mode_ == PickerMode::File ? 2 : 0;
+        allow_multiselect_ = spec.allow_multiselect && mode_ != PickerMode::Folder && mode_ != PickerMode::Save;
         options_.filters = spec.filters;
+        options_.default_extension = spec.default_extension;
         options_.show_hidden = spec.show_hidden;
         if (options_.filters.empty() && mode_ != PickerMode::Folder) {
             if (mode_ == PickerMode::Image) {
@@ -246,11 +247,13 @@ public:
 
         chrome_.mode = mode_;
         chrome_.title = !spec.title.empty() ? spec.title
+            : mode_ == PickerMode::Save ? l10n::Pick(L"保存", L"Save")
             : mode_ == PickerMode::File ? l10n::Pick(L"打开", L"Open")
             : l10n::Get(mode_ == PickerMode::Image ? l10n::StringId::TooltipChooseBackground
                                                    : l10n::StringId::PickerTitleFolder);
         chrome_.filename_label = l10n::Pick(L"文件名(N):", L"File name:");
-        chrome_.primary_text = l10n::Get(mode_ != PickerMode::Folder
+        chrome_.primary_text = mode_ == PickerMode::Save ? l10n::Pick(L"保存", L"Save")
+            : l10n::Get(mode_ != PickerMode::Folder
                                              ? l10n::StringId::PickerSelect
                                              : l10n::StringId::PickerSelectFolder);
         chrome_.cancel_text = l10n::Get(l10n::StringId::Cancel);
@@ -296,14 +299,15 @@ public:
         ReadCutClipboard();
         initial_load_ = true;
         Navigate(start, false);
-        const bool owner_enabled = owner_ && IsWindowEnabled(owner_);
-        if (owner_enabled) EnableWindow(owner_, FALSE);
+        owner_enabled_ = owner_ && IsWindowEnabled(owner_);
+        if (owner_enabled_) EnableWindow(owner_, FALSE);
         ShowWindow(hwnd_, SW_SHOW);
         SetForegroundWindow(hwnd_);
         // Save dialogs and typed names start in the name field; otherwise the list.
         if (filename_edit_ && !filename_text_.empty()) FocusFilename();
         else SetFocus(hwnd_);
         PresentEdits();
+        if (spec_.on_ready) spec_.on_ready(hwnd_);
 
         MSG message{};
         while (!done_) {
@@ -314,7 +318,7 @@ public:
             DispatchMessageW(&message);
         }
         Close();
-        if (owner_enabled) EnableWindow(owner_, TRUE);
+        if (owner_enabled_) EnableWindow(owner_, TRUE);
         if (result_.empty()) return false;
         out.paths = result_;
         out.filter_index = options_.filter_index;
@@ -505,7 +509,7 @@ private:
             if (!text.empty()) text += L" ";
             text += picked.size() > 1 ? L"\"" + entry.name + L"\"" : entry.name;
         }
-        SetFilename(std::move(text));
+        if (mode_ != PickerMode::Save || !text.empty()) SetFilename(std::move(text));
     }
 
     void Select(int index, bool extend = false, bool toggle = false, bool focus_only = false,
@@ -550,7 +554,7 @@ private:
         if (entry.kind == PickerEntryKind::Image || entry.kind == PickerEntryKind::File) {
             SubmitSelection();
         } else {
-            if (mode_ != PickerMode::Folder) SetFilename(L"");
+            if (mode_ != PickerMode::Folder && mode_ != PickerMode::Save) SetFilename(L"");
             Navigate(entry.path, true, {}, true);
         }
     }
@@ -640,7 +644,7 @@ private:
         while (PeekMessageW(&pending, hwnd_, kValidationMessage, kValidationMessage, PM_REMOVE))
             PickerLoader::TakeValidation(pending.lParam);
         if (IsWindow(hwnd_)) {
-            HideComposedDialog(hwnd_, owner_);
+            HideComposedDialog(hwnd_, owner_enabled_ ? owner_ : nullptr);
             DestroyWindow(hwnd_);
         }
         hwnd_ = nullptr;
@@ -2066,6 +2070,7 @@ private:
     FolderPickerChrome chrome_;
     FolderPickerChromeLayout chrome_layout_;
     FolderPickerSpec spec_;
+    bool owner_enabled_ = false;
     PickerMode mode_ = PickerMode::Folder;
     PickerHistory history_;
     PickerOptions options_;

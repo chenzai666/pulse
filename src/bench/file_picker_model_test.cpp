@@ -6,6 +6,7 @@
 #include <chrono>
 #include <shobjidl.h>
 #include <map>
+#include <string_view>
 #include <wrl/client.h>
 
 using namespace pulse::ui;
@@ -40,7 +41,98 @@ std::unique_ptr<PickerValidation> WaitValidation(HWND window) {
     return {};
 }
 }
-int main() {
+int RunSaveTests() {
+    PickerOptions options;
+    options.filters = {{L"Text", L"*.txt"}};
+    Check(PickerShowsEntry(FILE_ATTRIBUTE_NORMAL, L"allowed.txt", PickerMode::Save, options) &&
+        !PickerShowsEntry(FILE_ATTRIBUTE_NORMAL, L"blocked.bin", PickerMode::Save, options) &&
+        PickerShowsEntry(FILE_ATTRIBUTE_DIRECTORY, L"folder", PickerMode::Save, options), "save listing shares file filters and folder navigation");
+    Check(PickerSaveFilename(L"report", options) == L"report.txt", "save infers one literal extension");
+    Check(PickerSaveFilename(L"report.bin", options) == L"report.bin", "save keeps explicit extension");
+    options.filters = {{L"Mixed", L"*.txt;*.doc"}};
+    Check(PickerSaveFilename(L"report", options) == L"report", "save does not guess mixed extensions");
+    options.filters = {{L"All", L"*.*"}};
+    Check(PickerSaveFilename(L"report", options) == L"report", "save does not append wildcard extension");
+    options.default_extension = L".log";
+    Check(PickerSaveFilename(L"report", options) == L"report.log", "save explicit default extension wins");
+    options.default_extension = L"../outside";
+    Check(PickerSaveFilename(L"report", options) == L"report", "save rejects unsafe default extension");
+    for (const auto* name : {L"CON.txt", L"COM1", L"LPT\xB2.log", L"name.", L"name ", L"file:stream", L"*.txt"})
+        Check(!IsValidPickerSaveFilename(name), "save rejects reserved or invalid filename");
+    Check(IsValidPickerSaveFilename(L"新建 文档.txt"), "save accepts Unicode filename");
+    const auto base = std::filesystem::current_path() / L"bench_data" /
+        (L"picker-save-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    std::filesystem::create_directories(base.parent_path());
+    if (!std::filesystem::create_directory(base)) return 1;
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); } } cleanup{std::filesystem::path(L"\\\\?\\" + base.wstring())};
+    std::filesystem::create_directory(base / L"folder");
+    std::ofstream(base / L"existing.txt") << "keep";
+    HWND window = CreateWindowExW(0, L"STATIC", L"save picker test", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(window != nullptr, "save validation message window");
+    if (!window) return 1;
+    {
+        PickerLoader loader(window, kListing, kValidation);
+        options = {};
+        options.filters = {{L"Text", L"*.txt"}};
+        loader.Validate(1, base.wstring(), {L"新建 文档"}, PickerMode::Save, options);
+        auto result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths == std::vector<std::wstring>{(base / L"新建 文档.txt").wstring()} &&
+            !std::filesystem::exists(base / L"新建 文档.txt"), "save returns nonexistent Unicode file without creating it");
+        loader.Validate(2, base.wstring(), {L"existing.txt"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths.size() == 1 && std::filesystem::file_size(base / L"existing.txt") == 4,
+            "save returns existing file without touching it");
+        loader.Validate(3, base.wstring(), {L"folder"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths.empty() && result->navigate == (base / L"folder").wstring(),
+            "save directory navigates before appending extension");
+        loader.Validate(4, base.wstring(), {L"missing\\new.txt"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error != ERROR_SUCCESS && result->paths.empty(), "save rejects nonexistent parent");
+        loader.Validate(5, base.wstring(), {L"existing.txt\\new.txt"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error != ERROR_SUCCESS && result->paths.empty(), "save rejects file as parent");
+        loader.Validate(6, base.wstring(), {L"CON.txt"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_INVALID_NAME && result->paths.empty(), "save loader rejects device filename");
+        loader.Validate(7, base.wstring(), {L"one.txt", L"two.txt"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_INVALID_PARAMETER && result->paths.empty(), "save cannot return multiple paths");
+        loader.Validate(8, base.wstring(), {L"new.bin"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths == std::vector<std::wstring>{(base / L"new.bin").wstring()},
+            "save preserves explicit extension for host validation");
+        loader.Validate(9, L"", {(base / L"absolute.txt").wstring()}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths == std::vector<std::wstring>{(base / L"absolute.txt").wstring()},
+            "save accepts absolute candidate from This PC");
+        auto long_parent = base;
+        for (int part = 0; part < 6; ++part) {
+            long_parent /= std::wstring(48, L'x') + std::to_wstring(part);
+            Check(CreateDirectoryW((L"\\\\?\\" + long_parent.wstring()).c_str(), nullptr) != FALSE, "save long-path parent fixture");
+        }
+        loader.Validate(10, long_parent.wstring(), {L"new"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        Check(result && result->error == ERROR_SUCCESS && result->paths == std::vector<std::wstring>{(long_parent / L"new.txt").wstring()} &&
+            GetFileAttributesW((L"\\\\?\\" + (long_parent / L"new.txt").wstring()).c_str()) == INVALID_FILE_ATTRIBUTES,
+            "save accepts long-path parent without creating candidate");
+        for (uint64_t generation = 10; generation < 80; ++generation)
+            loader.Validate(generation, base.wstring(), {L"superseded"}, PickerMode::Save, options);
+        loader.Validate(80, base.wstring(), {L"latest"}, PickerMode::Save, options);
+        result = WaitValidation(window);
+        while (result && result->generation < 80) result = WaitValidation(window);
+        Check(result && result->generation == 80 && result->paths == std::vector<std::wstring>{(base / L"latest.txt").wstring()},
+            "save latest async validation remains deliverable");
+    }
+    DestroyWindow(window);
+    std::error_code error;
+    std::filesystem::remove_all(cleanup.path, error);
+    Check(!error && !std::filesystem::exists(base), "save fixture cleaned");
+    return failures ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--save") return RunSaveTests();
     PickerOptions filter;
     filter.filters = {{L"Pictures", L"*.PNG;*.jpg"}};
     Check(PickerMatchesFilter(L"A.PnG", PickerMode::File, filter) && !PickerMatchesFilter(L"a.png.exe", PickerMode::File, filter), "case insensitive exact suffix filter");

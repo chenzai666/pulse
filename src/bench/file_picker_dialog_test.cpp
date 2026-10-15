@@ -67,7 +67,7 @@ bool Until(const std::function<bool()>& ready, const std::atomic<bool>& done) {
 struct Outcome { bool picked = false; bool driven = false; FilePickerResult result; };
 using Driver = std::function<bool(HWND, const std::atomic<bool>&)>;
 
-Outcome Run(const FolderPickerSpec& spec, const Driver& drive, bool legacy = false) {
+Outcome Run(const FolderPickerSpec& spec, const Driver& drive, bool legacy = false, HWND owner = nullptr) {
     Outcome outcome;
     std::atomic<bool> done = false;
     const HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
@@ -87,10 +87,10 @@ Outcome Run(const FolderPickerSpec& spec, const Driver& drive, bool legacy = fal
     });
     if (legacy) {
         std::wstring path;
-        outcome.picked = ShowFolderPicker(nullptr, spec, false, {0.0f, 0.47f, 0.83f, 1.0f}, path);
+        outcome.picked = ShowFolderPicker(owner, spec, false, {0.0f, 0.47f, 0.83f, 1.0f}, path);
         if (outcome.picked) outcome.result.paths.push_back(std::move(path));
     } else {
-        outcome.picked = ShowFilePicker(nullptr, spec, false, {0.0f, 0.47f, 0.83f, 1.0f},
+        outcome.picked = ShowFilePicker(owner, spec, false, {0.0f, 0.47f, 0.83f, 1.0f},
                                         outcome.result);
     }
     done = true;
@@ -129,13 +129,14 @@ bool HasPaths(const Outcome& outcome, const std::vector<std::wstring>& expected)
 } // namespace
 
 int RunFilePickerDialogTest(int argc, wchar_t** argv) {
+    const bool save_mode = argc == 2 && std::wstring_view(argv[1]) == L"--save";
     const bool input_surfaces = argc == 2 && std::wstring_view(argv[1]) == L"--input-surfaces";
-    if (!input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
-        std::puts("Use --interaction or --input-surfaces for scoped file picker regression cases.");
+    if (!save_mode && !input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
+        std::puts("Use --interaction, --input-surfaces or --save for scoped file picker regression cases.");
         return 2;
     }
     // Surface regression runs without activating any window on the user's desktop.
-    if (input_surfaces) {
+    if (input_surfaces || save_mode) {
         const auto name = L"PulsePickerInputs_" + std::to_wstring(GetCurrentProcessId());
         HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
         if (!desktop || !SetThreadDesktop(desktop)) return 3;
@@ -152,6 +153,86 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
     };
     try {
         Fixture fixture;
+        if (save_mode) {
+            FolderPickerSpec spec;
+            spec.mode = PickerMode::Save;
+            spec.initial_path = fixture.root.wstring();
+            spec.filename = L"new report";
+            spec.filters = {{L"Text", L"*.txt"}};
+            spec.allow_multiselect = true;
+            int ready_calls = 0;
+            bool ready_visible = false;
+            spec.on_ready = [&](HWND hwnd) {
+                ++ready_calls;
+                ready_visible = IsWindow(hwnd) && IsWindowVisible(hwnd) && Text(hwnd) == L"Save";
+            };
+            auto outcome = Run(spec, [](HWND hwnd, const std::atomic<bool>&) {
+                return Send(GetDlgItem(hwnd, kFilenameId), WM_KEYDOWN, VK_RETURN);
+            });
+            check("save ready callback receives visible window once", ready_calls == 1 && ready_visible);
+            check("save accepts new filename without creating file", HasPaths(outcome, {(fixture.root / L"new report.txt").wstring()}) &&
+                !std::filesystem::exists(fixture.root / L"new report.txt"));
+            spec.filename = L"nested";
+            outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                return Send(filename, WM_KEYDOWN, VK_RETURN) &&
+                    Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), (fixture.root / L"nested").wstring()) &&
+                        IsWindowEnabled(filename); }, done) &&
+                    SetText(filename, L"new inside") && Send(filename, WM_KEYDOWN, VK_RETURN);
+            });
+            check("save directory navigates then accepts new file", HasPaths(outcome, {(fixture.root / L"nested\\new inside.txt").wstring()}));
+            spec.filename = L"missing\\new.txt";
+            outcome = Run(spec, [](HWND hwnd, const std::atomic<bool>& done) {
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                return Send(filename, WM_KEYDOWN, VK_RETURN) &&
+                    Until([&] { return IsWindow(hwnd) && IsWindowEnabled(filename); }, done) &&
+                    SetText(filename, L"alpha.txt") && Send(filename, WM_KEYDOWN, VK_RETURN);
+            });
+            check("save invalid parent allows retry with existing file", HasPaths(outcome, {(fixture.root / L"alpha.txt").wstring()}) &&
+                std::filesystem::file_size(fixture.root / L"alpha.txt") == 0);
+            spec.filename = L"\"one.txt\" \"two.txt\"";
+            outcome = Run(spec, [](HWND hwnd, const std::atomic<bool>&) {
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                return Send(filename, WM_KEYDOWN, VK_RETURN) && IsWindowEnabled(filename) &&
+                    SetText(filename, L"final.txt") && Send(filename, WM_KEYDOWN, VK_RETURN);
+            });
+            check("save ignores multiselect request and rejects multiple names", HasPaths(outcome, {(fixture.root / L"final.txt").wstring()}));
+            spec.filename = L"cancelled.txt";
+            outcome = Run(spec, [](HWND hwnd, const std::atomic<bool>&) {
+                return Send(GetDlgItem(hwnd, kFilenameId), WM_KEYDOWN, VK_ESCAPE);
+            });
+            check("save Escape cancels without writing", outcome.driven && !outcome.picked && outcome.result.paths.empty() &&
+                !std::filesystem::exists(fixture.root / L"cancelled.txt"));
+            spec.filename.clear();
+            outcome = Run(spec, [](HWND hwnd, const std::atomic<bool>& done) {
+                HWND search = GetDlgItem(hwnd, kSearchId);
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                return SetText(search, L"alpha") && Send(search, WM_KEYDOWN, VK_RETURN) &&
+                    Until([&] { return Send(hwnd, WM_KEYDOWN, VK_HOME) && Text(filename) == L"alpha.txt"; }, done) &&
+                    Send(filename, WM_KEYDOWN, VK_RETURN);
+            });
+            check("save selecting an existing row fills filename", HasPaths(outcome, {(fixture.root / L"alpha.txt").wstring()}));
+            HWND owner = CreateWindowExW(0, L"STATIC", L"save owner fixture", WS_POPUP, 0, 0, 100, 100,
+                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            check("save owner fixture created", owner != nullptr);
+            if (owner) {
+                bool owner_disabled_while_ready = false;
+                spec.on_ready = [&](HWND) { owner_disabled_while_ready = !IsWindowEnabled(owner); };
+                const auto cancel = [](HWND hwnd, const std::atomic<bool>&) { return Send(hwnd, WM_CLOSE); };
+                EnableWindow(owner, FALSE);
+                outcome = Run(spec, cancel, false, owner);
+                check("save keeps originally disabled owner disabled after close", outcome.driven && !outcome.picked &&
+                    owner_disabled_while_ready && !IsWindowEnabled(owner));
+                EnableWindow(owner, TRUE);
+                owner_disabled_while_ready = false;
+                outcome = Run(spec, cancel, false, owner);
+                check("save restores originally enabled owner after close", outcome.driven && !outcome.picked &&
+                    owner_disabled_while_ready && IsWindowEnabled(owner));
+                DestroyWindow(owner);
+            }
+            CoUninitialize();
+            return failures ? 1 : 0;
+        }
         if (input_surfaces) {
             FolderPickerSpec spec;
             spec.mode = PickerMode::File;

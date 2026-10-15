@@ -376,6 +376,13 @@ target_link_libraries(pulse_file_picker_model_test PRIVATE shell32 ole32 uuid pu
 # The loader enumerates with the main window's fs::EnumerateDirectory.
 target_link_libraries(pulse_file_picker_model_test PRIVATE pulse_fs_watch)
 
+add_executable(pulse_native_dialog_fixture src/bench/native_dialog_fixture.cpp)
+target_link_libraries(pulse_native_dialog_fixture PRIVATE shell32 ole32 uuid shcore user32)
+add_executable(pulse_native_file_dialog_adapter_test
+    src/bench/native_file_dialog_adapter_test.cpp src/app/native_file_dialog_adapter.cpp)
+target_link_libraries(pulse_native_file_dialog_adapter_test PRIVATE
+    user32 advapi32 ole32 oleaut32 uuid uiautomationcore shell32 comdlg32)
+
 add_executable(pulse_dialogs_test
     src/bench/dialogs_test.cpp
     src/bench/localization_test.rc
@@ -515,7 +522,7 @@ if(PULSE_APP_SOURCES)
 # pulse.map resolves --hang-watch stack RVAs (Release builds carry no PDB).
 target_link_options(pulse PRIVATE /MAP)
     target_link_libraries(pulse PRIVATE
-        d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 shell32 uuid comctl32 advapi32 shlwapi version windowscodecs gdi32 netapi32 mpr bcrypt pulse_crash_reporter)
+        d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 oleaut32 uiautomationcore shell32 uuid comctl32 advapi32 shlwapi version windowscodecs gdi32 netapi32 mpr bcrypt pulse_crash_reporter)
     target_link_libraries(pulse PRIVATE propsys oleaut32)  # shell_window_registry.cpp
     target_link_libraries(pulse PRIVATE winhttp crypt32 secur32)
     target_link_libraries(pulse PRIVATE pulse_localization pulse_text)

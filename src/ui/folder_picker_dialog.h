@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,11 +28,13 @@ struct PickerPlace {
 
 struct FolderPickerSpec {
     PickerMode mode = PickerMode::Folder;
-    std::wstring title;         // empty: "Choose a folder" / "Choose background image" / "Open"
+    std::wstring title;         // empty: "Choose a folder" / "Choose background image" / "Open" / "Save"
     std::wstring initial_path;  // empty: where the last pick of this mode was made
     std::vector<PickerFilter> filters;
     size_t filter_index = 0;
     std::wstring filename;
+    std::wstring default_extension;
+    std::function<void(HWND)> on_ready;
     bool allow_multiselect = false;
     bool show_hidden = false;
     // The main window's list style, so rows look the same in both places.

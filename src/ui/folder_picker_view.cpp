@@ -97,6 +97,7 @@ void DrawPickerChrome(Compositor& compositor, fluent::Painter& painter, const Th
 
     // Title strip: what the caller asked for, and the close button.
     const wchar_t* glyph = c.mode == PickerMode::Image ? L"\xEB9F"
+                         : c.mode == PickerMode::Save ? L"\xE74E"
                          : c.mode == PickerMode::File ? L"\xE8A5" : L"\xE8B7";
     painter.DrawGlyph(glyph, D2D1::RectF(Dip(scale, 14.0f), 0, Dip(scale, 38.0f), l.title.bottom),
                       high_contrast ? theme.text : theme.accent);

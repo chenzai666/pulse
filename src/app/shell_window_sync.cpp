@@ -51,6 +51,26 @@ void SyncExplorerTakeover(AppState& s) {
     }
 }
 
+void SyncNativeDialogs(AppState& s) {
+    const bool enabled = !s.isolatedTest && ShellIntegrationAllowed(s, nullptr) &&
+        s.appPrefs.integration_enabled && s.appPrefs.integration_file_dialogs;
+    if (!enabled) { s.core.native_dialog_takeover.reset(); return; }
+    app::NativeDialogAppearance appearance;
+    appearance.dark = s.darkMode;
+    appearance.accent = (static_cast<uint32_t>(s.accentColor.r * 255) << 16) |
+        (static_cast<uint32_t>(s.accentColor.g * 255) << 8) | static_cast<uint32_t>(s.accentColor.b * 255);
+    appearance.language = s.appPrefs.language;
+    auto& style = appearance.style;
+    style.selection_outline = s.appPrefs.list_selection_outline;
+    style.row_height_dip = static_cast<float>(app::EffectiveRowHeightDip(s.appPrefs.row_height, s.appPrefs.ui_font_scale));
+    style.show_hidden = s.appPrefs.show_hidden_files;
+    style.list_smart_date = s.appPrefs.list_smart_date; style.list_zebra_rows = s.appPrefs.list_zebra_rows;
+    style.list_size_bar = s.appPrefs.list_size_bar; style.thumbnail_badges = s.appPrefs.list_thumbnail_badges;
+    style.details_columns = s.appPrefs.details_columns;
+    if (s.core.native_dialog_takeover) s.core.native_dialog_takeover->UpdateAppearance(std::move(appearance));
+    else s.core.native_dialog_takeover = std::make_unique<app::NativeDialogTakeover>(std::move(appearance));
+}
+
 // Explorer held the foreground; the takeover request arrives while it still
 // does, so share its input state long enough to take the foreground over.
 void BringToFront(HWND hwnd) {
@@ -98,6 +118,7 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 
 void SyncShellWindows(AppState& s) {
     SyncExplorerTakeover(s);
+    SyncNativeDialogs(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {
         // Every window's panes (M4b), each registered with its own window.
@@ -135,6 +156,7 @@ void SyncShellWindows(AppState& s) {
 }
 
 void StopShellWindows(AppState& s) {
+    s.core.native_dialog_takeover.reset();
     if (s.explorer_takeover) s.explorer_takeover->Stop();
     s.explorer_takeover.reset();
     // Stop synchronizes with posting; release requests which the destroyed
