@@ -375,6 +375,13 @@ private:
         loading_ = false;
         select_after_ = std::move(select_after);
         EndAddressEdit(false);
+        // Keep path_edit_ text in sync so external callers (e.g. tests) can
+        // read the current directory even when address editing is inactive.
+        if (path_edit_ && !address_editing_) {
+            setting_edits_ = true;
+            SetWindowTextW(path_edit_, DisplayPath(current_).c_str());
+            setting_edits_ = false;
+        }
         UpdateChosen();
         if (loader_) loader_->Load(++generation_, path, mode_, options_);
         if (hwnd_) {

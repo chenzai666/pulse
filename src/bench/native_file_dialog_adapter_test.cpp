@@ -258,10 +258,21 @@ void LegacyFolderCase(const Fixture& fixture) {
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    const bool interaction = argc > 1 && std::wstring_view(argv[1]) == L"--interaction";
+    // Interaction tests open real system file dialogs; create a private desktop so
+    // they work reliably in headless/CI environments without disturbing the user desktop.
+    HDESK desktop = nullptr;
+    if (interaction) {
+        const auto desktop_name = L"PulseAdapterTest_" + std::to_wstring(GetCurrentProcessId());
+        constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
+            DESKTOP_ENUMERATE | DESKTOP_HOOKCONTROL;
+        desktop = CreateDesktopW(desktop_name.c_str(), nullptr, nullptr, 0, access, nullptr);
+        if (desktop) SetThreadDesktop(desktop);
+    }
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 2;
     RejectionCases();
-    if (argc > 1 && std::wstring_view(argv[1]) == L"--interaction") {
+    if (interaction) {
         Fixture fixture;
         ModernCase(fixture, NativeDialogKind::Open, false);
         ModernCase(fixture, NativeDialogKind::Save, false);
@@ -272,5 +283,6 @@ int wmain(int argc, wchar_t** argv) {
         LegacyFolderCase(fixture);
     }
     CoUninitialize();
+    if (desktop) CloseDesktop(desktop);
     return failures ? 1 : 0;
 }

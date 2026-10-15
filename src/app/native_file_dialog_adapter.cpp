@@ -118,14 +118,20 @@ bool WindowIdentity(HWND window, DWORD& process_id, DWORD& thread_id,
     FILETIME exited{}, kernel{}, user{};
     if (!GetProcessTimes(process.value, &created, &exited, &kernel, &user))
         return Fail(reason, L"无法核实进程创建时间。");
-    const HDESK target_desktop = GetThreadDesktop(thread_id);
+    // GetThreadDesktop cannot reliably query threads in other processes on all Windows
+    // versions; instead verify the target window is enumerable on the current thread's
+    // desktop, which must already have been switched to the correct desktop by the caller.
     const HDESK own_desktop = GetThreadDesktop(GetCurrentThreadId());
-    wchar_t target_name[256]{}, own_name[256]{};
-    DWORD bytes = 0;
-    if (!target_desktop || !own_desktop ||
-        !GetUserObjectInformationW(target_desktop, UOI_NAME, target_name, sizeof(target_name), &bytes) ||
-        !GetUserObjectInformationW(own_desktop, UOI_NAME, own_name, sizeof(own_name), &bytes) ||
-        std::wstring_view(target_name) != own_name)
+    if (!own_desktop) return Fail(reason, L"无法获取当前工作线程的桌面。");
+    bool window_on_desktop = false;
+    struct DesktopSearch { HWND target; bool& found; };
+    DesktopSearch desktop_ctx{window, window_on_desktop};
+    EnumDesktopWindows(own_desktop, [](HWND hwnd, LPARAM lp) -> BOOL {
+        auto& ctx = *reinterpret_cast<DesktopSearch*>(lp);
+        if (hwnd == ctx.target) { ctx.found = true; return FALSE; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&desktop_ctx));
+    if (!window_on_desktop)
         return Fail(reason, L"窗口不在当前工作线程的桌面上。");
     if (!IsWindowEnabled(window)) return Fail(reason, L"原生对话框当前被其他模态窗口阻塞。");
     return true;

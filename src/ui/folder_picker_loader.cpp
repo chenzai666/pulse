@@ -159,6 +159,13 @@ PickerValidation ValidatePaths(const std::wstring& current, const std::vector<st
         auto path = ResolvePath(current, name);
         result.failed_path = path.empty() ? name : path;
         if (path.empty()) { result.error = ERROR_INVALID_NAME; break; }
+        // Validate the leaf name before querying the filesystem so that reserved
+        // device names (e.g. CON.txt) are rejected with ERROR_INVALID_NAME rather
+        // than the OS-specific error code GetFileAttributesW would return for them.
+        if (mode == PickerMode::Save) {
+            const auto leaf_pre = path.substr(path.find_last_of(L'\\') + 1);
+            if (!IsValidPickerSaveFilename(leaf_pre)) { result.error = ERROR_INVALID_NAME; break; }
+        }
         DWORD attributes = GetFileAttributesW(NativePath(path).c_str());
         if (mode == PickerMode::Save) {
             if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
