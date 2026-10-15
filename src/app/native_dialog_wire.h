@@ -73,10 +73,16 @@ inline bool PackRequest(const RequestData& data, ipc::PayloadWriter& out) {
 inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) {
     ipc::PayloadReader in(bytes.data(), bytes.size());
     if (bytes.size() > kLimit) return false;
+    const auto get_dword = [&](DWORD& value) {
+        uint32_t decoded = 0;
+        if (!in.GetU32(decoded)) return false;
+        value = decoded;
+        return true;
+    };
     uint64_t window = 0, filename_window = 0, confirm_window = 0;
     uint32_t kind = 0, multi = 0, index = 0, count = 0, dark = 0, flags = 0, legacy = 0;
     auto& source = data.source; auto& style = data.appearance.style;
-    if (!in.GetU64(window) || !in.GetU32(source.process_id) || !in.GetU32(data.parent) || !in.GetU32(kind) || kind > 2 ||
+    if (!in.GetU64(window) || !get_dword(source.process_id) || !get_dword(data.parent) || !in.GetU32(kind) || kind > 2 ||
         !in.GetString(source.title) || !in.GetString(source.initial_path) || !in.GetString(source.filename) ||
         !in.GetU32(multi) || multi > 1 || !in.GetU32(index) || !in.GetU32(count) || count > 64) return false;
     source.window = reinterpret_cast<HWND>(static_cast<uintptr_t>(window)); source.kind = static_cast<NativeDialogKind>(kind);
@@ -88,8 +94,8 @@ inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) 
         source.filters.push_back(std::move(filter));
     }
     if (!in.GetU32(dark) || dark > 1 || !in.GetU32(data.appearance.accent) || !in.GetString(data.appearance.language) ||
-        !in.GetU32(source.window_thread_id) || !in.GetU32(source.process_created.dwLowDateTime) ||
-        !in.GetU32(source.process_created.dwHighDateTime) || !in.GetU64(filename_window) || !in.GetU64(confirm_window) ||
+        !get_dword(source.window_thread_id) || !get_dword(source.process_created.dwLowDateTime) ||
+        !get_dword(source.process_created.dwHighDateTime) || !in.GetU64(filename_window) || !in.GetU64(confirm_window) ||
         !in.GetU32(legacy) || legacy > 1 || window > (std::numeric_limits<uintptr_t>::max)() ||
         filename_window > (std::numeric_limits<uintptr_t>::max)() || confirm_window > (std::numeric_limits<uintptr_t>::max)() ||
         !in.GetU32(flags) || flags > 63 || !in.GetF32(style.row_height_dip) || !std::isfinite(style.row_height_dip) ||
