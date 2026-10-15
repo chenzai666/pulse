@@ -1,6 +1,8 @@
 // app_runtime.cpp — extracted from app_main.cpp.
 #include "app_window_title.h"
 #include "app_internal.h"
+#include "global_search_controller.h"
+#include "../common/edition.h"
 #include "home_widgets.h"
 #include "pane_layout.h"
 #include "tab_spring.h"
@@ -1798,6 +1800,7 @@ void HandleTeachButton(AppState& s, int button) {
 }
 
 void SearchFilterInSubfolders(AppState& s) {
+    if (edition::kCustom) { OpenListarySearch(s); return; }
     app::Tab* tab = ActiveTab(s);
     if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return;
     std::wstring text = tab->filter_text;

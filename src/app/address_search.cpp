@@ -2,6 +2,7 @@
 #include "../index/content_scope.h"
 #include "../index/content_search_protocol.h"
 #include "search_query.h"
+#include "../common/edition.h"
 #include "../common/localization.h"
 #include "../ui/address_search_layout.h"
 #include <algorithm>
@@ -104,6 +105,7 @@ void ExitAddressSearch(AppState& s) {
 }
 
 void ShowAddressSearch(AppState& s) {
+    if (edition::kCustom) { ShowFilterEditor(s); return; }
     if (s.addressSearching && s.hwndAddressEdit) {
         SetForegroundWindow(GetAncestor(s.hwndAddressEdit, GA_ROOT));
         SetFocus(s.hwndAddressEdit);

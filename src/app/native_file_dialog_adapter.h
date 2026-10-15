@@ -29,7 +29,7 @@ struct NativeFileDialog {
     bool legacy_folder = false;
 };
 
-// 在已初始化 COM 的专用工作线程调用，原生窗口须保持存在。
+// 专用工作线程须在初始化 COM 前切换到目标桌面；原生窗口须保持存在。
 bool InspectNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring& reason);
 bool NativeDialogStillMatches(const NativeFileDialog& dialog);
 

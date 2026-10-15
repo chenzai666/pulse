@@ -967,13 +967,14 @@ void DispatchMenuCommand(AppState& s, int cmd) {
         break;
     }
     case app::CmdSearchAll: {
+        if (edition::kCustom) { OpenListarySearch(s); break; }
         const auto q = app::ParseOmnibarQuery(s.paletteQuery, false);
         if (q.needle.empty()) break;
         NavigateTo(s, app::MakeSearchPath(q.needle));
         break;
     }
     case app::CmdInstallFullIndex:
-        s.index.RequestInstallService();
+        if (!edition::kCustom) s.index.RequestInstallService();
         break;
     case app::CmdSettings:
         OpenSettingsTab(s, 0);
@@ -1923,6 +1924,7 @@ void ShowToolbarMore(AppState& s) {
 }
 
 void ShowAdvancedSearch(AppState& s, bool require_scope) {
+    if (edition::kCustom) { OpenListarySearch(s); return; }
     app::Tab* tab = ActiveTab(s);
     std::wstring current;
     if (tab && !tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path))
@@ -2102,7 +2104,7 @@ void ShowOmnibar(AppState& s, OmnibarMode mode) {
             folders_only = true;
             prefix = ProjectSearchRoot(s);
         }
-        const bool run_search = parsed.kind != app::OmnibarQuery::Kind::Command &&
+        const bool run_search = !edition::kCustom && parsed.kind != app::OmnibarQuery::Kind::Command &&
                                 (!parsed.needle.empty() || project_only) &&
                                 (parsed.kind == app::OmnibarQuery::Kind::Search ||
                                  !app::LooksLikeFilesystemPath(parsed.needle));

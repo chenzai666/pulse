@@ -4,6 +4,7 @@
 #include "../ui/ui_renderer_internal.h"
 #include <fstream>
 #include <filesystem>
+#include <atomic>
 
 #ifdef PULSE_WITH_SELFTEST
 namespace pulse { bool TestSettingsFilter(const std::wstring&,l10n::StringId); }
@@ -27,7 +28,7 @@ int RunSettingsWidthBorderTest(AppState& s, const wchar_t* output) {
             vm.settings_open = true;
             vm.settings_scroll = 0;
             const auto window = D2D1::RectF(0, 0, width*scale, 1464*scale);
-            for (int page = 0; page < 5; ++page) {
+            for (const int page : settings::kNavigationPages) {
                 vm.settings_page = page;
                 const auto l = ui::MakeSettingsLayout(vm, window, scale,
                     s.renderer.TitleBarHeight(), 28*scale, nullptr);
@@ -409,9 +410,12 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
     using H = ui::HitTestResult;
     using I = l10n::StringId;
     std::ofstream log{std::filesystem::path(output)};
+    if (!log) return 1;
+    log << "[STAGE] entered RunSettingsIntegrationUiTest" << std::endl;
     int failures = 0;
     auto check = [&](bool ok, const char* label) {
         log << (ok ? "[PASS] " : "[FAIL] ") << label << '\n';
+        log.flush();
         if (!ok) ++failures;
     };
     {
@@ -659,7 +663,130 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
     return failures ? 1 : 0;
 }
 
+int RunSettingsNavigationTest(AppState& s, const wchar_t* output) {
+    using H = ui::HitTestResult;
+    using I = l10n::StringId;
+    std::ofstream log{std::filesystem::path(output)};
+    if (!log) return 1;
+    int failures = 0;
+    auto check = [&](bool ok, const char* label) {
+        log << (ok ? "[PASS] " : "[FAIL] ") << label << '\n';
+        if (!ok) ++failures;
+    };
+    app::SettingsController controller;
+    const wchar_t* names[] = {L"general", L"index", L"context", L"about", L"duplicates", L"packs"};
+    bool stable = true;
+    for (int page = 0; page < settings::kPageCount; ++page) {
+        controller.SelectPage(page);
+        const int expected = settings::PageAvailable(page) ? page : 0;
+        stable &= controller.page() == expected &&
+            app::SettingsController::PageFromName(names[page]) == expected &&
+            std::wstring(app::SettingsController::PageName(page)) == names[expected];
+    }
+    check(stable, "visible page IDs round-trip; unavailable page routes safely fall back to general");
+#ifdef PULSE_CUSTOM_EDITION
+    check(std::size(settings::kNavigationPages) == 4 && !settings::PageAvailable(1) && !settings::PageAvailable(4),
+        "custom edition removes search/index and duplicate page entries");
+    {
+        app::SettingsController actions;
+        app::ContextMenuPrefs context;
+        app::AppPrefs prefs;
+        prefs.persist = false;
+        std::atomic<int> completions = 0, exports = 0;
+        int dialogs = 0, opened = 0;
+        app::SettingsController::UiCallbacks callbacks;
+        callbacks.pick_folder = [&](std::wstring&, std::wstring_view) { ++dialogs; return true; };
+        callbacks.open_path = [&](const std::wstring&) { ++opened; };
+        callbacks.task_completion = [&](app::SettingsTaskResult) { ++completions; };
+        callbacks.prepare_diagnostics_export = [](std::wstring& path, bool&, bool&) {
+            path = L"diagnostics-test-no-file-output";
+            return true;
+        };
+        callbacks.export_diagnostics = [&](const std::wstring&, bool, bool, std::wstring&) { ++exports; return true; };
+        actions.BindUi(prefs, context, s.index, s.networkIndex, std::move(callbacks));
+        for (int action = 0; action < 3; ++action) actions.IndexAction(action);
+        actions.NetworkAction(0, true); actions.NetworkAction(1);
+        check(dialogs == 0 && opened == 0 && completions == 0 && !actions.network_pending() && !actions.migration_pending(),
+            "custom direct index and network actions do not prompt, open paths, or submit work");
+        actions.DiagnosticsAction(2);
+        actions.Stop();
+        check(exports == 1 && completions == 1 && !actions.diagnostics_pending(),
+            "custom diagnostics export remains available without performing file or service operations");
+    }
+#else
+    check(std::size(settings::kNavigationPages) == 6 && settings::PageAvailable(1) && settings::PageAvailable(4),
+        "original edition retains all settings pages");
+#endif
+    const auto language = l10n::preference();
+    const float original_scale = s.scale;
+    const int original_width = s.compositor.Width(), original_height = s.compositor.Height();
+    ui::fluent::Painter painter(&s.compositor);
+    bool nav_hits = true, dense = true, hidden = true, search = true, render = true, snapshots = true;
+    for (const auto* locale : {L"zh-CN", L"zh-TW", L"en-US"}) {
+        l10n::SetLanguage(locale); painter.InvalidateTypography();
+        search &= TestSettingsFilter(L"", I::SettingsTheme) && TestSettingsFilter(L"", I::SettingsContextMenu) &&
+            TestSettingsFilter(L"", I::QuickPreview) && TestSettingsFilter(L"", I::SettingsAboutDiagnostics);
+        for (const auto id : {I::IndexLocation, I::GlobalSearch, I::ContentIndexManage, I::SettingsDuplicates}) {
+            const bool expected = settings::PageAvailable(id == I::SettingsDuplicates ? 4 : 1);
+            search &= TestSettingsFilter(L"", id) == expected && TestSettingsFilter(l10n::Get(id), id) == expected;
+        }
+        for (float scale : {1.0f, 1.5f, 2.0f}) {
+            s.compositor.RecreateTextFormats(scale); s.renderer.SetScale(scale); painter.SetScale(scale);
+            for (int width : {620, 760, 1280}) {
+                const auto window = D2D1::RectF(0, 0, width*scale, 1000*scale);
+                for (const int page : settings::kNavigationPages) {
+                    auto vm = BuildVm(s, false);
+                    vm.settings_open = true; vm.settings_page = page; vm.settings_scroll = 0;
+                    const auto layout = ui::MakeSettingsLayout(vm, window, scale, s.renderer.TitleBarHeight(), 28*scale, &painter);
+                    int position = 0;
+                    for (const int target : settings::kNavigationPages) {
+                        const auto row = layout.nav_row[target];
+                        const auto hit = s.renderer.HitTest(vm, window, (row.left+row.right)/2, (row.top+row.bottom)/2);
+                        nav_hits &= row.right > row.left && row.bottom > row.top &&
+                            hit.region == H::SettingsNav && hit.index == target;
+                        if (target != 3) {
+                            dense &= std::abs(row.top - (layout.nav.top+(20+position*46)*scale)) < 0.5f;
+                            dense &= row.bottom < layout.nav_row[3].top;
+                            ++position;
+                        }
+                    }
+                    for (int target = 0; target < settings::kPageCount; ++target) {
+                        if (settings::PageAvailable(target)) continue;
+                        const auto row = layout.nav_row[target];
+                        hidden &= row.left == 0 && row.right == 0 && row.top == 0 && row.bottom == 0;
+                    }
+                    if (page == 0 && scale == 1.0f && width != 760) {
+                        s.compositor.Resize(width, 1000);
+                        for (bool dark : {false, true}) {
+                            vm.dark = dark; vm.background_image.clear(); vm.backdrop_enabled = false;
+                            vm.window_effect = ui::WindowEffect::None;
+                            auto* context = s.compositor.Dc();
+                            context->BeginDraw(); s.renderer.Render(vm, window, ui::MakeTheme(dark, s.accentColor));
+                            render &= SUCCEEDED(context->EndDraw());
+                            const auto name = L"settings-navigation-" + std::wstring(locale) + L"-" +
+                                std::to_wstring(width) + (dark ? L"-dark.png" : L"-light.png");
+                            snapshots &= s.compositor.SaveSnapshot((std::filesystem::path(output).parent_path()/name).c_str());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    check(nav_hits, "navigation hit targets preserve stable page IDs across language, width, and DPI");
+    check(dense, "visible primary rows have no gaps and about remains pinned below them");
+    check(hidden, "unavailable page rows have no layout or navigation targets");
+    check(search, "settings search retains visible destinations and excludes unavailable pages and children");
+    check(render && snapshots, "navigation renders in both themes and captures narrow and full-width snapshots");
+    l10n::SetLanguage(l10n::LanguageId(language));
+    s.compositor.Resize(original_width, original_height);
+    s.compositor.RecreateTextFormats(original_scale); s.renderer.SetScale(original_scale);
+    log << "failures=" << failures << '\n';
+    return failures ? 1 : 0;
+}
+
 int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
+    if (GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_NAVIGATION", nullptr, 0))
+        return RunSettingsNavigationTest(s, output);
     if (GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_INTEGRATION", nullptr, 0))
         return RunSettingsIntegrationUiTest(s, output);
     if (GetEnvironmentVariableW(L"PULSE_TEST_ADAPTIVE_COLUMNS", nullptr, 0))
@@ -703,7 +830,8 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
         for(int id=1900;id<=1929;++id) complete &= !l10n::Get(static_cast<I>(id)).empty();
         check(complete,"new settings labels exist in both languages");
         check(TestSettingsFilter(l10n::Get(I::SettingsWallpaper),I::SettingsWallpaper),"settings search finds hidden advanced settings");
-        check(TestSettingsFilter(l10n::Get(I::SettingsSearchIndex),I::IndexLocation),"settings search finds page and subsettings");
+        check(TestSettingsFilter(l10n::Get(I::SettingsSearchIndex),I::IndexLocation) == settings::PageAvailable(1),
+            "settings search only finds available pages and subsettings");
         check(!TestSettingsFilter(L"no-such-setting-123",I::SettingsTheme),"settings search has empty results");
         bool apps_text=true;
         for(I id:{I::AboutMoreApps,I::AboutMoreAppsDesc,I::AboutLumenPdfDesc,I::AboutLumaShotDesc}) apps_text &= !l10n::Get(id).empty();
@@ -718,15 +846,15 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
             const auto window=D2D1::RectF(0,0,width*scale,1000*scale);
             auto vm=BuildVm(s,false);vm.settings_open=true;vm.settings_scroll=0;vm.settings_bloom=&s.bloom_accent;
             vm.settings_content_folders={{LR"(C:\Projects\Very long project folder name)",L"Ready",false},{LR"(D:\Unavailable)",L"Unavailable (3)",true}};
-            for(int page=0;page<5;++page) {
+            for(const int page : settings::kNavigationPages) {
                 vm.settings_page=page;vm.settings_expanded=0;
                 const auto layout=ui::MakeSettingsLayout(vm,window,scale,s.renderer.TitleBarHeight(),28*scale,&painter);
                 auto hit=[&](D2D1_RECT_F r){return s.renderer.HitTest(vm,window,(r.left+r.right)/2,(r.top+r.bottom)/2);};
-                bool nav=true;for(int i=0;i<5;++i) {auto h=hit(layout.nav_row[i]);nav &= h.region==H::SettingsNav && h.index==i;}
+                bool nav=true;for(const int i : settings::kNavigationPages) {auto h=hit(layout.nav_row[i]);nav &= h.region==H::SettingsNav && h.index==i;}
                 check(nav,"fixed navigation preserves all page destinations across widths and DPI");
                 check(layout.nav_row[0].top == layout.nav.top + 20*scale,
                     "settings navigation starts without a search-box gap");
-                check(layout.nav_row[4].bottom<layout.nav_row[3].top,"about is pinned below primary navigation");
+                check(layout.nav_row[5].bottom<layout.nav_row[3].top,"about is pinned below primary navigation");
                 if(page==0) {
                     check(hit(layout.theme_tile[0]).region==H::SettingsTheme && hit(layout.theme_tile[0]).index==1,"light theme preview hit target");
                     check(hit(layout.accent_picker).region==H::SettingsAccent,"original color wheel remains interactive");
@@ -889,12 +1017,14 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
     }
     s.settings.SetScroll(expanded_max,expanded_max);HandleSettingsControl(s,toggle);
     check(s.settings.scroll()<=collapsed_max,"collapsing advanced settings clamps existing scroll");
-    OpenSettingsTab(s,1);s.settings.SetScroll(0,0);
-    const bool before=s.appPrefs.search_pinyin;click(layout().search_pinyin_row);
-    check(s.appPrefs.search_pinyin!=before,"mouse click changes pinyin setting");
-    toggle.index=1;HandleSettingsControl(s,toggle);vm=BuildVm(s,false);
-    const float offset=s.renderer.SettingsDestinationOffset(vm,static_cast<int>(I::IndexLocation),window.right,window.bottom);
-    check(offset>0 && (s.settingsExpanded&2u),"search destination locates expanded index storage section");
+    if (settings::PageAvailable(1)) {
+        OpenSettingsTab(s,1);s.settings.SetScroll(0,0);
+        const bool before=s.appPrefs.search_pinyin;click(layout().search_pinyin_row);
+        check(s.appPrefs.search_pinyin!=before,"mouse click changes pinyin setting");
+        toggle.index=1;HandleSettingsControl(s,toggle);vm=BuildVm(s,false);
+        const float offset=s.renderer.SettingsDestinationOffset(vm,static_cast<int>(I::IndexLocation),window.right,window.bottom);
+        check(offset>0 && (s.settingsExpanded&2u),"search destination locates expanded index storage section");
+    }
     log<<"failures="<<failures<<'\n';return failures ? 1 : 0;
 }
 #endif

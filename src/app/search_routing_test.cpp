@@ -4,6 +4,8 @@
 // those results to the most recent window, which need not be the one that
 // searched; before M5a an older window's search lost its results that way.
 #include "app_internal.h"
+#include "../common/edition.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -53,6 +55,28 @@ bool RunSearchRoutingTest() {
         core->windows.Touch(recent->hwnd);
         Tab* search = older->window_tabs.Active()->panes.front()->ActiveTab();
         search->current_path = L"pulse:search:report";
+
+        if (edition::kCustom) {
+            search->loading = true;
+            search->pending_generation = 123;
+            RequestSearchPage(*older, *search, L"report", true);
+            check(!search->loading && !search->pending_generation && search->snapshot && search->snapshot->empty() &&
+                  search->banner_title == L"Listary",
+                  "custom edition retires restored native search without leaving a pending query");
+            DispatchIndexSearch(*older, index::Query{}, 124);
+            check(core->pendingIndexSearches.empty(), "custom edition never dispatches a local or network index request");
+            RequestSavedSearch(*older, *search, 0);
+            check(!search->loading && !search->pending_generation,
+                  "custom edition refuses restored saved searches including content and duplicates");
+            check(!core->globalSearchWindow.Show(older->hwnd, false, 1.0f, L"C:\\", false) &&
+                  !core->globalSearchWindow.Visible(), "custom edition cannot create the native global search window");
+            const auto commands = BuildCommandPalette(L"", {}, {}, false);
+            check(std::none_of(commands.begin(), commands.end(), [](const auto& item) {
+                      return item.command == CmdInstallFullIndex;
+                  }) && std::any_of(commands.begin(), commands.end(), [](const auto& item) {
+                      return item.command == CmdAdvancedSearch && item.text == L"Listary";
+                  }), "custom command palette offers Listary and cannot enable the shared index service");
+        }
 
         // The M4 path: the host's window takes the result for itself.
         AddPendingSearch(*core, 7);

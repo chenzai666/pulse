@@ -11,8 +11,8 @@ namespace pulse::app {
 
 using AboutRow = std::pair<std::wstring, std::wstring>;  // label, value
 
-inline constexpr const wchar_t* kPulseHomepage = L"https://github.com/jimmgreen/pulse";
-inline constexpr const wchar_t* kPulseReleasesPage = L"https://github.com/jimmgreen/pulse/releases";
+inline constexpr const wchar_t* kPulseHomepage = L"https://github.com/chenzai666/pulse";
+inline constexpr const wchar_t* kPulseReleasesPage = L"https://github.com/chenzai666/pulse/releases";
 // Other free, open-source apps by the same author, recommended on the About page.
 inline constexpr const wchar_t* kLumenPdfHomepage = L"https://github.com/jimmgreen/LumenPDF";
 inline constexpr const wchar_t* kLumaShotHomepage = L"https://github.com/jimmgreen/LumaShot";

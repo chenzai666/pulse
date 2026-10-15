@@ -2,6 +2,7 @@
 #include "app_internal.h"
 #include "../fs/fs_enum.h"
 #include "../common/localization.h"
+#include "../common/edition.h"
 
 #include <thread>
 
@@ -15,6 +16,7 @@ void PersistDuplicateScanPrefs(AppState& s) {
 }
 
 void RequestDuplicateVolumeCache(AppState& s, bool force) {
+    if (edition::kCustom) return;
     if (!s.hwnd || s.dup_volume_cache_pending) return;
     if (!force && s.dup_volume_cache_tick != 0 &&
         GetTickCount64() - s.dup_volume_cache_tick <= 2000)
@@ -37,6 +39,7 @@ void ApplyDuplicateVolumeCache(AppState& s, std::vector<index::VolumeInfo> volum
 }
 
 void StartDuplicateScan(AppState& s) {
+    if (edition::kCustom) return;
     auto& session = s.duplicateScan;
     if (session.scope == app::DuplicateScanScope::AllFixed && s.dup_volume_cache.empty()) {
         RequestDuplicateVolumeCache(s, true);

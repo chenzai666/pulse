@@ -78,15 +78,34 @@ void ToggleNativeGlobalSearch(AppState& s) {
 
 void ToggleGlobalSearch(AppState& s) {
     if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
-    if (edition::kCustom && !s.isolatedTest && !s.safeMode && QueueListaryGlobalSearch(s.worker, s.hwnd))
+    if (edition::kCustom) {
+        OpenListarySearch(s);
         return;
+    }
     ToggleNativeGlobalSearch(s);
+}
+
+void OpenListarySearch(AppState& s) {
+    if (!s.isolatedTest && !s.safeMode && QueueListaryGlobalSearch(s.worker, s.hwnd)) return;
+    RevealWindow(s);
+    s.notification_toast.ShowError(s.hwnd, L"Listary",
+        l10n::Pick(L"无法打开 Listary。请确认已安装并启用 Listary 6.3 或更高版本。",
+            L"Unable to open Listary. Install and enable Listary 6.3 or later."));
 }
 
 void HandleGlobalSearchResult(AppState& s, WPARAM token) {
     bool opened = false;
-    if (!TakeListaryGlobalSearchResult(s.hwnd, token, opened) ||
-        !s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
+    if (!TakeListaryGlobalSearchResult(s.hwnd, token, opened)) return;
+    if (edition::kCustom) {
+        if (!opened) {
+            RevealWindow(s);
+            s.notification_toast.ShowError(s.hwnd, L"Listary",
+                l10n::Pick(L"无法打开 Listary。请确认已安装并启用 Listary 6.3 或更高版本。",
+                    L"Unable to open Listary. Install and enable Listary 6.3 or later."));
+        }
+        return;
+    }
+    if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
     if (opened) s.globalSearchWindow.Hide();
     else ToggleNativeGlobalSearch(s);
 }

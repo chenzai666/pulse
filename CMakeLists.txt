@@ -132,6 +132,11 @@ if(PULSE_WIN81_CANDIDATE)
     set(PULSE_DEFAULT_UPDATE_MANIFEST "https://github.com/jimmgreen/pulse/releases/latest/download/update-manifest-win81.json")
 endif()
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/update-public-key.txt" PULSE_DEFAULT_UPDATE_PUBLIC_KEY LIMIT_COUNT 1)
+if(PULSE_CUSTOM_EDITION)
+    # 定制版固定版本，未配置独立签名渠道前不从原版自动更新。
+    set(PULSE_DEFAULT_UPDATE_MANIFEST "")
+    set(PULSE_DEFAULT_UPDATE_PUBLIC_KEY "")
+endif()
 set(PULSE_UPDATE_MANIFEST_URL "${PULSE_DEFAULT_UPDATE_MANIFEST}" CACHE STRING
     "HTTPS URL for the signed update manifest (empty disables update checks)")
 set(PULSE_UPDATE_PUBLIC_KEY_HEX "${PULSE_DEFAULT_UPDATE_PUBLIC_KEY}" CACHE STRING

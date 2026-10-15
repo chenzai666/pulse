@@ -1,4 +1,5 @@
 #include "global_search_window.h"
+#include "../common/edition.h"
 #include "global_search_result_state.h"
 #include "../ui/FluentTokens.h"
 #include "resource.h"
@@ -779,6 +780,7 @@ struct GlobalSearchWindow::Impl {
 GlobalSearchWindow::GlobalSearchWindow() = default;
 GlobalSearchWindow::~GlobalSearchWindow() = default;
 bool GlobalSearchWindow::Show(HWND owner, bool dark, float scale, const std::wstring& current_folder, bool search_pinyin) {
+    if (edition::kCustom) return false;
     if (!impl_) impl_ = std::make_unique<Impl>();
     return impl_->Show(owner, dark, scale, current_folder, search_pinyin);
 }

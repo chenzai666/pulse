@@ -67,14 +67,19 @@ struct TestLog {
     int failures = 0;
 };
 
+thread_local TestLog* active_test_log = nullptr;
+
 bool Until(const std::function<bool()>& condition, DWORD timeout) {
     const ULONGLONG deadline = GetTickCount64() + timeout;
     do {
         if (condition()) return true;
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (active_test_log) active_test_log->Detail("wait-loop DispatchMessage begin message=" +
+                std::to_string(message.message) + " HWND=" + std::to_string(reinterpret_cast<uintptr_t>(message.hwnd)));
             TranslateMessage(&message);
             DispatchMessageW(&message);
+            if (active_test_log) active_test_log->Detail("wait-loop DispatchMessage end");
         }
         Sleep(25);
     } while (GetTickCount64() < deadline);
@@ -290,6 +295,8 @@ void Diagnostics(TestLog& log, HDESK desktop, ChildProcess& child, const std::st
         if (process == context.fixture && ClassName(window) == L"#32770") {
             NativeFileDialog inspected;
             std::wstring reason;
+            context.log->Detail("production InspectNativeFileDialog begin HWND=" +
+                std::to_string(reinterpret_cast<uintptr_t>(window)));
             const bool accepted = pulse::app::InspectNativeFileDialog(window, inspected, reason);
             context.log->Detail("production InspectNativeFileDialog=" + std::string(accepted ? "accepted" : "rejected") + " reason=" + Utf8(reason));
             size_t count = 0;
@@ -311,17 +318,30 @@ void Diagnostics(TestLog& log, HDESK desktop, ChildProcess& child, const std::st
 
 bool AwaitPicker(TestLog& log, HDESK desktop, ChildProcess& child, const std::wstring& executable,
     const std::string& branch, bool filename, SourceWindow& source, PickerWindow& picker) {
+    log.Detail(branch + ": AwaitPicker begin timeout_ms=" + std::to_string(kAttachTimeout));
     bool exited_early = false;
+    bool reported_source = false, reported_picker = false;
     const bool observed = Until([&] {
         child.Drain();
         if (!child.Running()) { exited_early = true; return true; }
         if (!SourceMatches(source)) source = FindSource(desktop, child.id());
         if (!source.window) return false;
+        if (!reported_source) {
+            log.Detail(branch + ": found native source HWND=" + std::to_string(reinterpret_cast<uintptr_t>(source.window)) +
+                " PID=" + std::to_string(source.process) + " class=" + Utf8(ClassName(source.window)));
+            reported_source = true;
+        }
         picker = FindPicker(desktop, source, executable);
+        if (picker.window && !reported_picker) {
+            log.Detail(branch + ": found owned Pulse picker HWND=" + std::to_string(reinterpret_cast<uintptr_t>(picker.window)) +
+                " PID=" + std::to_string(picker.process) + "; checking controls");
+            reported_picker = true;
+        }
         if (!picker.window || !GetDlgItem(picker.window, 101)) return false;
         const HWND edit = GetDlgItem(picker.window, 102);
         return filename ? edit && IsWindowEnabled(edit) : !edit;
     }, kAttachTimeout);
+    log.Detail(branch + ": AwaitPicker polling returned");
     const bool ready = observed && !exited_early;
     log.Check(ready, branch + ": production watcher identifies native dialog and displays owned Pulse picker");
     if (!ready) Diagnostics(log, desktop, child, branch + (exited_early
@@ -443,7 +463,9 @@ void RunOpaqueFallback(TestLog& log, HDESK desktop, const std::wstring& desktop_
         unexpected_picker = FindPicker(desktop, source, executable).window != nullptr;
         if (unexpected_picker) return true;
         NativeFileDialog inspected;
+        log.Detail(branch + ": production opaque-filter Inspect begin");
         detector_accepted = pulse::app::InspectNativeFileDialog(source.window, inspected, reason);
+        log.Detail(branch + ": production opaque-filter Inspect end reason=" + Utf8(reason));
         filter_rejected = !detector_accepted && reason.find(L"文件类型过滤器") != std::wstring::npos;
         return detector_accepted || filter_rejected;
     }, kAttachTimeout);
@@ -471,8 +493,11 @@ bool CancelOwnNative(TestLog& log, const SourceWindow& source, const std::string
     if (!SourceMatches(source)) return log.Check(false, branch + ": original fixture identity remains intact before production cancel");
     NativeFileDialog dialog;
     std::wstring reason;
+    log.Detail(branch + ": production cleanup Inspect begin");
     const bool inspected = pulse::app::InspectNativeFileDialog(source.window, dialog, reason);
+    log.Detail(branch + ": production cleanup Inspect end; Cancel begin when identified");
     const bool cancelled = inspected && pulse::app::CancelNativeDialog(dialog, reason);
+    log.Detail(branch + ": production cleanup Cancel end");
     log.Check(cancelled, branch + ": production CancelNativeDialog cancels only the own fixture");
     if (!cancelled) log.Detail(branch + ": cancel refused: " + Utf8(reason));
     return cancelled;
@@ -558,6 +583,7 @@ bool WriteFixture(const std::filesystem::path& path) {
 }
 
 void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) {
+    active_test_log = &log;
     if (!log.Check(SetThreadDesktop(desktop) != FALSE, "test worker attaches private desktop before COM/UI initialization")) return;
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
     if (!log.Check(SUCCEEDED(initialized), "test worker initializes COM for production native detector")) return;

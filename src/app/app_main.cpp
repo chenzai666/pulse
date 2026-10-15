@@ -878,7 +878,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 (wcscmp(fixture_scope, L"selection") == 0 || wcscmp(fixture_scope, L"menu") == 0 ||
                  wcscmp(fixture_scope, L"layout") == 0);
 #endif
-            if (!selection_fixture) {
+            if (!selection_fixture && !edition::kCustom) {
                 const HWND service_window = ServiceWindow(*s);
                 s->index.Start(service_window, WM_INDEX_NOTIFY, WM_INDEX_SEARCH);
                 StartChangeTracking(*s);
@@ -3364,6 +3364,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         OleUninitialize();
         return result;
     }
+    wchar_t settings_flow[32768]{};
+    if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_FLOW", settings_flow, ARRAYSIZE(settings_flow))) {
+        extern int RunSettingsFlowTest(AppState&, const wchar_t*);
+        const int result = RunSettingsFlowTest(state, settings_flow);
+        DestroyWindow(hwnd); OleUninitialize(); return result;
+    }
 #endif
     if (state.shot.active) {
         wchar_t experience_probe[32768]{};
@@ -3418,12 +3424,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_INTERACTIONS",settings_interactions,ARRAYSIZE(settings_interactions))) {
             extern int RunSettingsInteractionTest(AppState&,const wchar_t*);
             const int result=RunSettingsInteractionTest(state,settings_interactions);
-            DestroyWindow(hwnd);OleUninitialize();return result;
-        }
-        wchar_t settings_flow[32768]{};
-        if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_FLOW",settings_flow,ARRAYSIZE(settings_flow))) {
-            extern int RunSettingsFlowTest(AppState&,const wchar_t*);
-            const int result=RunSettingsFlowTest(state,settings_flow);
             DestroyWindow(hwnd);OleUninitialize();return result;
         }
         wchar_t flow_output[32768]{};

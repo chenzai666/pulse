@@ -231,7 +231,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                                           compositor_);
             return r;
         }
-        for (int i = 0; i < kSettingsNavCount; ++i) {
+        for (const int i : settings::kNavigationPages) {
             if (ContainsPt(lay.nav_row[i], x, y)) {
                 r.region = HitTestResult::SettingsNav;
                 r.index = i;

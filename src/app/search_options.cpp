@@ -1,4 +1,6 @@
 #include "app_internal.h"
+#include "global_search_controller.h"
+#include "../common/edition.h"
 #include "search_query.h"
 #include "../index/content_index.h"
 #include "../ui/address_search_layout.h"
@@ -123,6 +125,7 @@ void StartIndexedContentSearch(AppState& s, app::Tab& tab, const std::wstring& r
 }
 
 void ShowSearchOptions(AppState& s, bool management) {
+    if (edition::kCustom) { OpenListarySearch(s); return; }
     if (management) { OpenSettingsTab(s, 1); return; }
     if (s.searchHistoryOpen) {
         s.searchOptionsPending = true;

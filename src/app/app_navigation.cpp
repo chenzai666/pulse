@@ -2,6 +2,7 @@
 #include "app_window_title.h"
 // app_navigation.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "../common/edition.h"
 #include "bitlocker_unlock.h"
 #include "../fs/bitlocker_volume.h"
 #include "shell_window_sync.h"
@@ -363,6 +364,7 @@ void AddLiveNetworkRoot(AppState& s, app::Tab& tab) {
 }
 
 void DispatchIndexSearch(AppState& s, const index::Query& query, uint32_t id) {
+    if (edition::kCustom) return;
     // Both providers return candidates from the beginning of their own ordering.
     // The UI then merges, globally sorts and applies the requested page offset.
     index::Query provider_query = query;
@@ -391,6 +393,22 @@ void DispatchIndexSearch(AppState& s, const index::Query& query, uint32_t id) {
 
 void RequestSearchPage(AppState& s, app::Tab& tab, const std::wstring& rest,
                               bool reset) {
+    if (edition::kCustom) {
+        CancelContentSelection(s, tab);
+        tab.content_results.reset();
+        tab.content_count_final = false;
+        tab.search_live_generation = tab.filename_live_generation = 0;
+        tab.search_entries.reset();
+        tab.search_snippets.reset();
+        tab.pending_generation = 0;
+        tab.loading = tab.search_loading_more = tab.search_content_active = tab.search_awaiting_content = false;
+        tab.search_total = 0;
+        tab.SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>());
+        tab.banner_title = L"Listary";
+        tab.banner_message = l10n::Pick(L"定制版使用 Listary 进行搜索；当前文件夹可使用筛选。",
+            L"Use Listary to search in this edition, or filter the current folder.");
+        return;
+    }
     if (!tab.search_session_id) tab.search_session_id = ++s.nextIndexReq;
     const auto split = app::SplitSearchQueryText(rest);
     if (split.content.present() && (!reset || tab.search_content_empty)) {
@@ -549,6 +567,7 @@ void ApplySearchHits(app::Tab& tab, const std::wstring& rest,
 }
 
 void RequestSavedSearch(AppState& s, app::Tab& tab, size_t saved_index) {
+    if (edition::kCustom) { RequestSearchPage(s, tab, L"", true); return; }
     tab.search_content_stopped = false;
     tab.content_subscription_error = ERROR_SUCCESS;
     tab.content_subscription_failure = index::ContentSubscriptionFailure::None;
@@ -2615,8 +2634,8 @@ void OpenSettingsTab(AppState& s, int page) {
     s.settings.SelectPage(page);
     const std::wstring path = app::MakeSettingsPath(
         app::SettingsController::PageName(s.settings.page()));
-    if (page == 1) s.index.RefreshVolumesAsync();
-    if (page == 5) ui::DetectPreviewCodecs(true, s.hwnd);
+    if (!edition::kCustom && s.settings.page() == 1) s.index.RefreshVolumesAsync();
+    if (s.settings.page() == 5) ui::DetectPreviewCodecs(true, s.hwnd);
     for (size_t i = 0; i < s.window_tabs.items.size(); ++i) {
         app::LayoutTab& layout = *s.window_tabs.items[i];
         bool found = false;
@@ -2631,8 +2650,8 @@ void OpenSettingsTab(AppState& s, int page) {
             tab->virtual_title = l10n::Get(l10n::StringId::Settings);
         }
         s.settings.SelectPage(page);
-        if (page == 1) s.index.RefreshVolumesAsync();
-    if (page == 5) ui::DetectPreviewCodecs(true, s.hwnd);
+        if (!edition::kCustom && s.settings.page() == 1) s.index.RefreshVolumesAsync();
+        if (s.settings.page() == 5) ui::DetectPreviewCodecs(true, s.hwnd);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return;
     }

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <thread>
 
 namespace {
@@ -21,12 +22,13 @@ int failures = 0;
 
 void Check(bool passed, const char* label) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", label);
+    std::fflush(stdout);
     if (!passed) ++failures;
 }
 
 HWND OwnedDialog() {
     HWND result = nullptr;
-    EnumWindows([](HWND window, LPARAM context) -> BOOL {
+    EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), [](HWND window, LPARAM context) -> BOOL {
         DWORD process = 0;
         wchar_t name[128]{};
         GetWindowThreadProcessId(window, &process);
@@ -51,11 +53,25 @@ struct Driver {
     std::atomic<bool> passed = false;
     std::wstring reason;
     std::thread thread;
+    bool ready = false;
 
     explicit Driver(std::function<bool(const NativeFileDialog&, std::wstring&)> action) {
-        thread = std::thread([this, action = std::move(action)] {
+        const HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
+        std::promise<bool> startup;
+        auto initialized_driver = startup.get_future();
+        thread = std::thread([this, desktop, action = std::move(action), startup = std::move(startup)]() mutable {
+            if (!desktop || !SetThreadDesktop(desktop)) {
+                reason = L"Driver 无法在 COM 初始化前切换到 fixture 私有桌面。";
+                startup.set_value(false);
+                return;
+            }
             const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            if (FAILED(initialized)) return;
+            if (FAILED(initialized)) {
+                reason = L"Driver COM 初始化失败。";
+                startup.set_value(false);
+                return;
+            }
+            startup.set_value(true);
             HWND window = nullptr;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
             bool attempted = false;
@@ -63,6 +79,7 @@ struct Driver {
                 window = OwnedDialog();
                 NativeFileDialog inspected;
                 if (window && InspectNativeFileDialog(window, inspected, reason)) {
+                    std::printf("[STAGE] driver inspected native dialog; applying selection/cancel\n");
                     passed = action(inspected, reason);
                     attempted = true;
                     break;
@@ -76,6 +93,7 @@ struct Driver {
             if (!finished) CloseOwnedDialog(window ? window : OwnedDialog());
             CoUninitialize();
         });
+        ready = initialized_driver.get();
     }
 
     ~Driver() { finished = true; if (thread.joinable()) thread.join(); }
@@ -134,6 +152,7 @@ struct Fixture {
 };
 
 void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
+    std::printf("[CASE] modern mode=%u cancel=%u\n", static_cast<unsigned>(kind), static_cast<unsigned>(cancel));
     ComPtr<IFileDialog> native;
     const CLSID& type = kind == NativeDialogKind::Save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
     if (FAILED(CoCreateInstance(type, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&native)))) {
@@ -161,6 +180,7 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
         guarded = true;
         return cancel ? CancelNativeDialog(inspected, reason) : CommitNativeDialogSelection(inspected, {expected}, 0, reason);
     });
+    if (!driver.ready) { driver.Finish(); Check(false, "driver joins fixture desktop before COM and modal dialog"); return; }
     const HRESULT shown = native->Show(nullptr);
     driver.Finish();
     Check(guarded && driver.passed, "system dialog checks identity, relative paths and cancellation before submission");
@@ -181,6 +201,7 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
 }
 
 void ClassicCase(const Fixture& fixture) {
+    std::printf("[CASE] classic Explorer file dialog\n");
     wchar_t result[32768]{};
     const std::wstring initial = fixture.directory.wstring();
     OPENFILENAMEW spec{};
@@ -195,6 +216,7 @@ void ClassicCase(const Fixture& fixture) {
         return inspected.kind == NativeDialogKind::Open &&
             CommitNativeDialogSelection(inspected, {fixture.file.wstring()}, 0, reason);
     });
+    if (!driver.ready) { driver.Finish(); Check(false, "classic driver initializes on fixture desktop"); return; }
     const bool shown = GetOpenFileNameW(&spec) != FALSE;
     driver.Finish();
     Check(driver.passed && shown && std::wstring_view(result) == fixture.file.wstring() && spec.nFilterIndex == 1,
@@ -202,6 +224,7 @@ void ClassicCase(const Fixture& fixture) {
 }
 
 void ModernMultiselectCase(const Fixture& fixture) {
+    std::printf("[CASE] modern multiselect\n");
     ComPtr<IFileOpenDialog> native;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&native)))) {
         Check(false, "system multiselect dialog is available");
@@ -220,6 +243,7 @@ void ModernMultiselectCase(const Fixture& fixture) {
             {expected.front(), (fixture.folder / L"other.txt").wstring()}, 0, reason)) return false;
         return CommitNativeDialogSelection(inspected, expected, 0, reason);
     });
+    if (!driver.ready) { driver.Finish(); Check(false, "multiselect driver initializes on fixture desktop"); return; }
     const HRESULT shown = native->Show(nullptr);
     driver.Finish();
     ComPtr<IShellItemArray> results;
@@ -240,6 +264,7 @@ void ModernMultiselectCase(const Fixture& fixture) {
 }
 
 void LegacyFolderCase(const Fixture& fixture) {
+    std::printf("[CASE] legacy writable folder dialog\n");
     BROWSEINFOW spec{};
     spec.lpszTitle = L"Pulse owned legacy folder fixture";
     spec.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
@@ -247,6 +272,7 @@ void LegacyFolderCase(const Fixture& fixture) {
         return inspected.kind == NativeDialogKind::Folder && inspected.legacy_folder &&
             CommitNativeDialogSelection(inspected, {fixture.folder.wstring()}, 0, reason);
     });
+    if (!driver.ready) { driver.Finish(); Check(false, "legacy driver initializes on fixture desktop"); return; }
     PIDLIST_ABSOLUTE selected = SHBrowseForFolderW(&spec);
     driver.Finish();
     wchar_t result[MAX_PATH]{};
@@ -258,6 +284,8 @@ void LegacyFolderCase(const Fixture& fixture) {
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
     const bool interaction = argc > 1 && std::wstring_view(argv[1]) == L"--interaction";
     // Interaction tests open real system file dialogs; create a private desktop so
     // they work reliably in headless/CI environments without disturbing the user desktop.
@@ -267,7 +295,12 @@ int wmain(int argc, wchar_t** argv) {
         constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
             DESKTOP_ENUMERATE | DESKTOP_HOOKCONTROL;
         desktop = CreateDesktopW(desktop_name.c_str(), nullptr, nullptr, 0, access, nullptr);
-        if (desktop) SetThreadDesktop(desktop);
+        if (!desktop || !SetThreadDesktop(desktop)) {
+            Check(false, "interaction fixture must attach a private desktop before COM");
+            if (desktop) CloseDesktop(desktop);
+            return 2;
+        }
+        Check(true, "interaction fixture uses a private desktop without SwitchDesktop");
     }
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 2;

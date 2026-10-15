@@ -2,6 +2,7 @@
 #include "context_menu.h"
 #include "app_model.h"
 #include "../common/localization.h"
+#include "../common/edition.h"
 #include "../common/path_utils.h"
 #include "../common/display_path.h"
 #include "../fs/fs_enum.h"
@@ -657,19 +658,24 @@ std::vector<ui::FluentMenuItem> BuildCommandPalette(const std::wstring& query,
         add_cmd(CmdNewFolder, l10n::Get(l10n::StringId::NewFolder).c_str(), kGlyphNewFolder, L"Ctrl+Shift+N");
         add_cmd(CmdPinWorkspace, l10n::Get(l10n::StringId::PinWorkspace).c_str(), kGlyphFolder, nullptr);
         add_cmd(CmdCopyPath, l10n::Get(l10n::StringId::CopyPath).c_str(), kGlyphLink, L"Ctrl+Shift+C");
-        add_cmd(CmdInstallFullIndex, l10n::Get(l10n::StringId::EnableFullIndex).c_str(), kGlyphSearch, nullptr);
+        if (!edition::kCustom)
+            add_cmd(CmdInstallFullIndex, l10n::Get(l10n::StringId::EnableFullIndex).c_str(), kGlyphSearch, nullptr);
         add_cmd(CmdSettings, l10n::Get(l10n::StringId::Settings).c_str(), kGlyphSettings, nullptr);
         add_cmd(CmdExitPulse, l10n::Get(l10n::StringId::ExitPulse).c_str(), L"\xE7E8", nullptr);
         add_cmd(CmdOpenRecycle, l10n::Get(l10n::StringId::RecycleBin).c_str(), kGlyphRecycle, nullptr);
         add_cmd(CmdBatchRename, l10n::Get(l10n::StringId::BatchRename).c_str(), kGlyphRename, L"Ctrl+Shift+R");
-        add_cmd(CmdAdvancedSearch, l10n::Get(l10n::StringId::AdvancedSearch).c_str(), kGlyphSearch, L"Ctrl+Shift+F");
+        add_cmd(CmdAdvancedSearch, edition::kCustom ? L"Listary" : l10n::Get(l10n::StringId::AdvancedSearch).c_str(), kGlyphSearch, L"Ctrl+Shift+F");
         add_cmd(CmdSelectAll, l10n::Get(l10n::StringId::SelectAll).c_str(), kGlyphSelectAll, L"Ctrl+A");
         add_cmd(CmdInvertSelection, l10n::Get(l10n::StringId::InvertSelection).c_str(), kGlyphInvert, L"Ctrl+I");
         add_cmd(CmdSelectWildcard, l10n::Get(l10n::StringId::SelectWildcard).c_str(), kGlyphWildcard, L"Ctrl+Shift+A");
     }
     std::unordered_set<std::wstring> seen_paths;
     const bool has_content = index::QueryHasContent(index::ParseQuery(needle));
-    if (!command_mode && (!hits.empty() || total > 0 || has_content)) {
+    if (edition::kCustom && !command_mode && !needle.empty() && !path_like) {
+        if (!items.empty()) items.back().separator_after = true;
+        items.push_back(Item(CmdSearchAll, L"Listary", kGlyphSearch));
+    }
+    if (!edition::kCustom && !command_mode && (!hits.empty() || total > 0 || has_content)) {
         if (!items.empty()) items.back().separator_after = true;
         for (size_t i = 0; i < hits.size() && i < 48; ++i) {
             items.push_back(Item(CmdIndexBase + static_cast<int>(i),

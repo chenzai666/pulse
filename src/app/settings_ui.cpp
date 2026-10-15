@@ -1,6 +1,7 @@
 #include "app_internal.h"
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
+#include "../common/settings_pages.h"
 #include "about_info.h"
 #include "../ui/preview_format_catalog.h"
 #include "../ui/folder_picker_dialog.h"
@@ -58,6 +59,7 @@ std::vector<ui::FluentMenuItem> FilterSettings(const std::wstring& query) {
     std::vector<ui::FluentMenuItem> items;
     const I pages[]={I::SettingsGeneral,I::SettingsSearchIndex,I::SettingsContextMenu,I::SettingsAboutDiagnostics,I::SettingsDuplicates,I::QuickPreview};
     for(size_t i=0;i<std::size(destinations);++i) {
+        if (!settings::PageAvailable(destinations[i].page)) continue;
         auto item=Item(static_cast<int>(i)+1,destinations[i].title);
         item.shortcut=l10n::Get(pages[destinations[i].page]);
         std::wstring haystack=item.text+L" "+item.shortcut;
@@ -90,6 +92,7 @@ void FindSetting(AppState& s) {
     s.menu->SetFilterPlaceholder(L"");
     if(command>0 && command<=static_cast<int>(std::size(destinations))) {
         const auto& target=destinations[command-1];
+        if (!settings::PageAvailable(target.page)) return;
         OpenSettingsTab(s,target.page);s.settingsExpanded|=target.expanded;
         // Scroll to the selected setting using the renderer's shared layout.
         auto vm=BuildVm(s,false);

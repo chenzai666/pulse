@@ -3,6 +3,7 @@
 #include <objbase.h>
 #include <UIAutomation.h>
 #include <dlgs.h>
+#include <commctrl.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -36,6 +37,9 @@ struct Controls {
     HWND tree = nullptr;
     HWND filename = nullptr;
     HWND filter = nullptr;
+    HWND address = nullptr;
+    HWND address_toolbar = nullptr;
+    bool ambiguous_filter = false;
     HWND confirm = nullptr;
     HWND cancel = nullptr;
 };
@@ -152,11 +156,19 @@ Controls FindControls(HWND window) {
         if (name == L"SHBrowseForFolder ShellNameSpace Control") result.browse = child;
         if (name == L"SysTreeView32") result.tree = child;
         const int identifier = GetDlgCtrlID(child);
-        if (identifier == cmb1 && name == L"ComboBox") result.filter = child;
-        if ((identifier == edt1 || identifier == cmb13 || identifier == 14148) && name == L"Edit")
+        if (name == L"ComboBox" && IsWindowVisible(child) &&
+            (GetWindowLongPtrW(child, GWL_STYLE) & 3) == CBS_DROPDOWNLIST) {
+            if (result.filter && result.filter != child) result.ambiguous_filter = true;
+            result.filter = child;
+        }
+        if ((identifier == edt1 || identifier == cmb13 || identifier == 14148 ||
+             (identifier == 1001 && ClassName(GetParent(child)) == L"ComboBox")) &&
+            name == L"Edit" && IsWindowVisible(child))
             result.filename = child;
         if (identifier == cmb13 && name == L"ComboBox" && !result.filename)
             result.filename = FindWindowExW(child, nullptr, L"Edit", nullptr);
+        if (name == L"Edit" && (identifier == 41477 || identifier == 1137)) result.address = child;
+        if (name == L"ToolbarWindow32" && identifier == 1001) result.address_toolbar = child;
         return TRUE;
     }, reinterpret_cast<LPARAM>(&context));
     return controls;
@@ -177,44 +189,6 @@ ComPtr<IUIAutomationElement> Element(IUIAutomation* automation, HWND window) {
     return element;
 }
 
-ComPtr<IUIAutomationElement> Find(IUIAutomation* automation, IUIAutomationElement* root,
-    PROPERTYID property, const wchar_t* value) {
-    ComPtr<IUIAutomationElement> result;
-    ComPtr<IUIAutomationCondition> condition;
-    VARIANT text{};
-    text.vt = VT_BSTR;
-    text.bstrVal = SysAllocString(value);
-    if (text.bstrVal && root && SUCCEEDED(automation->CreatePropertyCondition(property, text, &condition)))
-        root->FindFirst(TreeScope_Descendants, condition.Get(), &result);
-    VariantClear(&text);
-    return result;
-}
-
-ComPtr<IUIAutomationElement> FindType(IUIAutomation* automation, IUIAutomationElement* root,
-    CONTROLTYPEID type, const wchar_t* identifier = nullptr) {
-    ComPtr<IUIAutomationElement> result;
-    if (!root) return result;
-    VARIANT value{};
-    value.vt = VT_I4;
-    value.lVal = type;
-    ComPtr<IUIAutomationCondition> condition;
-    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, &condition))) return result;
-    if (identifier) {
-        VARIANT text{};
-        text.vt = VT_BSTR;
-        text.bstrVal = SysAllocString(identifier);
-        ComPtr<IUIAutomationCondition> identity, combined;
-        const HRESULT identity_result = text.bstrVal ? automation->CreatePropertyCondition(
-            UIA_AutomationIdPropertyId, text, &identity) : E_OUTOFMEMORY;
-        VariantClear(&text);
-        if (FAILED(identity_result) || FAILED(automation->CreateAndCondition(condition.Get(), identity.Get(), &combined)))
-            return result;
-        condition = std::move(combined);
-    }
-    root->FindFirst(TreeScope_Descendants, condition.Get(), &result);
-    return result;
-}
-
 std::wstring Name(IUIAutomationElement* element) {
     BSTR name = nullptr;
     if (!element || FAILED(element->get_CurrentName(&name))) return {};
@@ -222,19 +196,6 @@ std::wstring Name(IUIAutomationElement* element) {
     if (name && SysStringLen(name) < kMaximumText) result.assign(name, SysStringLen(name));
     SysFreeString(name);
     return result;
-}
-
-bool Value(IUIAutomationElement* element, std::wstring& text, bool require_writable = false) {
-    ComPtr<IUIAutomationValuePattern> value;
-    if (!element || FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value)))) return false;
-    BOOL readonly = TRUE;
-    if (require_writable && (FAILED(value->get_CurrentIsReadOnly(&readonly)) || readonly)) return false;
-    BSTR result = nullptr;
-    if (FAILED(value->get_CurrentValue(&result))) return false;
-    const bool bounded = !result || SysStringLen(result) < kMaximumText;
-    if (bounded) text = result ? std::wstring(result, SysStringLen(result)) : std::wstring();
-    SysFreeString(result);
-    return bounded;
 }
 
 std::wstring ButtonWord(std::wstring_view text) {
@@ -280,145 +241,107 @@ bool ParseFilter(std::wstring label, ui::PickerFilter& filter) {
     return true;
 }
 
-bool ItemElements(IUIAutomation* automation, IUIAutomationElement* combo,
-    ComPtr<IUIAutomationElementArray>& items) {
-    ComPtr<IUIAutomationCondition> condition;
-    VARIANT type{};
-    type.vt = VT_I4;
-    type.lVal = UIA_ListItemControlTypeId;
-    return combo && SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition)) &&
-        SUCCEEDED(combo->FindAll(TreeScope_Descendants, condition.Get(), &items)) && items;
-}
-
-bool AutomationFilters(IUIAutomation* automation, IUIAutomationElement* combo,
-    std::vector<ui::PickerFilter>& filters, size_t& selected) {
-    ComPtr<IUIAutomationElementArray> items;
-    int count = 0;
-    if (!ItemElements(automation, combo, items) || FAILED(items->get_Length(&count)) ||
-        count <= 0 || count > kMaximumItems) return false;
+bool NativeFilters(HWND combo, std::vector<ui::PickerFilter>& filters, size_t& selected) {
+    if (ClassName(combo) != L"ComboBox") return false;
+    const auto style = GetWindowLongPtrW(combo, GWL_STYLE);
+    if ((style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)) && !(style & CBS_HASSTRINGS)) return false;
+    DWORD_PTR count = 0, selection = 0;
+    if (!Send(combo, CB_GETCOUNT, 0, 0, count) || count == 0 || count > static_cast<DWORD_PTR>(kMaximumItems) ||
+        !Send(combo, CB_GETCURSEL, 0, 0, selection) || selection >= count) return false;
     std::vector<ui::PickerFilter> result;
-    size_t selection = static_cast<size_t>(count);
-    for (int index = 0; index < count; ++index) {
-        ComPtr<IUIAutomationElement> item;
-        ComPtr<IUIAutomationSelectionItemPattern> pattern;
-        BOOL chosen = FALSE;
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    for (DWORD_PTR index = 0; index < count; ++index) {
+        if (GetTickCount64() >= deadline) return false;
+        // These messages are below WM_USER: user32 marshals their output buffer.
+        // Use the full bounded buffer so a changed label cannot overflow it.
+        DWORD_PTR length = 0, copied = 0;
+        std::vector<wchar_t> label(kMaximumText);
         ui::PickerFilter filter;
-        if (FAILED(items->GetElement(index, &item)) || !ParseFilter(Name(item.Get()), filter) ||
-            FAILED(item->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&pattern))) ||
-            FAILED(pattern->get_CurrentIsSelected(&chosen))) return false;
-        if (chosen) selection = static_cast<size_t>(index);
+        if (!Send(combo, CB_GETLBTEXTLEN, index, 0, length) || !length || length >= label.size() - 1 ||
+            !Send(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(label.data()), copied) ||
+            copied != length || !ParseFilter(std::wstring(label.data(), static_cast<size_t>(copied)), filter)) return false;
         result.push_back(std::move(filter));
     }
-    if (selection >= result.size()) return false;
+    DWORD_PTR final_count = 0, final_selection = 0;
+    if (!Send(combo, CB_GETCOUNT, 0, 0, final_count) || final_count != count ||
+        !Send(combo, CB_GETCURSEL, 0, 0, final_selection) || final_selection != selection) return false;
     filters = std::move(result);
-    selected = selection;
+    selected = static_cast<size_t>(selection);
     return true;
 }
 
-ComPtr<IUIAutomationElement> FilterElement(IUIAutomation* automation,
-    IUIAutomationElement* root, const Controls& controls) {
-    if (controls.filter) return Element(automation, controls.filter);
-    auto combo = Find(automation, root, UIA_AutomationIdPropertyId, L"FileTypeControlHost");
-    CONTROLTYPEID type = 0;
-    if (combo && SUCCEEDED(combo->get_CurrentControlType(&type)) && type == UIA_ComboBoxControlTypeId) return combo;
-    if (combo) {
-        ComPtr<IUIAutomationCondition> condition;
-        VARIANT value{};
-        value.vt = VT_I4;
-        value.lVal = UIA_ComboBoxControlTypeId;
-        ComPtr<IUIAutomationElement> result;
-        if (SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, &condition)))
-            combo->FindFirst(TreeScope_Descendants, condition.Get(), &result);
-        if (result) return result;
+std::wstring Directory(const Controls& controls, const std::wstring& filename,
+    IUIAutomation* automation = nullptr) {
+    std::wstring text;
+    if (controls.address && WindowText(controls.address, text) && AbsolutePath(text)) return text;
+    if (AbsolutePath(filename)) {
+        const size_t separator = filename.rfind(L'\\');
+        return filename.substr(0, separator == 2 ? 3 : separator);
     }
-    return Find(automation, root, UIA_AutomationIdPropertyId, L"FileTypeControl");
-}
-
-std::wstring Directory(IUIAutomation* automation, IUIAutomationElement* root, const std::wstring& filename) {
-    for (const wchar_t* identifier : {L"41477", L"1137"}) {
-        auto address = Find(automation, root, UIA_AutomationIdPropertyId, identifier);
-        std::wstring text;
-        if (Value(address.Get(), text) && AbsolutePath(text)) return text;
-    }
-    auto toolbar = FindType(automation, root, UIA_ToolBarControlTypeId, L"1001");
-    std::wstring text = Name(toolbar.Get());
+    if (!automation) return {};
+    auto toolbar = Element(automation, controls.address_toolbar);
+    text = Name(toolbar.Get());
     for (const wchar_t* prefix : {L"Address: ", L"地址: ", L"地址："}) {
         const std::wstring_view start(prefix);
         if (text.starts_with(start) && AbsolutePath(std::wstring_view(text).substr(start.size())))
             return text.substr(start.size());
     }
-    if (AbsolutePath(filename)) {
-        const size_t separator = filename.rfind(L'\\');
-        return filename.substr(0, separator == 2 ? 3 : separator);
-    }
     return {};
 }
 
 bool MultipleSelection(IUIAutomation* automation, const Controls& controls) {
-    auto shell = Element(automation, controls.shell);
-    if (!shell) return false;
-    ComPtr<IUIAutomationCondition> condition;
-    VARIANT value{};
-    value.vt = VT_I4;
-    value.lVal = UIA_ListControlTypeId;
-    ComPtr<IUIAutomationElement> list;
-    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, &condition)) ||
-        FAILED(shell->FindFirst(TreeScope_Descendants, condition.Get(), &list)) || !list) return false;
+    const HWND list = FindWindowExW(controls.shell, nullptr, WC_LISTVIEWW, nullptr);
+    if (list) return !(GetWindowLongPtrW(list, GWL_STYLE) & LVS_SINGLESEL);
+    // Inspect only the verified shell view and its immediate UIA children.
+    // A full dialog tree includes namespace providers that can stall traversal.
+    const HWND direct = FindWindowExW(controls.shell, nullptr, L"DirectUIHWND", nullptr);
+    auto view = Element(automation, direct ? direct : controls.shell);
+    if (!view) return false;
     ComPtr<IUIAutomationSelectionPattern> pattern;
     BOOL allowed = FALSE;
-    return SUCCEEDED(list->GetCurrentPatternAs(UIA_SelectionPatternId, IID_PPV_ARGS(&pattern))) &&
+    if (SUCCEEDED(view->GetCurrentPatternAs(UIA_SelectionPatternId, IID_PPV_ARGS(&pattern))))
+        return SUCCEEDED(pattern->get_CurrentCanSelectMultiple(&allowed)) && allowed;
+    ComPtr<IUIAutomationCondition> condition;
+    VARIANT value{}; value.vt = VT_I4; value.lVal = UIA_ListControlTypeId;
+    ComPtr<IUIAutomationElement> child;
+    if (FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, value, &condition)) ||
+        FAILED(view->FindFirst(TreeScope_Children, condition.Get(), &child)) || !child) return false;
+    return SUCCEEDED(child->GetCurrentPatternAs(UIA_SelectionPatternId, IID_PPV_ARGS(&pattern))) &&
         SUCCEEDED(pattern->get_CurrentCanSelectMultiple(&allowed)) && allowed;
 }
 
-bool WriteFilename(IUIAutomation* automation, HWND window, const std::wstring& text, bool legacy,
-    const std::function<bool()>& cancelled) {
-    auto edit = Element(automation, window);
-    ComPtr<IUIAutomationValuePattern> value;
-    BOOL readonly = TRUE;
-    const bool writable = edit && SUCCEEDED(edit->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value))) &&
-        SUCCEEDED(value->get_CurrentIsReadOnly(&readonly)) && !readonly;
-    if (cancelled && cancelled()) return false;
-    bool written = false;
-    if (writable) {
+bool WriteFilename(HWND window, const std::wstring& text, bool legacy, const std::function<bool()>& cancelled) {
+    if ((cancelled && cancelled()) || ClassName(window) != L"Edit" ||
+        (GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY)) return false;
+    if (legacy) {
+        // The legacy browse provider also synchronizes the tree/PIDL selection.
+        // Keep that established path, scoped to the already verified edit HWND.
+        ComPtr<IUIAutomation> automation;
+        std::wstring reason;
+        if (!Automation(automation, reason)) return false;
+        auto edit = Element(automation.Get(), window);
+        ComPtr<IUIAutomationValuePattern> value;
+        if (!edit || FAILED(edit->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value)))) return false;
         BSTR input = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
         if (!input) return false;
-        written = SUCCEEDED(value->SetValue(input));
+        const HRESULT updated = (cancelled && cancelled()) ? E_ABORT : value->SetValue(input);
         SysFreeString(input);
+        if (FAILED(updated)) return false;
+    } else {
+        DWORD_PTR written = 0;
+        if (!Send(window, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()), written) || !written) return false;
     }
     if (cancelled && cancelled()) return false;
-    if (!written && !legacy && ClassName(window) == L"Edit" &&
-        !(GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY)) {
-        DWORD_PTR result = 0;
-        written = Send(window, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()), result) && result;
-    }
-    if (!written) return false;
     std::wstring actual;
-    if (!Value(edit.Get(), actual) && !WindowText(window, actual)) return false;
-    return actual == text;
+    return WindowText(window, actual) && actual == text;
 }
 
-bool SelectFilter(IUIAutomation* automation, IUIAutomationElement* root,
-    const Controls& controls, size_t index, const std::vector<ui::PickerFilter>& filters,
+bool SelectFilter(const Controls& controls, size_t index, const std::vector<ui::PickerFilter>& filters,
     const std::function<bool()>& cancelled) {
-    if (index >= filters.size()) return false;
-    auto combo = FilterElement(automation, root, controls);
-    ComPtr<IUIAutomationElementArray> items;
-    int count = 0;
-    if (ItemElements(automation, combo.Get(), items) && SUCCEEDED(items->get_Length(&count)) &&
-        static_cast<size_t>(count) == filters.size()) {
-        ComPtr<IUIAutomationElement> item;
-        ComPtr<IUIAutomationSelectionItemPattern> pattern;
-        BOOL selected = FALSE;
-        if (SUCCEEDED(items->GetElement(static_cast<int>(index), &item)) &&
-            Name(item.Get()) == filters[index].label &&
-            SUCCEEDED(item->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&pattern))) &&
-            (!cancelled || !cancelled()) &&
-            SUCCEEDED(pattern->Select()) && SUCCEEDED(pattern->get_CurrentIsSelected(&selected)) && selected) return true;
-    }
-    if (cancelled && cancelled()) return false;
-    if (ClassName(controls.filter) != L"ComboBox") return false;
+    if (index >= filters.size() || (cancelled && cancelled()) || ClassName(controls.filter) != L"ComboBox") return false;
     DWORD_PTR selected = 0;
     if (!Send(controls.filter, CB_SETCURSEL, index, 0, selected) || selected != index) return false;
+    if (cancelled && cancelled()) return false;
     DWORD_PTR result = 0;
     if (!Send(GetParent(controls.filter), WM_COMMAND,
         MAKEWPARAM(GetDlgCtrlID(controls.filter), CBN_SELCHANGE), reinterpret_cast<LPARAM>(controls.filter), result)) return false;
@@ -480,18 +403,11 @@ bool SelectionText(const NativeFileDialog& dialog, const std::vector<std::wstrin
     return true;
 }
 
-bool InvokeButton(IUIAutomation* automation, const NativeFileDialog& dialog, HWND button,
-    int identifier, std::wstring& reason, const std::function<bool()>& cancelled = {}) {
-    auto element = Element(automation, button);
-    ComPtr<IUIAutomationInvokePattern> invoke;
-    const bool available = element && SUCCEEDED(element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke)));
+bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
+    std::wstring& reason, const std::function<bool()>& cancelled = {}) {
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
         GetDlgItem(dialog.window, identifier) != button || !IsWindowEnabled(button)) return false;
     if (Cancelled(cancelled, reason)) return false;
-    if (available) {
-        if (SUCCEEDED(invoke->Invoke())) return true;
-        return Fail(reason, L"原生按钮调用失败；不重复触发可能已执行的请求。");
-    }
     if (PostMessageW(dialog.window, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button))) return true;
     return Fail(reason, L"无法向原生对话框发送按钮请求。");
 }
@@ -510,28 +426,11 @@ bool InspectNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring
     const bool legacy = controls.browse && controls.tree && !controls.shell && !controls.direct;
     if (!legacy && (!controls.shell || (!controls.direct && !controls.filter)))
         return Fail(reason, L"未识别到标准 DirectUI 或 Explorer 文件对话框结构。");
-    ComPtr<IUIAutomation> automation;
-    if (!Automation(automation, reason)) return false;
-    auto root = Element(automation.Get(), window);
-    if (!root) return Fail(reason, L"原生对话框的 UI Automation 根元素不可用。");
-    if (!controls.filename && controls.direct) {
-        auto host = Find(automation.Get(), root.Get(), UIA_AutomationIdPropertyId, L"FileNameControlHost");
-        auto edit = FindType(automation.Get(), host.Get(), UIA_EditControlTypeId);
-        if (!edit) edit = FindType(automation.Get(), root.Get(), UIA_EditControlTypeId, L"1148");
-        UIA_HWND handle = nullptr;
-        CONTROLTYPEID type = 0;
-        if (edit && SUCCEEDED(edit->get_CurrentControlType(&type)) && type == UIA_EditControlTypeId &&
-            SUCCEEDED(edit->get_CurrentNativeWindowHandle(&handle))) controls.filename = static_cast<HWND>(handle);
-    }
     if (!controls.filename || !IsChild(window, controls.filename) || ClassName(controls.filename) != L"Edit" ||
-        !(GetWindowLongPtrW(controls.filename, GWL_STYLE) & WS_VISIBLE))
+        !(GetWindowLongPtrW(controls.filename, GWL_STYLE) & WS_VISIBLE) ||
+        (GetWindowLongPtrW(controls.filename, GWL_STYLE) & ES_READONLY) ||
+        !WindowText(controls.filename, result.filename))
         return Fail(reason, L"找不到已核实的标准文件名或目录输入框。");
-    auto edit = Element(automation.Get(), controls.filename);
-    if (!Value(edit.Get(), result.filename, true)) {
-        if (legacy || (GetWindowLongPtrW(controls.filename, GWL_STYLE) & ES_READONLY) ||
-            !WindowText(controls.filename, result.filename))
-            return Fail(reason, L"原生对话框缺少安全可写的输入入口。");
-    }
     const auto word = ButtonWord(WindowText(controls.confirm));
     if (legacy) result.kind = NativeDialogKind::Folder;
     else if (word == L"save" || word == L"保存") result.kind = NativeDialogKind::Save;
@@ -539,24 +438,22 @@ bool InspectNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring
     else if (controls.direct && !controls.filter &&
         (word == L"selectfolder" || word == L"选择文件夹" || word == L"选择文件夾")) result.kind = NativeDialogKind::Folder;
     else return Fail(reason, L"无法可靠区分打开、保存与目录模式；保留原生对话框。");
-    auto filter = FilterElement(automation.Get(), root.Get(), controls);
-    if (!controls.filter && filter) {
-        UIA_HWND handle = nullptr;
-        if (SUCCEEDED(filter->get_CurrentNativeWindowHandle(&handle)) && handle &&
-            ClassName(static_cast<HWND>(handle)) == L"ComboBox" && IsChild(window, static_cast<HWND>(handle)))
-            controls.filter = static_cast<HWND>(handle);
-    }
+    if (controls.ambiguous_filter) return Fail(reason, L"存在多个文件类型控件；保留原生窗口。");
     if (result.kind != NativeDialogKind::Folder) {
-        DWORD_PTR count = 0, selected = 0;
-        if (!AutomationFilters(automation.Get(), filter.Get(), result.filters, result.filter_index) ||
-            !controls.filter || !Send(controls.filter, CB_GETCOUNT, 0, 0, count) ||
-            count != result.filters.size() || !Send(controls.filter, CB_GETCURSEL, 0, 0, selected) ||
-            selected != result.filter_index)
+        if (!NativeFilters(controls.filter, result.filters, result.filter_index))
             return Fail(reason, L"无法读取完整原生文件类型过滤器及选中项；不使用猜测的通配符。");
-    } else if (controls.filter || filter) return Fail(reason, L"目录模式与文件类型控件不一致。");
+    } else if (controls.filter) return Fail(reason, L"目录模式与文件类型控件不一致。");
     result.title = WindowText(window);
-    result.initial_path = Directory(automation.Get(), root.Get(), result.filename);
-    result.allow_multiselect = result.kind == NativeDialogKind::Open && MultipleSelection(automation.Get(), controls);
+    result.initial_path = Directory(controls, result.filename);
+    if (result.kind == NativeDialogKind::Open) {
+        ComPtr<IUIAutomation> automation;
+        std::wstring automation_reason;
+        if (Automation(automation, automation_reason)) {
+            result.allow_multiselect = MultipleSelection(automation.Get(), controls);
+            if (result.allow_multiselect && result.initial_path.empty())
+                result.initial_path = Directory(controls, result.filename, automation.Get());
+        }
+    }
     result.filename_window = controls.filename;
     result.confirm_window = controls.confirm;
     result.legacy_folder = legacy;
@@ -588,23 +485,13 @@ bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
     if (!IsWindowEnabled(current.confirm_window)) return Fail(reason, L"原生确认按钮不可用。");
     std::wstring text;
     if (!SelectionText(current, paths, text, reason)) return false;
-    ComPtr<IUIAutomation> automation;
-    if (!Automation(automation, reason)) return false;
-    auto root = Element(automation.Get(), current.window);
     Controls controls = FindControls(current.window);
-    if (!controls.filter) {
-        auto filter = FilterElement(automation.Get(), root.Get(), controls);
-        UIA_HWND handle = nullptr;
-        if (filter && SUCCEEDED(filter->get_CurrentNativeWindowHandle(&handle)) && handle &&
-            ClassName(static_cast<HWND>(handle)) == L"ComboBox" && IsChild(current.window, static_cast<HWND>(handle)))
-            controls.filter = static_cast<HWND>(handle);
-    }
     const bool changing_filter = !current.filters.empty() && filter_index != current.filter_index;
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(current, reason)) return false;
-    if (changing_filter && !SelectFilter(automation.Get(), root.Get(), controls, filter_index, current.filters, cancelled))
+    if (changing_filter && !SelectFilter(controls, filter_index, current.filters, cancelled))
         return Fail(reason, L"原生文件类型无法安全切换；未确认结果。");
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(current, reason)) return false;
-    if (!WriteFilename(automation.Get(), current.filename_window, text, current.legacy_folder, cancelled))
+    if (!WriteFilename(current.filename_window, text, current.legacy_folder, cancelled))
         return Fail(reason, L"原生输入框未接受选择结果；未发送确认请求。");
     if (Cancelled(cancelled, reason)) return false;
     NativeFileDialog prepared;
@@ -613,7 +500,7 @@ bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
         prepared.filter_index != filter_index || !IsWindowEnabled(current.confirm_window))
         return Fail(reason, L"回填后窗口身份、文件名、类型或确认状态发生变化。");
     if (Cancelled(cancelled, reason)) return false;
-    return InvokeButton(automation.Get(), current, current.confirm_window, IDOK, reason, cancelled);
+    return InvokeButton(current, current.confirm_window, IDOK, reason, cancelled);
 }
 
 bool CancelNativeDialog(const NativeFileDialog& dialog, std::wstring& reason,
@@ -625,9 +512,7 @@ bool CancelNativeDialog(const NativeFileDialog& dialog, std::wstring& reason,
     if (!SameIdentity(dialog, current)) return Fail(reason, L"原生对话框身份已改变；未发送取消请求。");
     HWND cancel = GetDlgItem(current.window, IDCANCEL);
     if (ClassName(cancel) != L"Button" || !IsWindowEnabled(cancel)) return Fail(reason, L"原生取消按钮不可用。");
-    ComPtr<IUIAutomation> automation;
-    if (!Automation(automation, reason)) return false;
-    return InvokeButton(automation.Get(), current, cancel, IDCANCEL, reason, cancelled);
+    return InvokeButton(current, cancel, IDCANCEL, reason, cancelled);
 }
 
 } // namespace pulse::app

@@ -1,5 +1,6 @@
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
+#include "../common/settings_pages.h"
 #include "settings_controller.h"
 #include "blank_pane_click.h"
 #include "default_file_manager.h"
@@ -104,15 +105,16 @@ SettingsController::~SettingsController() {
 }
 
 int SettingsController::PageFromName(std::wstring_view name) noexcept {
-    if (name == L"index") return 1;
+    if (name == L"index") return settings::NormalizePage(1);
     if (name == L"context") return 2;
     if (name == L"about") return 3;
-    if (name == L"duplicates") return 4;
+    if (name == L"duplicates") return settings::NormalizePage(4);
     if (name == L"packs") return 5;
     return 0;
 }
 
 const wchar_t* SettingsController::PageName(int page) noexcept {
+    if (!settings::PageAvailable(page)) return L"general";
     if (page == 1) return L"index";
     if (page == 2) return L"context";
     if (page == 3) return L"about";
@@ -123,7 +125,7 @@ const wchar_t* SettingsController::PageName(int page) noexcept {
 
 void SettingsController::SelectPage(int page) noexcept {
     CancelGlobalSearchHotkeyCapture();
-    page_ = std::clamp(page, 0, 5);
+    page_ = settings::NormalizePage(page);
     scroll_ = 0.0f;
     packs_checked_ = 0;  // re-read the packs when their page opens
 }
@@ -576,6 +578,9 @@ bool SettingsController::StartTask(SettingsTask task, SettingsTaskOperation oper
 }
 
 bool SettingsController::StartUiTask(SettingsTask task) {
+#ifdef PULSE_CUSTOM_EDITION
+    if (task.kind != SettingsTaskKind::DiagnosticsExport) return false;
+#endif
     if (!ui_.task_completion) return false;
     auto* network = network_;
     const auto diagnostics_export = ui_.export_diagnostics;
@@ -1238,6 +1243,9 @@ void SettingsController::SystemExclusionAction(int action) {
 }
 
 void SettingsController::IndexAction(int action) {
+#ifdef PULSE_CUSTOM_EDITION
+    (void)action;
+#else
     if (!index_) return;
     if (action != 1 && migration_pending()) return;
     if (action == 1) {
@@ -1256,9 +1264,14 @@ void SettingsController::IndexAction(int action) {
                    : SettingsTaskKind::InstallService};
     task.path = std::move(path);
     StartUiTask(std::move(task));
+#endif
 }
 
 void SettingsController::NetworkAction(int action, bool pin_after_add) {
+#ifdef PULSE_CUSTOM_EDITION
+    (void)action;
+    (void)pin_after_add;
+#else
     if (!network_ || !ui_.task_completion) return;
     if (action == 1) {
         ClearError();
@@ -1273,6 +1286,7 @@ void SettingsController::NetworkAction(int action, bool pin_after_add) {
     task.path = std::move(path);
     task.pin = pin_after_add;
     StartUiTask(std::move(task));
+#endif
 }
 
 void SettingsController::RemoveNetwork(int position) {

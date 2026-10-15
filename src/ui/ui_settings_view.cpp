@@ -60,7 +60,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
     {
         const uint64_t now = motion_now_;
         int hovered_row = -1;
-        for (int i = 0; i < kSettingsNavCount; ++i)
+        for (const int i : settings::kNavigationPages)
             if (i != vm.settings_page && IsHovered(vm, HitTestResult::SettingsNav, i)) hovered_row = i;
         if (hovered_row >= 0) {
             const D2D1_RECT_F rc = settings_nav_hover_.Update(
@@ -69,7 +69,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
             FillRoundedRect(dc, brFillSelected_.get(), rc.left, rc.top,
                             rc.right - rc.left, rc.bottom - rc.top, 6.0f * scale_);
         }
-        if (vm.settings_page >= 0 && vm.settings_page < kSettingsNavCount) {
+        if (settings::PageAvailable(vm.settings_page)) {
             const D2D1_RECT_F rc = settings_nav_pill_.Update(
                 1, vm.settings_page, lay.nav_row[vm.settings_page], motion_frame_, now, 200);
             MakeBrush(dc, theme.fill_selected, brFillSelected_);
@@ -79,7 +79,7 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
             FillRoundedRect(dc, brFillSelected_.get(), rc.left, rc.top+10*scale_, 3*scale_, 20*scale_, 1.5f*scale_);
         }
     }
-    for (int i = 0; i < kSettingsNavCount; ++i) {
+    for (const int i : settings::kNavigationPages) {
         const bool active = vm.settings_page == i;
         const auto& rc = lay.nav_row[i];
         DrawIconText(rc.left + (compact_nav ? 13.0f : 12.0f) * scale_, rc.top, 22.0f * scale_, rc.bottom - rc.top,

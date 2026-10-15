@@ -22,6 +22,14 @@ $allowed = @('.github/workflows/custom-build.yml', 'scripts/build_tab_drag_ci.ps
 if ($FileUi) {
     if ($NativeDialogsOnly) {
         $allowed += @('CMakeLists.txt', 'integrations/NativeDialogs/README.md',
+            'src/app/about_info.h', 'docs/custom-edition.md', 'scripts/check_release_payload.ps1',
+            'src/common/settings_pages.h', 'src/ui/ui_settings_view.cpp',
+            'src/app/address_search.cpp', 'src/app/duplicate_scan_ui.cpp',
+            'src/app/global_search_controller.cpp', 'src/app/global_search_controller.h', 'src/app/global_search_window.cpp',
+            'src/app/search_options.cpp', 'src/app/search_routing_test.cpp',
+            'installer/PulseCustomSetup.iss', 'integrations/Installer/README.md',
+            'scripts/build_custom_installer_ci.ps1', 'scripts/package_custom_installer.ps1', 'scripts/test_custom_installer.ps1',
+            'scripts/publish_custom_release.ps1',
             'src/app/native_file_dialog_adapter.h', 'src/app/native_file_dialog_adapter.cpp',
             'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover.cpp',
             'src/app/native_dialog_wire.h', 'src/app/native_dialog_wire_test.cpp',
@@ -156,7 +164,7 @@ if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-$testCases = if ($NativeDialogsOnly) { @('native-dialog-wire', 'native-dialog-takeover') }
+$testCases = if ($NativeDialogsOnly) { @('native-dialog-wire', 'native-dialog-takeover', 'search-routing', 'listary-search-entry', 'filter-controls', 'home-menu') }
     elseif ($HomePathDisplayOnly) { @('home-path-display') }
     elseif ($HomeMenuOnly) { @('home-menu') }
     elseif ($HomeWidgetsOnly) { @('home-widgets') }
@@ -183,17 +191,21 @@ if ($NativeDialogsOnly) {
     if (-not $save.WaitForExit(60000)) { $save.Kill(); $save.WaitForExit(); $testFailures.Add('timeout: save-picker-dialog') }
     $save.Refresh()
     if ($save.ExitCode) { $testFailures.Add('save-picker-dialog') }
-    New-Item -ItemType Directory -Path 'bench_data/native-dialogs-settings' -Force | Out-Null
-    $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $taskRepo 'bench_data/native-dialogs-settings/results.log'
-    $env:PULSE_TEST_SETTINGS_INTEGRATION = '1'
-    $env:PULSE_TEST_DATA_DIR = Join-Path $taskRepo 'bench_data/native-dialogs-settings-data'
-    try {
-        $settings = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--test-instance' -WindowStyle Hidden -PassThru
-        if (-not $settings.WaitForExit(60000)) { $settings.Kill(); $settings.WaitForExit(); $testFailures.Add('timeout: native-dialogs-settings') }
-        $settings.Refresh()
-        if ($settings.ExitCode) { $testFailures.Add('native-dialogs-settings') }
-    } finally {
-        Remove-Item Env:PULSE_TEST_SETTINGS_FLOW,Env:PULSE_TEST_SETTINGS_INTEGRATION,Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
+    foreach ($settingsCase in @('integration', 'navigation')) {
+        $settingsOutput = Join-Path $taskRepo ('bench_data/native-dialogs-settings-' + $settingsCase)
+        New-Item -ItemType Directory -Path $settingsOutput -Force | Out-Null
+        $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $settingsOutput 'results.log'
+        $env:PULSE_TEST_SETTINGS_INTEGRATION = if ($settingsCase -eq 'integration') { '1' } else { $null }
+        $env:PULSE_TEST_SETTINGS_NAVIGATION = if ($settingsCase -eq 'navigation') { '1' } else { $null }
+        $env:PULSE_TEST_DATA_DIR = Join-Path $taskRepo ('bench_data/native-dialogs-settings-data-' + $settingsCase)
+        try {
+            $settings = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--test-instance' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $settingsOutput 'stdout.log') -RedirectStandardError (Join-Path $settingsOutput 'stderr.log')
+            if (-not $settings.WaitForExit(60000)) { $settings.Kill(); $settings.WaitForExit(); $testFailures.Add("timeout: native-dialogs-settings-$settingsCase") }
+            $settings.Refresh()
+            if ($settings.ExitCode) { $testFailures.Add("native-dialogs-settings-$settingsCase") }
+        } finally {
+            Remove-Item Env:PULSE_TEST_SETTINGS_FLOW,Env:PULSE_TEST_SETTINGS_INTEGRATION,Env:PULSE_TEST_SETTINGS_NAVIGATION,Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
+        }
     }
 }
 if ($testFailures.Count) { throw ('定向验证未通过，停止打包：' + ($testFailures -join ', ')) }

@@ -4,6 +4,7 @@
 #include "empty_state_layout.h"
 #include "bloom_accent_picker.h"
 #include "../common/localization.h"
+#include "../common/settings_pages.h"
 #include "typography.h"
 #include "title_chrome_layout.h"
 #include "name_highlight.h"
@@ -1785,7 +1786,7 @@ void MakeBrush(ID2D1DeviceContext* dc, const D2D1_COLOR_F& c, ComPtr<ID2D1SolidC
     else br->SetColor(c);
 }
 constexpr float kSettingsNavW = 200.0f;
-constexpr int kSettingsNavCount = 6;  // 5: 预览增强包
+constexpr int kSettingsNavCount = settings::kPageCount;
 
 // System folder groups shown under Settings > Exclusions: 0-4 follow
 // index::kSystemExclusionGroups, 5-6 are always skipped by the index.
@@ -2144,10 +2145,11 @@ SettingsLayout MakeSettingsLayout(const WindowViewModel& vm, const D2D1_RECT_F& 
         rect.right - rect.left < 1000 * scale ? 200.0f : 220.0f) * scale;
     l.nav = D2D1::RectF(l.body.left, l.body.top, l.body.left + nav_width, l.body.bottom);
     l.content = D2D1::RectF(l.nav.right, l.body.top, l.body.right, l.body.bottom);
-    for (int i = 0; i < kSettingsNavCount; ++i) {
-        const int position = i == 4 ? 3 : i == 5 ? 4 : i;
+    int position = 0;
+    for (const int i : settings::kNavigationPages) {
         const float top = i == 3 ? l.nav.bottom - 92*scale : l.nav.top + (20 + position*46)*scale;
         l.nav_row[i] = D2D1::RectF(l.nav.left + 8*scale, top, l.nav.right - 8*scale, top + 40*scale);
+        if (i != 3) ++position;
     }
     const float pad = 20.0f * scale;
     auto label_btn_w = [&](std::wstring_view label) {

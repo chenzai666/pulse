@@ -46,7 +46,7 @@ for key, name, output in [('PULSE_INSTALL_SOURCE_RUN','Pulse-Custom-complete','c
     if digest.hexdigest()!=expected: raise RuntimeError('构建产物摘要不匹配')
     records.append({'run':run_id,'artifact':item['id'],'sha256':expected})
 with zipfile.ZipFile(root/'verification.zip') as archive:
-    required=['bench_data/native-dialogs-wire.log','bench_data/native-dialogs-takeover.log','bench_data/native-dialogs-adapter.log','bench_data/native-dialogs-save-model.log','bench_data/native-dialogs-save-picker.log','bench_data/native-dialogs-settings/results.log']
+    required=['bench_data/native-dialogs-wire.log','bench_data/native-dialogs-takeover.log','bench_data/native-dialogs-adapter.log','bench_data/native-dialogs-save-model.log','bench_data/native-dialogs-save-picker.log','bench_data/native-dialogs-settings-integration/results.log','bench_data/native-dialogs-settings-navigation/results.log']
     for name in required:
         text=archive.read(name).decode('utf-8-sig',errors='strict')
         if '[PASS]' not in text or '[FAIL]' in text: raise RuntimeError('定向验证日志未通过: '+name)
