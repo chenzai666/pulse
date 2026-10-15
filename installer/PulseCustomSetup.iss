@@ -24,7 +24,7 @@ AppVersion={#PackageVersion}
 AppVerName=Pulse 定制版 {#PackageVersion} ({#PackageCommit})
 AppPublisher=Pulse Custom
 DefaultDirName={localappdata}\Programs\PulseCustom
-DisableDirPage=yes
+DisableDirPage=no
 DefaultGroupName=Pulse 定制版
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -33,7 +33,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Pulse 定制版
 UninstallDisplayIcon={app}\pulse.exe
 UninstallFilesDir={app}\.installer
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
 UsePreviousGroup=no
 UsePreviousTasks=no
 CloseApplications=no
@@ -71,9 +71,35 @@ function GetFileAttributes(FileName: string): Cardinal;
 function GetCurrentProcessId(): Cardinal;
   external 'GetCurrentProcessId@kernel32.dll stdcall';
 
-function DefaultInstallationDirectory(): String;
+function PathWithin(Directory, ProtectedDirectory: String): Boolean;
 begin
-  Result := ExpandConstant('{localappdata}\Programs\PulseCustom');
+  ProtectedDirectory := RemoveBackslashUnlessRoot(ProtectedDirectory);
+  Result := (CompareText(Directory, ProtectedDirectory) = 0) or
+    (Pos(Lowercase(AddBackslash(ProtectedDirectory)), Lowercase(AddBackslash(Directory))) = 1);
+end;
+
+function InstallationDirectoryAllowed(Directory: String): Boolean;
+var
+  Profile: String;
+begin
+  Result := False;
+  if Length(Directory) < 4 then exit;
+  if (Directory[2] <> ':') or (Directory[3] <> '\') or
+     (Pos(Uppercase(Copy(Directory, 1, 1)), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') = 0) then exit;
+  if CompareText(Directory, RemoveBackslashUnlessRoot(ExpandFileName(Directory))) <> 0 then exit;
+  if PathWithin(Directory, ExpandConstant('{win}')) or
+     PathWithin(Directory, ExpandConstant('{commonpf}')) or
+     PathWithin(Directory, ExpandConstant('{commonpf32}')) or
+     PathWithin(Directory, ExpandConstant('{commonappdata}')) or
+     PathWithin(Directory, ExpandConstant('{userappdata}')) or
+     PathWithin(Directory, ExpandConstant('{localappdata}\Pulse')) or
+     PathWithin(Directory, ExpandConstant('{localappdata}\PulseCustom')) then exit;
+  if (CompareText(Directory, ExpandConstant('{localappdata}')) = 0) or
+     (CompareText(Directory, ExpandConstant('{userdesktop}')) = 0) or
+     (CompareText(Directory, ExpandConstant('{userdocs}')) = 0) then exit;
+  Profile := GetEnv('USERPROFILE');
+  if (Profile <> '') and (CompareText(Directory, RemoveBackslashUnlessRoot(Profile)) = 0) then exit;
+  Result := True;
 end;
 
 function DirectorySafe(Directory: String): Boolean;
@@ -144,23 +170,65 @@ begin
   Result := True;
 end;
 
+function OwnUninstallLaunchers(Services: Variant; Directory: String): String;
+var
+  Process: Variant;
+  OriginalPath, CurrentPath, OriginalHash, ChildCreated, ParentCreated: String;
+  ParentId, CurrentId: Cardinal;
+  Depth: Integer;
+begin
+  Result := '';
+  if not IsUninstaller then exit;
+  OriginalPath := ExpandConstant('{uninstallexe}');
+  if CompareText(ExtractFileDir(OriginalPath), AddBackslash(Directory) + '.installer') <> 0 then exit;
+  CurrentId := GetCurrentProcessId();
+  Process := Services.Get('Win32_Process.Handle="' + IntToStr(CurrentId) + '"');
+  if VarIsNull(Process.ExecutablePath) or VarIsNull(Process.CreationDate) then exit;
+  CurrentPath := String(Process.ExecutablePath);
+  if CompareText(CurrentPath, OriginalPath) = 0 then exit;
+  OriginalHash := GetSHA256OfFile(OriginalPath);
+  if (Length(OriginalHash) <> 64) or (GetSHA256OfFile(CurrentPath) <> OriginalHash) then exit;
+  ChildCreated := String(Process.CreationDate);
+  ParentId := Process.ParentProcessId;
+  for Depth := 0 to 7 do begin
+    if (ParentId = 0) or (ParentId = CurrentId) then exit;
+    Process := Services.Get('Win32_Process.Handle="' + IntToStr(ParentId) + '"');
+    if VarIsNull(Process.ExecutablePath) or VarIsNull(Process.CreationDate) then exit;
+    CurrentPath := String(Process.ExecutablePath);
+    ParentCreated := String(Process.CreationDate);
+    if (CompareText(CurrentPath, OriginalPath) <> 0) or
+       (CompareText(ParentCreated, ChildCreated) > 0) then exit;
+    if Pos(';' + IntToStr(ParentId) + ';', Result) <> 0 then exit;
+    Result := Result + ';' + IntToStr(ParentId) + ';';
+    Log(Format('已核验本次卸载启动器 PID=%d，路径=%s；不视为运行中的应用。', [ParentId, CurrentPath]));
+    ChildCreated := ParentCreated;
+    ParentId := Process.ParentProcessId;
+  end;
+end;
+
 function InstallationBusy(Directory: String): Boolean;
 var
   Locator, Services, Processes, Process: Variant;
   Index: Integer;
-  ExecutablePath, Prefix: String;
+  ExecutablePath, Prefix, Launchers: String;
 begin
   Result := True;
   Prefix := Lowercase(AddBackslash(Directory));
   try
     Locator := CreateOleObject('WbemScripting.SWbemLocator');
     Services := Locator.ConnectServer('', 'root\CIMV2');
+    Launchers := OwnUninstallLaunchers(Services, Directory);
     Processes := Services.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process');
     for Index := 0 to Processes.Count - 1 do begin
       Process := Processes.ItemIndex(Index);
-      if (Process.ProcessId <> GetCurrentProcessId()) and not VarIsNull(Process.ExecutablePath) then begin
+      if (Process.ProcessId <> GetCurrentProcessId()) and
+         (Pos(';' + IntToStr(Process.ProcessId) + ';', Launchers) = 0) and
+         not VarIsNull(Process.ExecutablePath) then begin
         ExecutablePath := Lowercase(String(Process.ExecutablePath));
-        if Pos(Prefix, ExecutablePath) = 1 then exit;
+        if Pos(Prefix, ExecutablePath) = 1 then begin
+          Log(Format('安装目录仍有运行进程 PID=%d，路径=%s；拒绝继续。', [Process.ProcessId, ExecutablePath]));
+          exit;
+        end;
       end;
     end;
     Result := False;
@@ -175,8 +243,8 @@ var
 begin
   Result := '';
   Directory := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
-  if CompareText(Directory, DefaultInstallationDirectory()) <> 0 then
-    Result := '为保护原版和其他程序，只允许安装到当前用户的 Programs\PulseCustom 目录。'
+  if not InstallationDirectoryAllowed(Directory) then
+    Result := '请选择可写的本地磁盘绝对路径及独立子目录；不允许磁盘根目录、系统目录、用户配置目录或常用资料根目录。'
   else if not DirectorySafe(Directory) or not DirectoryTreeSafe(Directory, 0) then
     Result := '安装目录或父目录含有重解析点，已停止安装。'
   else if not InstallationOwned(Directory) then
@@ -190,9 +258,9 @@ var
   Directory: String;
 begin
   Directory := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
-  Result := (CompareText(Directory, DefaultInstallationDirectory()) = 0) and
+  Result := InstallationDirectoryAllowed(Directory) and
     DirectorySafe(Directory) and DirectoryTreeSafe(Directory, 0) and InstallationOwned(Directory);
   if Result then Result := not InstallationBusy(Directory);
   if not Result then
-    MsgBox('无法安全卸载：请关闭此安装目录中的 Pulse 定制版及其辅助程序，并检查安装目录身份。', mbError, MB_OK);
+    SuppressibleMsgBox('无法安全卸载：请关闭此安装目录中的 Pulse 定制版及其辅助程序，并检查安装目录身份。', mbError, MB_OK, IDOK);
 end;
