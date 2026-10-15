@@ -372,7 +372,13 @@ bool WriteFilename(IUIAutomation* automation, HWND window, const std::wstring& t
     const bool writable = edit && SUCCEEDED(edit->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value))) &&
         SUCCEEDED(value->get_CurrentIsReadOnly(&readonly)) && !readonly;
     if (cancelled && cancelled()) return false;
-    bool written = writable && SUCCEEDED(value->SetValue(text.c_str()));
+    bool written = false;
+    if (writable) {
+        BSTR input = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+        if (!input) return false;
+        written = SUCCEEDED(value->SetValue(input));
+        SysFreeString(input);
+    }
     if (cancelled && cancelled()) return false;
     if (!written && !legacy && ClassName(window) == L"Edit" &&
         !(GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY)) {
