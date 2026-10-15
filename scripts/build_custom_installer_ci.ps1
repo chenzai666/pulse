@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit
 )
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
 Set-Location $taskRepo
 $work = Join-Path $taskRepo 'build-custom-installer'
