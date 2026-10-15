@@ -21,7 +21,7 @@ constexpr size_t kMaximumText = 32768;
 
 struct Handle {
     HANDLE value = nullptr;
-    ~Handle() { if (value) CloseHandle(value); }
+    ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
 
 struct TokenIdentity {
@@ -349,14 +349,41 @@ bool WriteFilename(HWND window, const std::wstring& text, bool legacy, const std
 
 bool SelectFilter(const Controls& controls, size_t index, const std::vector<ui::PickerFilter>& filters,
     const std::function<bool()>& cancelled) {
-    if (index >= filters.size() || (cancelled && cancelled()) || ClassName(controls.filter) != L"ComboBox") return false;
+    if (index >= filters.size() || (cancelled && cancelled()) || ClassName(controls.filter) != L"ComboBox" ||
+        (GetWindowLongPtrW(controls.filter, GWL_STYLE) & 3) != CBS_DROPDOWNLIST) return false;
+    // CB_SETCURSEL only changes the visible selection. Let the real control
+    // process navigation keys and emit its own selection/commit notifications.
+    // These messages target the verified ComboBox, never the active window.
+    const auto key = [&](WPARAM value) {
+        if (cancelled && cancelled()) return false;
+        DWORD_PTR result = 0;
+        return Send(controls.filter, WM_KEYDOWN, value, 1, result) &&
+            (!cancelled || !cancelled()) && Send(controls.filter, WM_KEYUP, value, static_cast<LPARAM>(0xC0000001u), result);
+    };
+    if (!key(VK_HOME)) return false;
+    for (size_t current = 0; current < index; ++current)
+        if (!key(VK_DOWN)) return false;
     DWORD_PTR selected = 0;
-    if (!Send(controls.filter, CB_SETCURSEL, index, 0, selected) || selected != index) return false;
-    if (cancelled && cancelled()) return false;
-    DWORD_PTR result = 0;
-    if (!Send(GetParent(controls.filter), WM_COMMAND,
-        MAKEWPARAM(GetDlgCtrlID(controls.filter), CBN_SELCHANGE), reinterpret_cast<LPARAM>(controls.filter), result)) return false;
     return Send(controls.filter, CB_GETCURSEL, 0, 0, selected) && selected == index;
+}
+
+bool SameDirectory(const std::wstring& first, const std::wstring& second) {
+    if (CompareStringOrdinal(first.c_str(), -1, second.c_str(), -1, TRUE) == CSTR_EQUAL) return true;
+    Handle a{CreateFileW(first.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr)};
+    Handle b{CreateFileW(second.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr)};
+    if (a.value == INVALID_HANDLE_VALUE || b.value == INVALID_HANDLE_VALUE) return false;
+    BY_HANDLE_FILE_INFORMATION a_info{}, b_info{};
+    if (!GetFileInformationByHandle(a.value, &a_info) || !GetFileInformationByHandle(b.value, &b_info) ||
+        !(a_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !(b_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        a_info.dwVolumeSerialNumber != b_info.dwVolumeSerialNumber ||
+        a_info.nFileIndexHigh != b_info.nFileIndexHigh || a_info.nFileIndexLow != b_info.nFileIndexLow) return false;
+    std::wstring a_name(kMaximumText, L'\0'), b_name(kMaximumText, L'\0');
+    const DWORD a_size = GetFinalPathNameByHandleW(a.value, a_name.data(), static_cast<DWORD>(a_name.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    const DWORD b_size = GetFinalPathNameByHandleW(b.value, b_name.data(), static_cast<DWORD>(b_name.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    return a_size && b_size && a_size < a_name.size() && b_size < b_name.size() &&
+        CompareStringOrdinal(a_name.data(), static_cast<int>(a_size), b_name.data(), static_cast<int>(b_size), TRUE) == CSTR_EQUAL;
 }
 
 bool SameIdentity(const NativeFileDialog& original, const NativeFileDialog& current) {
@@ -402,7 +429,7 @@ bool SelectionText(const NativeFileDialog& dialog, const std::vector<std::wstrin
     for (const auto& path : paths) {
         const size_t separator = path.rfind(L'\\');
         const std::wstring current = path.substr(0, separator == 2 ? 3 : separator);
-        if (CompareStringOrdinal(directory.c_str(), -1, current.c_str(), -1, TRUE) != CSTR_EQUAL)
+        if (!SameDirectory(directory, current))
             return Fail(reason, L"多选仅支持原生当前目录中的文件；跨目录结果保留原生窗口。");
         if (separator + 1 == path.size()) return Fail(reason, L"多选结果必须包含文件名。");
         if (!text.empty()) text += L' ';

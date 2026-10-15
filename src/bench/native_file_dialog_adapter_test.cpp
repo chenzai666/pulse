@@ -32,6 +32,25 @@ void Diagnostic(std::wstring_view text) {
     }
 }
 
+void PathDiagnostic(const wchar_t* label, std::wstring_view value) {
+    Diagnostic(std::wstring(label) + L" length=" + std::to_wstring(value.size()) + L" value=\"" + std::wstring(value) + L"\"");
+}
+
+bool NormalizeFixtureDirectory(std::filesystem::path& directory) {
+    const HANDLE handle = CreateFileW(directory.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    std::wstring path(32768, L'\0');
+    const DWORD size = GetFinalPathNameByHandleW(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(handle);
+    if (!size || size >= path.size()) return false;
+    path.resize(size);
+    if (path.starts_with(L"\\\\?\\UNC\\")) path = L"\\\\" + path.substr(8);
+    else if (path.starts_with(L"\\\\?\\")) path.erase(0, 4);
+    directory = path;
+    return true;
+}
+
 void Check(bool passed, const char* label) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", label);
     std::fflush(stdout);
@@ -92,6 +111,11 @@ struct Driver {
                 NativeFileDialog inspected;
                 if (window && InspectNativeFileDialog(window, inspected, reason)) {
                     std::printf("[STAGE] driver inspected native dialog; applying selection/cancel\n");
+                    PathDiagnostic(L"inspected.initial_path", inspected.initial_path);
+                    PathDiagnostic(L"inspected.filename", inspected.filename);
+                    std::printf("[DETAIL] inspected mode=%u filter_count=%zu selected_filter=%zu multiselect=%u\n",
+                        static_cast<unsigned>(inspected.kind), inspected.filters.size(), inspected.filter_index,
+                        static_cast<unsigned>(inspected.allow_multiselect));
                     passed = action(inspected, reason);
                     std::printf("[STAGE] native action returned accepted=%u\n", static_cast<unsigned>(passed.load()));
                     if (!reason.empty()) Diagnostic(reason);
@@ -159,6 +183,10 @@ struct Fixture {
         GetTempPathW(32768, temporary);
         directory = std::filesystem::path(temporary) /
             (L"Pulse-native-adapter-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+        std::filesystem::create_directories(directory);
+        PathDiagnostic(L"fixture.raw_directory", directory.wstring());
+        Check(NormalizeFixtureDirectory(directory), "fixture directory resolves to the actual long path before exact path assertions");
+        PathDiagnostic(L"fixture.normalized_directory", directory.wstring());
         folder = directory / L"owned directory";
         file = directory / L"first file.txt";
         std::filesystem::create_directories(folder);
@@ -211,6 +239,8 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
     PWSTR result = nullptr;
     const bool got_result = SUCCEEDED(shown) && SUCCEEDED(native->GetResult(&selected)) &&
         SUCCEEDED(selected->GetDisplayName(SIGDN_FILESYSPATH, &result));
+    PathDiagnostic(L"modern.expected", expected);
+    PathDiagnostic(L"modern.actual", result ? std::wstring_view(result) : std::wstring_view{});
     Check(got_result && result && CompareStringOrdinal(result, -1, expected.c_str(), -1, TRUE) == CSTR_EQUAL,
         "modern native host returns the exact selected file or directory");
     CoTaskMemFree(result);
@@ -243,6 +273,10 @@ void ClassicCase(const Fixture& fixture) {
     if (!driver.ready) { driver.Finish(); Check(false, "classic driver initializes on fixture desktop"); return; }
     const bool shown = GetOpenFileNameW(&spec) != FALSE;
     driver.Finish();
+    std::printf("[RESULT] classic shown=%u extended_error=%lu selected_filter=%lu\n",
+        static_cast<unsigned>(shown), CommDlgExtendedError(), spec.nFilterIndex);
+    PathDiagnostic(L"classic.expected", fixture.file.wstring());
+    PathDiagnostic(L"classic.actual", result);
     Check(driver.passed && shown && std::wstring_view(result) == fixture.file.wstring() && spec.nFilterIndex == 1,
         "classic Explorer common dialog returns the path and changed native filter");
 }
@@ -265,7 +299,16 @@ void ModernMultiselectCase(const Fixture& fixture) {
         if (!inspected.allow_multiselect) return false;
         if (CommitNativeDialogSelection(inspected,
             {expected.front(), (fixture.folder / L"other.txt").wstring()}, 0, reason)) return false;
-        return CommitNativeDialogSelection(inspected, expected, 0, reason);
+        std::vector<std::wstring> selected = expected;
+        std::wstring short_directory(32768, L'\0');
+        const DWORD size = GetShortPathNameW(fixture.directory.c_str(), short_directory.data(), static_cast<DWORD>(short_directory.size()));
+        if (size && size < short_directory.size()) {
+            short_directory.resize(size);
+            PathDiagnostic(L"multiselect.input_directory_alias", short_directory);
+            for (auto& path : selected)
+                path = (std::filesystem::path(short_directory) / std::filesystem::path(path).filename()).wstring();
+        }
+        return CommitNativeDialogSelection(inspected, selected, 0, reason);
     });
     if (!driver.ready) { driver.Finish(); Check(false, "multiselect driver initializes on fixture desktop"); return; }
     const HRESULT shown = native->Show(nullptr);
@@ -284,6 +327,10 @@ void ModernMultiselectCase(const Fixture& fixture) {
     }
     std::sort(actual.begin(), actual.end());
     std::sort(expected.begin(), expected.end());
+    std::printf("[RESULT] multiselect Show HRESULT=0x%08lX expected_count=%zu actual_count=%zu\n",
+        static_cast<unsigned long>(shown), expected.size(), actual.size());
+    for (const auto& path : expected) PathDiagnostic(L"multiselect.expected", path);
+    for (const auto& path : actual) PathDiagnostic(L"multiselect.actual", path);
     Check(driver.passed && actual == expected, "same-directory quoted names return both files; cross-directory multiselect is rejected");
 }
 
@@ -300,7 +347,10 @@ void LegacyFolderCase(const Fixture& fixture) {
     PIDLIST_ABSOLUTE selected = SHBrowseForFolderW(&spec);
     driver.Finish();
     wchar_t result[MAX_PATH]{};
-    Check(driver.passed && selected && SHGetPathFromIDListW(selected, result) &&
+    const bool got_path = selected && SHGetPathFromIDListW(selected, result);
+    PathDiagnostic(L"legacy.expected", fixture.folder.wstring());
+    PathDiagnostic(L"legacy.actual", result);
+    Check(driver.passed && got_path &&
         std::wstring_view(result) == fixture.folder.wstring(), "legacy writable folder edit returns the requested directory");
     CoTaskMemFree(selected);
 }

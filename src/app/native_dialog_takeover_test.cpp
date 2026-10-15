@@ -281,7 +281,8 @@ bool SendPicker(const PickerWindow& picker, int control, UINT message, WPARAM wp
         (control && (!IsChild(picker.window, target) || ClassName(target) != L"Edit"))) return false;
     DWORD_PTR result = 0;
     return SendMessageTimeoutW(target, message, wparam, lparam,
-        SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 2000, &result) != 0;
+        SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 2000, &result) != 0 &&
+        (message != WM_SETTEXT || result != 0);
 }
 
 void Diagnostics(TestLog& log, HDESK desktop, ChildProcess& child, const std::string& branch) {
@@ -389,11 +390,21 @@ bool ExpectedResult(TestLog& log, HDESK desktop, ChildProcess& child, const std:
     const bool decoded = size && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
         static_cast<int>(bytes.size()), json.data(), size) == size;
     uint32_t hresult = 0, filter = 0;
-    const bool valid = drained && exited && decoded && pulse::json::ValidConfigObject(json) &&
-        pulse::json::ExtractString(json, L"mode") == mode && Number(json, L"hresult", hresult) &&
-        Number(json, L"filter_index", filter) && filter == 0 &&
+    const bool syntax = decoded && pulse::json::ValidConfigObject(json);
+    const auto actual_mode = syntax ? pulse::json::ExtractString(json, L"mode") : std::wstring();
+    const auto actual_status = syntax ? pulse::json::ExtractString(json, L"status") : std::wstring();
+    const bool numbers = syntax && Number(json, L"hresult", hresult) && Number(json, L"filter_index", filter);
+    std::vector<std::wstring> paths;
+    const bool path_array = syntax && pulse::json::ConfigSyntax(json, false).StringArrayMember(L"paths", paths);
+    const bool valid = drained && exited && syntax &&
+        actual_mode == mode && numbers && path_array && filter == 0 &&
         hresult == (cancelled ? static_cast<uint32_t>(HRESULT_FROM_WIN32(ERROR_CANCELLED)) : 0);
-    const auto paths = valid ? pulse::json::ExtractStringArray(json, L"paths") : std::vector<std::wstring>();
+    log.Detail(branch + ": result protocol drained=" + std::to_string(drained) + " exit=" + std::to_string(exit_code) +
+        " decoded=" + std::to_string(decoded) + " syntax=" + std::to_string(syntax) + " numbers=" + std::to_string(numbers) +
+        " hresult=" + std::to_string(hresult) + " filter=" + std::to_string(filter) + " path_array=" + std::to_string(path_array) +
+        " mode=" + Utf8(actual_mode) + " status=" + Utf8(actual_status));
+    for (const auto& path : paths) log.Detail(branch + ": actual path=" + Utf8(path));
+    for (const auto& path : expected) log.Detail(branch + ": expected path=" + Utf8(path));
     bool same = paths.size() == expected.size();
     std::vector<bool> used(paths.size(), false);
     for (const auto& wanted : expected) {
@@ -403,7 +414,7 @@ bool ExpectedResult(TestLog& log, HDESK desktop, ChildProcess& child, const std:
         }
         same = same && found;
     }
-    const bool accepted = valid && same && pulse::json::ExtractString(json, L"status") == (cancelled ? L"cancelled" : L"accepted");
+    const bool accepted = valid && same && actual_status == (cancelled ? L"cancelled" : L"accepted");
     log.Check(accepted, branch + ": fixture receives the exact expected paths/status from production native adapter");
     log.Detail(branch + ": stdout=" + bytes);
     return accepted;
@@ -416,10 +427,14 @@ NativeDialogAppearance Appearance() {
     return appearance;
 }
 
-bool SelectThroughPicker(const PickerWindow& picker, const std::wstring& text, bool folder) {
+bool SelectThroughPicker(TestLog& log, const std::string& branch, const PickerWindow& picker, const std::wstring& text, bool folder) {
     const int control = folder ? 101 : 102;
-    if (!SendPicker(picker, control, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str())) ||
-        !SendPicker(picker, control, WM_KEYDOWN, VK_RETURN)) return false;
+    if (!SendPicker(picker, control, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()))) return false;
+    std::array<wchar_t, 32768> readback{};
+    const bool read = SendPicker(picker, control, WM_GETTEXT, readback.size(), reinterpret_cast<LPARAM>(readback.data()));
+    log.Detail(branch + ": picker requested input=" + Utf8(text) + " readback=" + Utf8(readback.data()));
+    if (!log.Check(read && text == readback.data(), branch + ": verified Pulse edit contains the full requested input before Enter")) return false;
+    if (!SendPicker(picker, control, WM_KEYDOWN, VK_RETURN)) return false;
     if (!folder) return true;
     return Until([&] {
         if (!PickerMatches(picker)) return true;
@@ -439,7 +454,7 @@ void RunRound(TestLog& log, HDESK desktop, const std::wstring& desktop_name, con
     const bool folder = mode == L"folder" || mode == L"legacy-folder";
     if (!AwaitPicker(log, desktop, child, executable, branch, !folder, source, picker)) return;
     Handle helper(OpenProcess(SYNCHRONIZE, FALSE, picker.process));
-    const bool driven = cancelled ? SendPicker(picker, 0, WM_KEYDOWN, VK_ESCAPE) : SelectThroughPicker(picker, text, folder);
+    const bool driven = cancelled ? SendPicker(picker, 0, WM_KEYDOWN, VK_ESCAPE) : SelectThroughPicker(log, branch, picker, text, folder);
     if (!log.Check(driven, branch + ": drive only verified Pulse controls")) return;
     ExpectedResult(log, desktop, child, branch, mode, cancelled, expected);
     watcher.Stop();
@@ -592,6 +607,21 @@ bool WriteFixture(const std::filesystem::path& path) {
     return WriteFile(file.get(), content, static_cast<DWORD>(sizeof(content) - 1), &written, nullptr) && written == sizeof(content) - 1;
 }
 
+bool CanonicalFixtureRoot(const std::filesystem::path& root, std::filesystem::path& normalized) {
+    Handle directory(CreateFileW(root.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (directory.get() == INVALID_HANDLE_VALUE) return false;
+    std::wstring path(32768, L'\0');
+    const DWORD size = GetFinalPathNameByHandleW(directory.get(), path.data(), static_cast<DWORD>(path.size()),
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!size || size >= path.size()) return false;
+    path.resize(size);
+    if (path.starts_with(L"\\\\?\\UNC\\")) path = L"\\\\" + path.substr(8);
+    else if (path.starts_with(L"\\\\?\\")) path.erase(0, 4);
+    normalized = path;
+    return true;
+}
+
 void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) {
     active_test_log = &log;
     if (!log.Check(SetThreadDesktop(desktop) != FALSE, "test worker attaches private desktop before COM/UI initialization")) return;
@@ -603,13 +633,16 @@ void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) 
     const DWORD attributes = GetFileAttributesW(fixture.c_str());
     if (!log.Check(!executable.empty() && attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY),
         "native fixture executable exists beside tested Pulse binary")) return;
-    const auto root = std::filesystem::temp_directory_path() /
+    auto root = std::filesystem::temp_directory_path() /
         (L"PulseNativeTakeover-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
     if (!log.Check(std::filesystem::create_directory(root), "exclusively create temporary filesystem fixture")) return;
     struct Cleanup {
         std::filesystem::path root;
         ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
     } cleanup{root};
+    const auto original_root = root;
+    if (!log.Check(CanonicalFixtureRoot(original_root, root), "normalize exclusively created fixture root through a read-only directory handle")) return;
+    log.Detail("fixture root raw=" + Utf8(original_root.wstring()) + " normalized=" + Utf8(root.wstring()));
     const auto nested = root / L"nested";
     const auto first = root / L"alpha.txt";
     const auto second = root / L"two words 中文.txt";

@@ -583,6 +583,10 @@ private:
 
     void SubmitSelection() {
         if (validating_) return;
+        // Read the current edit so commit cannot validate a stale cached name.
+        if (mode_ != PickerMode::Folder && filename_edit_ && ReadEdit(filename_edit_) != filename_text_) {
+            InputChanged(filename_edit_);
+        }
         std::vector<std::wstring> names;
         if (mode_ != PickerMode::Folder && !filename_text_.empty()) {
             if (!ParsePickerNames(filename_text_, names)) {

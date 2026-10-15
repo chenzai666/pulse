@@ -2,6 +2,7 @@
 
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <oleidl.h>
 #include <wrl/client.h>
 
 #include <cstdio>
@@ -17,8 +18,9 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 enum class FixtureMode { Open, Save, Folder, LegacyFolder, OpaqueOpen };
-constexpr UINT_PTR kOpaqueCancelTimer = 1;
+constexpr UINT_PTR kOpaqueCancelTimer = 0x50554c53;
 constexpr UINT kOpaqueCancelTimeout = 15000;
+constexpr wchar_t kOpaqueDialogProperty[] = L"Pulse.NativeFixture.OpaqueDialog";
 
 struct DialogResult {
     HRESULT error = E_FAIL;
@@ -121,9 +123,72 @@ HRESULT ItemPath(IShellItem* item, std::wstring& path) {
 
 void CALLBACK CancelOpaqueDialog(HWND owner, UINT, UINT_PTR timer, DWORD) {
     KillTimer(owner, timer);
-    auto* dialog = reinterpret_cast<IFileDialog*>(GetWindowLongPtrW(owner, GWLP_USERDATA));
+    auto* dialog = reinterpret_cast<IFileDialog*>(GetPropW(owner, kOpaqueDialogProperty));
     if (dialog) dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
 }
+
+class OpaqueCancellation final : public IFileDialogEvents {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** output) override {
+        if (!output) return E_POINTER;
+        *output = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IFileDialogEvents) return E_NOINTERFACE;
+        *output = static_cast<IFileDialogEvents*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references_)); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto count = static_cast<ULONG>(InterlockedDecrement(&references_));
+        if (!count) delete this;
+        return count;
+    }
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog* dialog, IShellItem*) override { Arm(dialog); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog* dialog) override { Arm(dialog); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog* dialog) override { Arm(dialog); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
+        if (!response) return E_POINTER;
+        *response = FDESVR_DEFAULT;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* dialog) override { Arm(dialog); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
+        if (!response) return E_POINTER;
+        *response = FDEOR_DEFAULT;
+        return S_OK;
+    }
+    void Clear() {
+        if (!window_) return;
+        DWORD process = 0;
+        if (GetWindowThreadProcessId(window_, &process) == GetCurrentThreadId() && process == GetCurrentProcessId() &&
+            GetPropW(window_, kOpaqueDialogProperty) == dialog_) {
+            KillTimer(window_, kOpaqueCancelTimer);
+            RemovePropW(window_, kOpaqueDialogProperty);
+        }
+        window_ = nullptr;
+        dialog_ = nullptr;
+    }
+private:
+    void Arm(IFileDialog* dialog) {
+        if (window_) return;
+        ComPtr<IOleWindow> ole_window;
+        HWND window = nullptr;
+        DWORD process = 0;
+        if (FAILED(dialog->QueryInterface(IID_PPV_ARGS(&ole_window))) || FAILED(ole_window->GetWindow(&window)) ||
+            !window || GetWindowThreadProcessId(window, &process) != GetCurrentThreadId() || process != GetCurrentProcessId()) return;
+        if (!SetPropW(window, kOpaqueDialogProperty, dialog)) return;
+        if (!SetTimer(window, kOpaqueCancelTimer, kOpaqueCancelTimeout, CancelOpaqueDialog)) {
+            RemovePropW(window, kOpaqueDialogProperty);
+            return;
+        }
+        window_ = window;
+        dialog_ = dialog;
+    }
+    LONG references_ = 1;
+    HWND window_ = nullptr;
+    IFileDialog* dialog_ = nullptr;
+};
 
 DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const std::wstring& filename) {
     DialogResult result;
@@ -166,19 +231,17 @@ DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const
             if (FAILED(result.error)) return result;
         }
     }
+    ComPtr<OpaqueCancellation> cancellation;
+    DWORD cancellation_cookie = 0;
     if (mode == FixtureMode::OpaqueOpen) {
-        SetWindowLongPtrW(owner, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog.Get()));
-        if (!SetTimer(owner, kOpaqueCancelTimer, kOpaqueCancelTimeout, CancelOpaqueDialog)) {
-            const DWORD error = GetLastError();
-            SetWindowLongPtrW(owner, GWLP_USERDATA, 0);
-            result.error = error ? HRESULT_FROM_WIN32(error) : E_FAIL;
-            return result;
-        }
+        cancellation.Attach(new OpaqueCancellation());
+        result.error = dialog->Advise(cancellation.Get(), &cancellation_cookie);
+        if (FAILED(result.error)) return result;
     }
     result.error = dialog->Show(owner);
-    if (mode == FixtureMode::OpaqueOpen) {
-        KillTimer(owner, kOpaqueCancelTimer);
-        SetWindowLongPtrW(owner, GWLP_USERDATA, 0);
+    if (cancellation) {
+        cancellation->Clear();
+        dialog->Unadvise(cancellation_cookie);
     }
     if (FAILED(result.error)) return result;
     if (mode == FixtureMode::Open || mode == FixtureMode::OpaqueOpen) {
