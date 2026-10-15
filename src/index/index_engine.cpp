@@ -127,7 +127,7 @@ std::wstring Display(std::wstring p) {
     return pulse::path::StripExtendedPathPrefix(p);
 }
 
-bool IsAdmin() {
+[[maybe_unused]] bool IsAdmin() {
     BOOL admin = FALSE;
     PSID group = nullptr;
     SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
