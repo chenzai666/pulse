@@ -159,6 +159,23 @@ if ($VerifySettingsRegression) {
         Remove-Item Env:PULSE_SELFTEST_CASE -ErrorAction SilentlyContinue
     }
 }
+if ($NativeDialogsOnly -and -not $DiagnosticsOnly) {
+    # 先验证独立适配器；失败时无需等待整个主程序编译，测试内容不变。
+    $adapterBatch = Join-Path $taskBuild 'compile-native-adapter-first.bat'
+    $adapterBuild = [IO.File]::ReadAllText($buildBatch).Replace(
+        "--target $nativeTargets", '--target pulse_native_file_dialog_adapter_test')
+    [IO.File]::WriteAllText($adapterBatch, $adapterBuild, [Text.UTF8Encoding]::new($false))
+    & $adapterBatch
+    if ($LASTEXITCODE) { throw '原生窗口适配器定向构建失败' }
+    New-Item -ItemType Directory -Path 'bench_data' -Force | Out-Null
+    $adapter = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_file_dialog_adapter_test.exe') -ArgumentList '--interaction' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'bench_data/native-dialogs-adapter.log' -RedirectStandardError 'bench_data/native-dialogs-adapter-errors.log'
+    if (-not $adapter.WaitForExit(180000)) {
+        $adapter.Kill(); $adapter.WaitForExit()
+        throw '原生窗口适配器验证超时，停止主程序构建'
+    }
+    $adapter.Refresh()
+    if ($adapter.ExitCode) { throw '原生窗口适配器验证失败，停止主程序构建' }
+}
 & $buildBatch
 if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
@@ -181,10 +198,6 @@ foreach ($testCase in $testCases) {
 }
 Remove-Item Env:PULSE_SELFTEST_CASE
 if ($NativeDialogsOnly) {
-    $adapter = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_file_dialog_adapter_test.exe') -ArgumentList '--interaction' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'bench_data/native-dialogs-adapter.log' -RedirectStandardError 'bench_data/native-dialogs-adapter-errors.log'
-    if (-not $adapter.WaitForExit(180000)) { $adapter.Kill(); $adapter.WaitForExit(); $testFailures.Add('timeout: native-dialog-adapter') }
-    $adapter.Refresh()
-    if ($adapter.ExitCode) { $testFailures.Add('native-dialog-adapter') }
     & (Join-Path $taskBuild 'pulse_file_picker_model_test.exe') --save 2>&1 | Tee-Object -FilePath 'bench_data/native-dialogs-save-model.log'
     if ($LASTEXITCODE) { $testFailures.Add('save-picker-model') }
     $save = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test --save' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'bench_data/native-dialogs-save-picker.log' -RedirectStandardError 'bench_data/native-dialogs-save-picker-errors.log'

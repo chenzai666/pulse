@@ -51,6 +51,62 @@ bool NormalizeFixtureDirectory(std::filesystem::path& directory) {
     return true;
 }
 
+class NativeHostObserver final : public IFileDialogEvents {
+public:
+    std::atomic<HWND> filename_window = nullptr;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (!IsEqualIID(iid, IID_IUnknown) && !IsEqualIID(iid, IID_IFileDialogEvents)) return E_NOINTERFACE;
+        *object = static_cast<IFileDialogEvents*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG remaining = --references_;
+        if (!remaining) delete this;
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* dialog) override {
+        PWSTR filename = nullptr;
+        const HRESULT named = dialog->GetFileName(&filename);
+        std::printf("[HOST] OnFileOk GetFileName HRESULT=0x%08lX\n", static_cast<unsigned long>(named));
+        PathDiagnostic(L"host.model_filename", filename ? std::wstring_view(filename) : std::wstring_view{});
+        CoTaskMemFree(filename);
+        const HWND edit = filename_window.load();
+        DWORD process = 0;
+        wchar_t klass[32]{};
+        if (edit && GetWindowThreadProcessId(edit, &process) == GetCurrentThreadId() && process == GetCurrentProcessId() &&
+            GetClassNameW(edit, klass, 32) && std::wstring_view(klass) == L"Edit") {
+            std::wstring value(32768, L'\0');
+            value.resize(static_cast<size_t>(GetWindowTextW(edit, value.data(), static_cast<int>(value.size()))));
+            PathDiagnostic(L"host.edit_filename", value);
+        }
+        return LogType(dialog, "OnFileOk");
+    }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
+        if (response) *response = FDESVR_DEFAULT;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* dialog) override { return LogType(dialog, "OnTypeChange"); }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
+        if (response) *response = FDEOR_DEFAULT;
+        return S_OK;
+    }
+private:
+    static HRESULT LogType(IFileDialog* dialog, const char* stage) {
+        UINT index = 0;
+        const HRESULT result = dialog->GetFileTypeIndex(&index);
+        std::printf("[HOST] %s filter HRESULT=0x%08lX index=%u\n", stage, static_cast<unsigned long>(result), index);
+        return S_OK;
+    }
+    std::atomic<ULONG> references_ = 1;
+};
+
 void Check(bool passed, const char* label) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", label);
     std::fflush(stdout);
@@ -213,13 +269,27 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
         (folder ? FOS_PICKFOLDERS : (kind == NativeDialogKind::Open ? FOS_FILEMUSTEXIST : FOS_PATHMUSTEXIST)));
     const COMDLG_FILTERSPEC filters[] = {{L"Text (*.txt)", L"*.txt"}, {L"Logs (*.log)", L"*.log"}};
     if (!folder) { native->SetFileTypes(2, filters); native->SetFileTypeIndex(2); }
+    if (kind == NativeDialogKind::Save)
+        Check(SUCCEEDED(native->SetFileName(L"original model.log")), "save starts with an existing filename model that must be replaced");
     ComPtr<IShellItem> initial;
     if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
         native->SetFolder(initial.Get());
     const std::wstring expected = folder ? fixture.folder.wstring() :
         (kind == NativeDialogKind::Save ? (fixture.directory / L"new file.txt").wstring() : fixture.file.wstring());
+    ComPtr<NativeHostObserver> observer;
+    observer.Attach(new NativeHostObserver());
+    DWORD cookie = 0;
+    const HRESULT observed = native->Advise(observer.Get(), &cookie);
+    Check(SUCCEEDED(observed), "observe native filename model and type changes without modifying them");
+    if (FAILED(observed)) return;
+    struct Unadvise {
+        IFileDialog* dialog;
+        DWORD cookie;
+        ~Unadvise() { dialog->Unadvise(cookie); }
+    } subscription{native.Get(), cookie};
     std::atomic<bool> guarded = false;
     Driver driver([&](const NativeFileDialog& inspected, std::wstring& reason) {
+        observer->filename_window = inspected.filename_window;
         if (inspected.kind != kind || (!folder && (inspected.filters.size() != 2 || inspected.filter_index != 1))) return false;
         auto stale = inspected;
         ++stale.process_id;

@@ -416,6 +416,12 @@ bool ExpectedResult(TestLog& log, HDESK desktop, ChildProcess& child, const std:
     }
     const bool accepted = valid && same && actual_status == (cancelled ? L"cancelled" : L"accepted");
     log.Check(accepted, branch + ": fixture receives the exact expected paths/status from production native adapter");
+    if (mode == L"opaque-open") {
+        uint32_t worker_error = ERROR_GEN_FAILURE;
+        log.Check(syntax && pulse::json::ExtractBool(json, L"fixture_cancel_posted") &&
+            Number(json, L"fixture_cancel_error", worker_error) && worker_error == ERROR_SUCCESS,
+            branch + ": fixture background worker posts verified native-window cancellation successfully");
+    }
     log.Detail(branch + ": stdout=" + bytes);
     return accepted;
 }
@@ -511,7 +517,7 @@ void RunOpaqueFallback(TestLog& log, HDESK desktop, const std::wstring& desktop_
     log.Check(preserved, branch + ": active watcher leaves native visible/enabled without a Pulse popup throughout five-second observation");
     if (!filter_rejected || !preserved) Diagnostics(log, desktop, child, branch + ": unsupported-filter-safety-regression");
     watcher.Stop();
-    ExpectedResult(log, desktop, child, branch + "-fixture-timer-cleanup", L"opaque-open", true, {});
+    ExpectedResult(log, desktop, child, branch + "-fixture-worker-cleanup", L"opaque-open", true, {});
 }
 
 bool CancelOwnNative(TestLog& log, const SourceWindow& source, const std::string& branch) {

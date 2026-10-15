@@ -321,50 +321,100 @@ bool MultipleSelection(IUIAutomation* automation, const Controls& controls) {
         SUCCEEDED(pattern->get_CurrentCanSelectMultiple(&allowed)) && allowed;
 }
 
-bool WriteFilename(HWND window, const std::wstring& text, bool legacy, const std::function<bool()>& cancelled) {
-    if ((cancelled && cancelled()) || ClassName(window) != L"Edit" ||
-        (GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY)) return false;
-    if (legacy) {
+bool IdentityBeforeMutation(const NativeFileDialog& dialog, std::wstring& reason);
+
+bool WriteFilename(const NativeFileDialog& dialog, const std::wstring& text,
+    std::wstring& reason, const std::function<bool()>& cancelled) {
+    const HWND window = dialog.filename_window;
+    if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
+        ClassName(window) != L"Edit" || (GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY)) return false;
+    if (dialog.legacy_folder) {
         // The legacy browse provider also synchronizes the tree/PIDL selection.
-        // Keep that established path, scoped to the already verified edit HWND.
         ComPtr<IUIAutomation> automation;
-        std::wstring reason;
         if (!Automation(automation, reason)) return false;
         auto edit = Element(automation.Get(), window);
         ComPtr<IUIAutomationValuePattern> value;
-        if (!edit || FAILED(edit->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value)))) return false;
+        if (!edit || FAILED(edit->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&value))))
+            return Fail(reason, L"原生目录输入框未暴露可写 ValuePattern。");
         BSTR input = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
-        if (!input) return false;
-        const HRESULT updated = (cancelled && cancelled()) ? E_ABORT : value->SetValue(input);
+        if (!input) return Fail(reason, L"无法分配原生目录输入文本。");
+        const HRESULT updated = (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason))
+            ? E_ABORT : value->SetValue(input);
         SysFreeString(input);
-        if (FAILED(updated)) return false;
+        if (FAILED(updated)) return Fail(reason, L"原生目录 ValuePattern 写入失败。");
     } else {
-        DWORD_PTR written = 0;
-        if (!Send(window, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()), written) || !written) return false;
+        // Unlike WM_SETTEXT, a replacement edit emits the normal edit-change
+        // notification consumed by the native filename host. user32 marshals
+        // EM_REPLACESEL (< WM_USER); text remains alive until Send returns.
+        DWORD_PTR result = 0;
+        if (!Send(window, EM_SETSEL, 0, static_cast<LPARAM>(-1), result) ||
+            Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
+            !Send(window, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()), result))
+            return Fail(reason, L"原生文件名输入框未完成标准编辑替换。");
     }
-    if (cancelled && cancelled()) return false;
+    if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason)) return false;
     std::wstring actual;
-    return WindowText(window, actual) && actual == text;
+    if (!WindowText(window, actual) || actual != text)
+        return Fail(reason, L"原生 Edit 回读与请求文本不一致；未发送确认。");
+    return true;
 }
 
-bool SelectFilter(const Controls& controls, size_t index, const std::vector<ui::PickerFilter>& filters,
+bool SelectFilter(const NativeFileDialog& dialog, const Controls& controls, size_t index,
+    const std::vector<ui::PickerFilter>& filters, std::wstring& reason,
     const std::function<bool()>& cancelled) {
-    if (index >= filters.size() || (cancelled && cancelled()) || ClassName(controls.filter) != L"ComboBox" ||
-        (GetWindowLongPtrW(controls.filter, GWL_STYLE) & 3) != CBS_DROPDOWNLIST) return false;
-    // CB_SETCURSEL only changes the visible selection. Let the real control
-    // process navigation keys and emit its own selection/commit notifications.
-    // These messages target the verified ComboBox, never the active window.
-    const auto key = [&](WPARAM value) {
-        if (cancelled && cancelled()) return false;
-        DWORD_PTR result = 0;
-        return Send(controls.filter, WM_KEYDOWN, value, 1, result) &&
-            (!cancelled || !cancelled()) && Send(controls.filter, WM_KEYUP, value, static_cast<LPARAM>(0xC0000001u), result);
-    };
-    if (!key(VK_HOME)) return false;
-    for (size_t current = 0; current < index; ++current)
-        if (!key(VK_DOWN)) return false;
+    if (index >= filters.size() || Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
+        ClassName(controls.filter) != L"ComboBox" || !IsChild(dialog.window, controls.filter))
+        return Fail(reason, L"原生文件类型控件身份或目标索引无效。");
+    DWORD process = 0;
+    if (GetWindowThreadProcessId(controls.filter, &process) != dialog.window_thread_id || process != dialog.process_id)
+        return Fail(reason, L"原生文件类型控件进程或线程发生变化。");
+    ComPtr<IUIAutomation> automation;
+    if (!Automation(automation, reason)) return false;
+    auto combo = Element(automation.Get(), controls.filter);
+    ComPtr<IUIAutomationExpandCollapsePattern> expand;
+    if (combo) combo->GetCurrentPatternAs(UIA_ExpandCollapsePatternId, IID_PPV_ARGS(&expand));
+    if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason)) return false;
+    DWORD_PTR result = 0;
+    const bool expanded = expand ? SUCCEEDED(expand->Expand()) : Send(controls.filter, CB_SHOWDROPDOWN, TRUE, 0, result);
+    if (!expanded) return Fail(reason, L"原生文件类型 ComboBox 无法展开。");
+    struct DropdownGuard {
+        const NativeFileDialog& dialog;
+        HWND combo;
+        ~DropdownGuard() {
+            std::wstring reason;
+            DWORD process = 0;
+            if (IdentityBeforeMutation(dialog, reason) && IsChild(dialog.window, combo) &&
+                GetWindowThreadProcessId(combo, &process) == dialog.window_thread_id && process == dialog.process_id) {
+                DWORD_PTR result = 0;
+                Send(combo, CB_SHOWDROPDOWN, FALSE, 0, result);
+            }
+        }
+    } dropdown{dialog, controls.filter};
+    COMBOBOXINFO info{sizeof(info)};
+    if (!GetComboBoxInfo(controls.filter, &info) || info.hwndCombo != controls.filter ||
+        ClassName(info.hwndList) != L"ComboLBox" ||
+        GetWindowThreadProcessId(info.hwndList, &process) != dialog.window_thread_id || process != dialog.process_id)
+        return Fail(reason, L"无法核实类型下拉列表的原生 HWND、进程与线程。");
+    auto list = Element(automation.Get(), info.hwndList);
+    ComPtr<IUIAutomationCondition> condition;
+    VARIANT type{}; type.vt = VT_I4; type.lVal = UIA_ListItemControlTypeId;
+    ComPtr<IUIAutomationElementArray> items;
+    int count = 0;
+    if (!list || FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition)) ||
+        FAILED(list->FindAll(TreeScope_Children, condition.Get(), &items)) || !items ||
+        FAILED(items->get_Length(&count)) || count != static_cast<int>(filters.size()))
+        return Fail(reason, L"已展开的类型列表未暴露完整直接子项；不遍历其他 UIA 树。");
+    ComPtr<IUIAutomationElement> item;
+    ComPtr<IUIAutomationSelectionItemPattern> selection;
+    if (FAILED(items->GetElement(static_cast<int>(index), &item)) || Name(item.Get()) != filters[index].label ||
+        FAILED(item->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&selection))))
+        return Fail(reason, L"类型列表目标标签或 SelectionItemPattern 不匹配。");
+    if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason)) return false;
+    if (FAILED(selection->Select())) return Fail(reason, L"原生文件类型 SelectionItem 选择失败。");
     DWORD_PTR selected = 0;
-    return Send(controls.filter, CB_GETCURSEL, 0, 0, selected) && selected == index;
+    if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected) || selected != index)
+        return Fail(reason, L"原生文件类型 SelectionItem 选择后，ComboBox 选中索引仍不一致。");
+    return true;
 }
 
 bool SameDirectory(const std::wstring& first, const std::wstring& second) {
@@ -539,11 +589,11 @@ bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
     Controls controls = FindControls(current.window);
     const bool changing_filter = !current.filters.empty() && filter_index != current.filter_index;
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(current, reason)) return false;
-    if (changing_filter && !SelectFilter(controls, filter_index, current.filters, cancelled))
-        return Fail(reason, L"原生文件类型无法安全切换；未确认结果。");
+    if (changing_filter && !SelectFilter(current, controls, filter_index, current.filters, reason, cancelled))
+        return false;
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(current, reason)) return false;
-    if (!WriteFilename(current.filename_window, text, current.legacy_folder, cancelled))
-        return Fail(reason, L"原生输入框未接受选择结果；未发送确认请求。");
+    if (!WriteFilename(current, text, reason, cancelled))
+        return false;
     if (Cancelled(cancelled, reason)) return false;
     NativeFileDialog prepared;
     if (!InspectNativeFileDialog(current.window, prepared, reason) || !SameIdentity(current, prepared) ||
