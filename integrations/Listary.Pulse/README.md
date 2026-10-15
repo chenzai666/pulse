@@ -1,5 +1,7 @@
 # Pulse Custom 的 Listary 插件
 
+**已停用。** 当前定制版恢复 Pulse 原生搜索，不再编译桥接入口、打包或部署此插件。下面保留旧版实现的开发记录，不能用作当前版安装步骤。
+
 此插件通过 Listary 官方 `Listary.FileAppPlugin` SDK，将 Listary 的搜索入口和 Pulse Custom 的目录导航连接起来。兼容 .NET Framework 4.8 宿主；本次目标版本为本机 Listary 7.0.0.9。
 
 ## 使用方式

@@ -66,7 +66,7 @@ $notes = Join-Path $InstallerDirectory 'release-notes.md'
 
 本次定向验证：[运行 $VerificationRunId](https://github.com/$repository/actions/runs/$VerificationRunId)。安装器另已完成隔离 runner 上的安装、覆盖升级、卸载与文件摘要核对。
 
-Listary 需用户已有安装；插件随包提供。旧版系统索引服务不会由安装器自动移除，已有系统接管应在卸载前按实际归属恢复。
+不再附带或加载 Listary 集成插件。旧版系统索引服务不会由安装器自动移除，已有系统接管应在卸载前按实际归属恢复。
 
 完整对应源码与第三方许可证随安装包提供，构建来源见 ``provenance.json``。
 "@ | Set-Content -LiteralPath $notes -Encoding utf8

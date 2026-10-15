@@ -65,11 +65,11 @@ foreach ($taskFile in @($taskItems | Where-Object { $_ -is [IO.FileInfo] })) {
     }
 }
 foreach ($taskRequired in ($PulseReleasePayload + @('LICENSE-Pulse.txt', '使用说明.md',
-    '安装Listary插件.ps1', 'sources/Pulse-Custom-source.zip',
+    'sources/Pulse-Custom-source.zip',
     'licenses/ib-pinyin-cpp/LICENSE.txt', 'licenses/md4c/LICENSE.md'))) {
     if (-not $taskFiles.ContainsKey($taskRequired)) { throw "完整包缺少必要文件：$taskRequired" }
 }
-foreach ($taskDirectory in @('quicklook', 'packs', 'conversion', 'ListaryPlugin', 'licenses')) {
+foreach ($taskDirectory in @('quicklook', 'packs', 'conversion', 'licenses')) {
     if (-not @($taskFiles.Keys | Where-Object { $_.StartsWith($taskDirectory + '/', [StringComparison]::OrdinalIgnoreCase) }).Count) {
         throw "完整包缺少组件内容：$taskDirectory"
     }

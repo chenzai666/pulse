@@ -17,7 +17,7 @@
 - 空格使用 Pulse 原生预览界面；随包内置的图像、RAW、音视频及压缩包增强组件保持启用。图片内容预览最长边提升为 4096 像素，列表缩略图及动画保留独立资源预算。QuickLook 宿主和完整插件仍随包保留，空格默认路径不启动它。
 - FFmpeg、现代图像、RAW 相机照片和 7-Zip 预览增强包随完整包预置，设置页显示“已内置”，用户无需再次下载安装。启用开关和自定义 FFmpeg 保留。
 - 新建标签页默认打开主页；“＋”和 Ctrl+T 使用相同规则。
-- 恢复 Pulse 内置全局搜索、地址栏搜索、搜索子目录与 Ctrl+Shift+F 高级搜索。“搜索与索引”设置页支持全局快捷键、拼音及索引管理；Ctrl+F 继续筛选当前目录。已有 Listary 插件独立保留，Listary 自己的快捷键和搜索设置不变。
+- 恢复 Pulse 内置全局搜索、地址栏搜索、搜索子目录与 Ctrl+Shift+F 高级搜索。“搜索与索引”设置页支持全局快捷键、拼音及索引管理；Ctrl+F 继续筛选当前目录。定制版不再加载或附带 Listary 插件。
 - 定制版使用普通用户后台索引进程，扫描各本地磁盘中当前用户可读的目录，不使用原版共享系统服务。索引数据库、索引配置和索引进程日志统一放在安装目录的 `index` 文件夹，例如 `E:\PulseCustom\index`；升级保留索引，首次搜索需要等待建库，受保护或无法读取的目录不会绕过权限。安装目录不可写时明确失败，不自动改存 C 盘。
 - “重复文件”设置页及自动重复扫描继续关闭。
 - 文件右键“转换格式…”按所选文件提供共同可用的目标格式。Filee 无界面宿主、Pandoc 和常见转换引擎随包预置，首次使用无需另行下载增强组件。
@@ -28,11 +28,11 @@
 
 ## 运行与配置
 
-完整解压后运行 pulse.exe；保留同目录的辅助程序、quicklook、packs、conversion、ListaryPlugin 和 licenses 文件夹。定制版使用 %LOCALAPPDATA%\PulseCustom 保存配置，与原版 Pulse 的窗口和配置隔离。
+完整解压后运行 pulse.exe；保留同目录的辅助程序、quicklook、packs、conversion 和 licenses 文件夹。定制版使用 %LOCALAPPDATA%\PulseCustom 保存配置，与原版 Pulse 的窗口和配置隔离。
 
 程序安装目录需要允许当前用户创建和写入 `index` 子目录。索引位置跟随程序安装位置，不使用旧版 `%LOCALAPPDATA%\Pulse` 或 `C:\ProgramData\Pulse\Index`；卸载后由用户决定是否保留索引数据。
 
-Listary 插件需由现有 Listary 加载。部署时将 ListaryPlugin 内文件放入官方支持的 FileAppPlugins\PulseCustom 目录，并将 PulseExecutable.path 设为本机定制版 pulse.exe 的绝对路径。仓库的 scripts/install_listary_plugin.ps1 在完整包摘要校验后安装并备份旧插件。现有 Listary 安装在 Program Files 时，写入其插件目录受 Windows 管理员权限保护；不得通过修改目录权限绕过。部署后在普通用户会话中正常重启 Listary。
+已部署的旧 Listary 插件可先备份，再移出 `Listary\FileAppPlugins\PulseCustom`，正常重启 Listary 后卸载其内存中的旧插件。只移除 Pulse 插件，不卸载 Listary 软件或修改其搜索设置。
 
 测试版不接收上游自动更新，避免更新覆盖定制功能。完整包中包含对应源代码和第三方许可证。
 

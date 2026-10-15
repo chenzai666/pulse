@@ -77,7 +77,6 @@
 #include "../ui/bloom_accent_picker.h"
 #include "../ui/folder_picker_dialog.h"
 #include "app_quicklook_routing.h"
-#include "listary_integration.h"
 #include "sidebar_navigation.h"
 #include "app_file_conversion.h"
 #include "app_status_center.h"
@@ -646,8 +645,6 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
     if (s && HandleDroppedNavigationMessage(*s, msg, wParam, lParam)) return 0;
     if (s && HandleFileConversionMessage(*s, msg, wParam, lParam)) return 0;
-    LRESULT listary_result = 0;
-    if (s && ListaryWindowMessage(*s, msg, wParam, lParam, listary_result)) return listary_result;
     if (s && msg != 0 && msg == app::UpdateShutdownMessage())
         return CloseForUpdate(*s);
     if (s && IsUiActivityMessage(msg)) NoteUiActivity(*s, hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
@@ -1099,7 +1096,6 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (init_core && !s->isolatedTest && !s->shot.active && !s->menushot)
             app::CleanupAbandonedUpdateStagesAsync();
         s->startupComplete = true;
-        if (edition::kCustom && !s->isolatedTest && !s->safeMode) AttachListaryWindow(*s);
         s->lastFrameTime = std::chrono::steady_clock::now();
         s->renderer.SetDetailsPanelVisible(s->showDetailsPanel);
         s->renderer.SetDetailsPanelWidth(s->detailsPanelWidth);
@@ -1797,10 +1793,6 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s && HandleBrowserNavigation(*s, lParam)) return TRUE;
         break;
 
-    case kListarySearchResultMessage:
-        if (s) HandleGlobalSearchResult(*s, wParam);
-        return 0;
-
     case WM_HOTKEY:
         if (s && wParam == GlobalSearchHotkey::kId) {
             if (s->settings.global_search_hotkey_capturing() && IsSettingsTab(ActiveTab(*s))) {
@@ -2360,7 +2352,6 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_DESTROY: {
-        if (s) CancelGlobalSearchForWindow(*s);
         if (s) CancelPendingTabDrop(*s);
         if (s) CancelDroppedNavigation(*s);
         // Closing one of several windows (M3f) tears down what the window
@@ -2368,7 +2359,6 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         const bool last_window = !s || s->core.windows.IsLastWindow(hwnd);
         if (last_window) app::shell_tags::RevokeCommandServer();
         if (s) {
-            DetachListaryWindow(*s);
             RetireStatusCenterOwner(*s);
             RetirePropertiesOwner(*s);
             s->quickLook.Shutdown();

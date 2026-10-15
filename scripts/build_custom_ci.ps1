@@ -14,8 +14,6 @@ $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 & "$PSScriptRoot/build_quicklook_host.ps1" -BuildDir $taskBuild
-& "$PSScriptRoot/build_listary_plugin.ps1" -OutputPath (Join-Path $taskBuild 'ListaryPlugin')
-& "$taskRepo/integrations/Listary.Pulse/tests/run_protocol_tests.ps1"
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild
 & "$PSScriptRoot/bundle_preview_packs.ps1" -BuildDir $taskBuild -VerifyOnly
 & "$PSScriptRoot/build_filee_host.ps1" -BuildDir $taskBuild
@@ -64,7 +62,7 @@ $imageProcess.Refresh()
 if ($imageProcess.ExitCode) { throw '原生图片实际渲染失败' }
 Remove-Item Env:PULSE_TEST_NATIVE_IMAGE_REGRESSION
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui', 'listary-search-entry')) {
+foreach ($testCase in @('tab-transfer', 'tab-pin-boundary', 'file-conversion-ui')) {
     $env:PULSE_SELFTEST_CASE = $testCase
     $testProcess = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
     if (-not $testProcess.WaitForExit(60000)) {

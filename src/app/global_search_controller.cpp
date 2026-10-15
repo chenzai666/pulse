@@ -2,7 +2,6 @@
 #include "global_search_handoff.h"
 #include "app_internal.h"
 #include "tray_reveal.h"
-#include "listary_search_entry.h"
 #include "../common/edition.h"
 #include "../common/localization.h"
 
@@ -30,7 +29,6 @@ void ApplyGlobalSearchSettings(AppState& s) {
         s.globalSearchHotkey.Error() == ERROR_HOTKEY_ALREADY_REGISTERED
             ? l10n::StringId::GlobalSearchConflict : l10n::StringId::GlobalSearchRegisterFailed));
     if (!enabled || !ok) {
-        CancelGlobalSearchForWindow(s);
         s.globalSearchWindow.Hide();
     }
     s.tray_controller.SetVisible(WantsTrayIcon(s, s.hidden_to_tray));
@@ -81,37 +79,7 @@ void ToggleGlobalSearch(AppState& s) {
     ToggleNativeGlobalSearch(s);
 }
 
-void OpenListarySearch(AppState& s) {
-    if (!s.isolatedTest && !s.safeMode && QueueListaryGlobalSearch(s.worker, s.hwnd)) return;
-    RevealWindow(s);
-    s.notification_toast.ShowError(s.hwnd, L"Listary",
-        l10n::Pick(L"无法打开 Listary。请确认已安装并启用 Listary 6.3 或更高版本。",
-            L"Unable to open Listary. Install and enable Listary 6.3 or later."));
-}
-
-void HandleGlobalSearchResult(AppState& s, WPARAM token) {
-    bool opened = false;
-    if (!TakeListaryGlobalSearchResult(s.hwnd, token, opened)) return;
-    if (edition::kCustom) {
-        if (!opened) {
-            RevealWindow(s);
-            s.notification_toast.ShowError(s.hwnd, L"Listary",
-                l10n::Pick(L"无法打开 Listary。请确认已安装并启用 Listary 6.3 或更高版本。",
-                    L"Unable to open Listary. Install and enable Listary 6.3 or later."));
-        }
-        return;
-    }
-    if (!s.appPrefs.global_search_enabled || !s.globalSearchHotkey.Registered()) return;
-    if (opened) s.globalSearchWindow.Hide();
-    else ToggleNativeGlobalSearch(s);
-}
-
-void CancelGlobalSearchForWindow(AppState& s) {
-    CancelListaryGlobalSearch(s.hwnd);
-}
-
 void ShutdownGlobalSearch(AppState& s) {
-    CancelGlobalSearchForWindow(s);
     s.globalSearchHotkey.Reset();
     s.globalSearchWindow.Shutdown();
 }

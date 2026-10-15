@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 foreach ($file in $PulseReleasePayload) {
     Copy-Item -LiteralPath (Join-Path $taskBuild $file) -Destination $stage
 }
-foreach ($directory in @('quicklook', 'packs', 'conversion', 'ListaryPlugin')) {
+foreach ($directory in @('quicklook', 'packs', 'conversion')) {
     $source = Join-Path $taskBuild $directory
     if (-not (Test-Path -LiteralPath $source)) { throw "完整组件缺失：$directory" }
     Copy-Item -LiteralPath $source -Destination (Join-Path $stage $directory) -Recurse
@@ -29,7 +29,6 @@ foreach ($entry in @(@('ib-pinyin-cpp', 'LICENSE.txt'), @('md4c', 'LICENSE.md'))
 }
 Copy-Item -LiteralPath (Join-Path $taskRepo 'LICENSE') -Destination (Join-Path $stage 'LICENSE-Pulse.txt')
 Copy-Item -LiteralPath (Join-Path $taskRepo 'docs/custom-edition.md') -Destination (Join-Path $stage '使用说明.md')
-Copy-Item -LiteralPath (Join-Path $taskRepo 'scripts/install_listary_plugin.ps1') -Destination (Join-Path $stage '安装Listary插件.ps1')
 New-Item -ItemType Directory -Path (Join-Path $stage 'sources') -Force | Out-Null
 & git -C $taskRepo archive HEAD -o (Join-Path $stage 'sources/Pulse-Custom-source.zip')
 if ($LASTEXITCODE) { throw '对应源码归档失败' }
