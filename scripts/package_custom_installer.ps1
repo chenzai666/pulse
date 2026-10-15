@@ -74,6 +74,9 @@ foreach ($taskDirectory in @('quicklook', 'packs', 'conversion', 'licenses')) {
         throw "完整包缺少组件内容：$taskDirectory"
     }
 }
+if (@($taskFiles.Keys | Where-Object { $_.StartsWith('ListaryPlugin/', [StringComparison]::OrdinalIgnoreCase) -or $_ -ieq '安装Listary插件.ps1' }).Count) {
+    throw '当前定制版不再分发 Listary 插件，拒绝打包旧组件'
+}
 $taskExecutable = Join-Path $taskStage 'pulse.exe'
 $taskBinary = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($taskExecutable))
 $taskEditionMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes('PulseCustomMainWindow'))

@@ -389,6 +389,10 @@ private:
     void StartWalkWatches(const std::vector<std::wstring>& roots);
     void StopWalkWatches();
     void PollWalkWatches();
+#ifdef PULSE_CUSTOM_EDITION
+    void QueueWalkReconcile(const std::wstring& path);
+    void ReconcileWalkDirectory();
+#endif
     uint64_t ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DWORD len);
 
     bool CatchUpVolume(VolState& v, bool* changed, bool* structural = nullptr);
@@ -499,6 +503,10 @@ private:
     };
     std::vector<WalkWatch> watches_;
     std::vector<std::wstring> walk_roots_;
+#ifdef PULSE_CUSTOM_EDITION
+    std::vector<std::wstring> walk_reconcile_;
+    std::unordered_set<std::wstring> walk_reconcile_pending_;
+#endif
     std::vector<std::wstring> excluded_paths_;
     // System group "node_modules": dependency folders stay out of search.
     bool hide_node_modules_ = true;

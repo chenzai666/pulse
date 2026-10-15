@@ -15,6 +15,10 @@ if ($text.Contains($marker)) {
 }
 $customMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes('PulseCustomMainWindow'))
 if ($text.Contains($customMarker)) {
+    foreach ($retired in @('PulseCustom.Listary.Bridge.v1', 'listary://show-launcher')) {
+        $retiredMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes($retired))
+        if ($text.Contains($retiredMarker)) { throw "定制版仍包含已停用的 Listary 接入：$retired" }
+    }
     foreach ($projectLink in @('https://github.com/chenzai666/pulse', 'https://github.com/chenzai666/pulse/releases')) {
         $linkMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes($projectLink))
         if (-not $text.Contains($linkMarker)) { throw "定制版项目入口未指向当前仓库：$projectLink" }

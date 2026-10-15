@@ -3819,7 +3819,9 @@ void Engine::FullRebuild(const char* reason) {
 #endif
     if (config_loaded && UsesLocalIndexConfig()) config_loaded = LoadMachineConfig(config, &config_error);
     if (!fixture_root_.empty()) {
+#ifndef PULSE_CUSTOM_EDITION
         config.excluded_paths.clear();
+#endif
         config.system_groups.clear();
     }
     if (!config_loaded) {
@@ -3863,6 +3865,18 @@ void Engine::FullRebuild(const char* reason) {
     }
     if (!used_mft && !incomplete && running_ && !MachineIndexScope()) {
         walk_roots_.clear();
+#ifdef PULSE_CUSTOM_EDITION
+        if (!fixture_root_.empty()) walk_roots_.push_back(fixture_root_);
+        else for (const auto& volume : configured_volumes)
+            walk_roots_.push_back(Display(fs::NormalizePath(volume.mount_point)));
+        // Keep every watch alive throughout the entire multi-volume scan.
+        StartWalkWatches(walk_roots_);
+        for (const auto& path : walk_roots_) {
+            if (!running_) break;
+            int32_t parent = EnsureChainLocked(build_, path, true, false);
+            if (parent >= 0) WalkTree(parent, path, 0);
+        }
+#else
         auto walk_root = [this](const std::wstring& path) {
             walk_roots_.push_back(path);
             // Arm before scanning so changes during reconciliation are retained.
@@ -3870,16 +3884,8 @@ void Engine::FullRebuild(const char* reason) {
             int32_t parent = EnsureChainLocked(build_, path, true, false);
             if (parent >= 0) WalkTree(parent, path, 0);
         };
-#ifndef PULSE_CUSTOM_EDITION
         wchar_t profile[MAX_PATH] = {};
-#endif
         if (!fixture_root_.empty()) walk_root(fixture_root_);
-#ifdef PULSE_CUSTOM_EDITION
-        else for (const auto& volume : configured_volumes) {
-            if (!running_) break;
-            walk_root(Display(fs::NormalizePath(volume.mount_point)));
-        }
-#else
         else if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profile)))
             walk_root(Display(fs::NormalizePath(profile)));
         // R2: non-admin default is the user profile only (RDCW can actually watch it).
@@ -4146,6 +4152,9 @@ void Engine::Worker() {
         filename_timing_.End(FilenameStage::Wait, wait_timing, wake == WAIT_TIMEOUT ? 0 : 1,
             wake == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS, wake == WAIT_TIMEOUT ? "maintenance" : "event");
         PollWalkWatches();
+#ifdef PULSE_CUSTOM_EDITION
+        ReconcileWalkDirectory();
+#endif
         changes_.Flush(false, &filename_timing_.Memory());
         if (!running_) break;
         if (rebuild_requested_.exchange(false)) {
@@ -4250,6 +4259,10 @@ void Engine::Worker() {
 }
 
 void Engine::StopWalkWatches() {
+#ifdef PULSE_CUSTOM_EDITION
+    walk_reconcile_.clear();
+    walk_reconcile_pending_.clear();
+#endif
     for (auto& w : watches_) {
         if (w.dir != INVALID_HANDLE_VALUE) {
             CancelIoEx(w.dir, &w.ov);
@@ -4322,9 +4335,59 @@ void Engine::PollWalkWatches() {
     }
 }
 
+#ifdef PULSE_CUSTOM_EDITION
+void Engine::QueueWalkReconcile(const std::wstring& path) {
+    if (walk_reconcile_pending_.insert(NormalizeChangePath(path)).second) walk_reconcile_.push_back(path);
+    if (change_signal_) SetEvent(change_signal_);
+}
+
+void Engine::ReconcileWalkDirectory() {
+    if (walk_reconcile_.empty()) return;
+    const auto directory = std::move(walk_reconcile_.back());
+    walk_reconcile_.pop_back();
+    walk_reconcile_pending_.erase(NormalizeChangePath(directory));
+    const DWORD attributes = GetFileAttributesW(directory.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        std::vector<fs::DirEntry> entries;
+        try { fs::EnumerateDirectory(directory, entries); } catch (...) {}
+        for (const auto& entry : entries) {
+            if (!running_) break;
+            const auto full = directory + (directory.ends_with(L'\\') ? L"" : L"\\") + entry.name;
+            std::unique_lock lock(mutex_);
+            if (ShouldSkipName(entry.name) || IsIndexArtifactName(entry.name) || IsExcludedPath(full)) continue;
+            if (ResolvePathLocked(full) < 0) {
+                // Reuse the normal incremental mutation, delta and feed path.
+                const auto name_bytes = static_cast<DWORD>(entry.name.size() * sizeof(wchar_t));
+                const auto length = static_cast<DWORD>(offsetof(FILE_NOTIFY_INFORMATION, FileName)) + name_bytes;
+                std::vector<BYTE> buffer((std::max)(static_cast<size_t>(length), sizeof(FILE_NOTIFY_INFORMATION)));
+                auto* notification = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer.data());
+                notification->Action = FILE_ACTION_ADDED;
+                notification->FileNameLength = name_bytes;
+                std::memcpy(notification->FileName, entry.name.data(), name_bytes);
+                ApplyNotifyLocked(directory, buffer.data(), static_cast<DWORD>(buffer.size()));
+            }
+            if (entry.is_dir && !entry.is_reparse) QueueWalkReconcile(full);
+        }
+    }
+    if (!walk_reconcile_.empty() && change_signal_) SetEvent(change_signal_);
+}
+#endif
+
 uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DWORD len) {
     uint64_t applied = 0;
     std::wstring& pending_old = walk_pending_renames_[root];
+#ifdef PULSE_CUSTOM_EDITION
+    auto excluded_path = [this](std::wstring_view path) {
+        if (IsExcludedPath(path)) return true;
+        for (size_t first = 0; first < path.size();) {
+            const auto slash = path.find_first_of(L"\\/", first);
+            const auto end = slash == std::wstring_view::npos ? path.size() : slash;
+            if (ShouldSkipName(path.substr(first, end - first))) return true;
+            first = end + 1;
+        }
+        return false;
+    };
+#endif
     const BYTE* p = buf;
     const BYTE* end = buf + len;
     while (p + sizeof(FILE_NOTIFY_INFORMATION) <= end) {
@@ -4368,6 +4431,10 @@ uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DW
         ChangeRecord event; event.path = full;
         const int32_t known = ResolvePathLocked(full);
         event.is_dir = known >= 0 && (NodeAt(known).flags & kFlagDir) != 0;
+#ifdef PULSE_CUSTOM_EDITION
+        const bool excluded = excluded_path(full);
+        const bool old_excluded = !pending_old.empty() && excluded_path(pending_old);
+#endif
         if (info->Action == FILE_ACTION_ADDED) {
             event.kind = ChangeKind::Created;
             DWORD attributes = GetFileAttributesW(full.c_str());
@@ -4377,7 +4444,26 @@ uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DW
             const int32_t old_index = ResolvePathLocked(pending_old);
             if (old_index >= 0) event.is_dir = (NodeAt(old_index).flags & kFlagDir) != 0;
             else GapFeed(); }
-        if (info->Action != FILE_ACTION_RENAMED_OLD_NAME) { RecordFeed(event); changes_.Record(std::move(event)); }
+#ifdef PULSE_CUSTOM_EDITION
+        if (info->Action == FILE_ACTION_RENAMED_NEW_NAME && excluded && !old_excluded && !pending_old.empty()) {
+            // Moving out of the indexed scope removes the old public entry.
+            event.kind = ChangeKind::Deleted; event.path = pending_old; event.old_path.clear();
+            RecordFeed(event); changes_.Record(event);
+        }
+#endif
+        if (info->Action != FILE_ACTION_RENAMED_OLD_NAME
+#ifdef PULSE_CUSTOM_EDITION
+            && !excluded
+#endif
+        ) {
+#ifdef PULSE_CUSTOM_EDITION
+            if (old_excluded && event.kind == ChangeKind::Renamed) {
+                event.kind = ChangeKind::Created;
+                event.old_path.clear();
+            }
+#endif
+            RecordFeed(event); changes_.Record(std::move(event));
+        }
         const int32_t previous_count = LiveCount();
         const int32_t changed_id = info->Action == FILE_ACTION_RENAMED_NEW_NAME
             ? ResolvePathLocked(pending_old) : known;
@@ -4411,6 +4497,17 @@ uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DW
         case FILE_ACTION_REMOVED: {
             int32_t idx = ResolvePathLocked(full);
             if (idx >= 0 && !IsTomb(idx)) {
+#ifdef PULSE_CUSTOM_EDITION
+                if (NodeAt(idx).flags & kFlagDir) {
+                    // Directory notifications do not enumerate removed children.
+                    for (int32_t child = 0; child < LiveCount(); ++child) {
+                        if (child != idx && !IsTomb(child) && IsUnderLocked(child, idx)) {
+                            tombstones_.insert(child); ++deleted_;
+                            if (auto* delta = DeltaFor(0)) delta->QueueTomb(child);
+                        }
+                    }
+                }
+#endif
                 ChildMapRemove(NodeAt(idx).parent, NameOf(idx), idx);
                 tombstones_.insert(idx);
                 ++deleted_;
@@ -4480,7 +4577,12 @@ uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DW
                 ChildMapAdd(new_parent, new_name, idx);
                 InvalidateFilterLocked();
             } else {
+#ifdef PULSE_CUSTOM_EDITION
+                const DWORD attributes = GetFileAttributesW(full.c_str());
+                EnsureChainLocked(live_, full, attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY), true);
+#else
                 EnsureChainLocked(live_, full, false, true);
+#endif
                 InvalidateFilterLocked();
             }
             pending_old.clear();
@@ -4488,6 +4590,37 @@ uint64_t Engine::ApplyNotifyLocked(const std::wstring& root, const BYTE* buf, DW
         }
         default: break;
         }
+#ifdef PULSE_CUSTOM_EDITION
+        if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
+            const int32_t updated = ResolvePathLocked(full);
+            if (updated >= 0) {
+                auto* delta = DeltaFor(0);
+                ParentChainGuard chain(LiveCount());
+                for (int32_t id = updated; chain.Visit(id); id = NodeAt(id).parent) {
+                    const Node node = NodeAt(id);
+                    if (node.parent < 0) continue;
+                    uint8_t flags = node.flags & static_cast<uint8_t>(~kFlagHidden);
+                    if (excluded_path(BuildPathLocked(id))) flags |= kFlagHidden;
+                    if (flags == node.flags) continue;
+                    if (id >= BaseCount()) live_.nodes[static_cast<size_t>(id - BaseCount())].flags = flags;
+                    else {
+                        auto& patch = patches_[id];
+                        patch.parent = node.parent; patch.flags = flags; patch.has_meta = true;
+                    }
+                    if (delta && id < previous_count) delta->QueuePatch(id, static_cast<uint8_t>(PatchBits::Meta), node.parent, flags, 0, 0, {});
+                }
+                if (NodeAt(updated).flags & kFlagDir) {
+                    if (info->Action == FILE_ACTION_RENAMED_NEW_NAME && changed_id >= 0)
+                        RefreshSubtreeVisibilityLocked(updated, delta);
+                    // Reconcile only this subtree on the existing worker; an
+                    // empty new directory must never trigger a full-disk scan.
+                    if (!excluded && (info->Action == FILE_ACTION_ADDED || old_excluded)) {
+                        QueueWalkReconcile(full);
+                    }
+                }
+            }
+        }
+#endif
         if (info->Action != FILE_ACTION_RENAMED_OLD_NAME &&
             info->Action >= FILE_ACTION_ADDED && info->Action <= FILE_ACTION_RENAMED_NEW_NAME) {
             if (auto* delta = DeltaFor(0)) {

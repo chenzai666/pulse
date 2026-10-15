@@ -11,7 +11,7 @@ $baseCommit = '3b3e871a1c61252a1bc8f8c14f435c26c276d01d'
 $allowed = @('CMakeLists.txt', '.github/workflows/custom-build.yml',
     'installer/PulseCustomSetup.iss', 'integrations/Installer/README.md',
     'integrations/Listary.Pulse/README.md', 'docs/custom-edition.md',
-    'scripts/build_search_ci.ps1', 'scripts/build_custom_installer_ci.ps1', 'scripts/build_custom_ci.ps1', 'scripts/package_custom.ps1',
+    'scripts/build_search_ci.ps1', 'scripts/build_custom_installer_ci.ps1', 'scripts/build_custom_ci.ps1', 'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1',
     'scripts/package_custom_installer.ps1', 'scripts/test_custom_installer.ps1',
     'scripts/publish_custom_release.ps1', 'src/common/settings_pages.h', 'src/common/crash_reporter.cpp',
     'src/app/address_search.cpp', 'src/app/app_commands.cpp', 'src/app/app_main.cpp',
@@ -64,14 +64,22 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_index pulse_document pulse_preview pulse_shell pulse_integration pulse_elevated pulse_custom_index_storage_test
+cmake --build "$taskBuild" --parallel 4 --target pulse_custom_index_storage_test
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '内置搜索构建失败' }
-& (Join-Path $taskBuild 'pulse_custom_index_storage_test.exe') |
-    Tee-Object -FilePath (Join-Path $taskBuild 'custom-index-storage.log')
-if ($LASTEXITCODE) { throw '安装目录索引与隔离验证失败' }
+$storageLog = Join-Path $taskBuild 'custom-index-storage.log'
+$storage = Start-Process -FilePath (Join-Path $taskBuild 'pulse_custom_index_storage_test.exe') -WindowStyle Hidden -PassThru -RedirectStandardOutput $storageLog -RedirectStandardError (Join-Path $taskBuild 'custom-index-storage-errors.log')
+if (-not $storage.WaitForExit(180000)) { $storage.Kill(); throw '安装目录索引验证超时' }
+$storage.Refresh()
+Get-Content -LiteralPath $storageLog
+if ($storage.ExitCode) { throw '安装目录索引与隔离验证失败' }
+$appBatch = Join-Path $taskBuild 'compile-search-app.bat'
+[IO.File]::WriteAllText($appBatch, [IO.File]::ReadAllText($buildBatch).Replace(
+    '--target pulse_custom_index_storage_test', '--target pulse pulse_document pulse_preview pulse_shell pulse_integration pulse_elevated'), [Text.UTF8Encoding]::new($false))
+& $appBatch
+if ($LASTEXITCODE) { throw '内置搜索主程序构建失败' }
 $env:PULSE_SELFTEST_CASE = 'search-routing'
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 $routing = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru

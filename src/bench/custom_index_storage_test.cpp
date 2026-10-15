@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <shlobj.h>
 
@@ -25,6 +26,16 @@ bool Under(const std::wstring& path, const std::wstring& root) {
 }
 struct Process {
     PROCESS_INFORMATION info{};
+    fs::path executable, output_path;
+    std::string operation;
+    void Output() const {
+        auto print = [](const fs::path& path) {
+            std::ifstream input(path, std::ios::binary);
+            if (input) std::cout << std::string(std::istreambuf_iterator<char>(input), {});
+        };
+        print(output_path);
+        if (executable.filename() == L"storage-test.exe") print(executable.parent_path() / L"probe-result.log");
+    }
     ~Process() {
         if (info.hProcess) {
             if (WaitForSingleObject(info.hProcess, 0) == WAIT_TIMEOUT) {
@@ -36,10 +47,39 @@ struct Process {
         }
     }
     bool Start(const fs::path& exe, const std::wstring& arguments) {
+        executable = exe;
+        if (exe.filename() == L"storage-test.exe") DeleteFileW((exe.parent_path() / L"probe-result.log").c_str());
+        const auto option = arguments.substr(0, arguments.find(L' '));
+        operation.clear();
+        for (const wchar_t ch : option) operation += static_cast<char>(ch);
         std::wstring command = pulse::QuoteWindowsArgument(exe.wstring()) + L" " + arguments;
-        STARTUPINFOW startup{sizeof(startup)};
+        static uint32_t next_log = 0;
+        output_path = exe.parent_path() / (L"child-" + std::to_wstring(++next_log) + L".log");
+        SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+        HANDLE output = CreateFileW(output_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &inherit, OPEN_EXISTING, 0, nullptr);
+        SIZE_T attribute_size = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+        std::vector<BYTE> attribute_memory(attribute_size);
+        STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup);
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdOutput = output; startup.StartupInfo.hStdError = output; startup.StartupInfo.hStdInput = input;
+        startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_memory.data());
+        const bool initialized = InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attribute_size) != FALSE;
+        HANDLE inherited[]{output, input};
+        const bool ready = initialized && output != INVALID_HANDLE_VALUE && input != INVALID_HANDLE_VALUE &&
+            UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), nullptr, nullptr);
         HANDLE token = nullptr, restricted = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, &token)) return false;
+        if (!ready || !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, &token)) {
+            const auto error = GetLastError();
+            if (initialized) DeleteProcThreadAttributeList(startup.lpAttributeList);
+            if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+            if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+            std::cout << "[INFO] child setup failed, Win32=" << error << '\n';
+            return false;
+        }
         TOKEN_ELEVATION elevation{}; DWORD bytes = 0;
         const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &bytes) && elevation.TokenIsElevated;
         bool ok = false;
@@ -48,20 +88,32 @@ struct Process {
             SID_AND_ATTRIBUTES disabled{admin, 0};
             if (CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admin, &length) &&
                 CreateRestrictedToken(token, DISABLE_MAX_PRIVILEGE, 1, &disabled, 0, nullptr, 0, nullptr, &restricted))
-                ok = CreateProcessAsUserW(restricted, exe.c_str(), command.data(), nullptr, nullptr, FALSE,
-                    CREATE_NO_WINDOW, nullptr, exe.parent_path().c_str(), &startup, &info) != FALSE;
+                ok = CreateProcessAsUserW(restricted, exe.c_str(), command.data(), nullptr, nullptr, TRUE,
+                    CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, exe.parent_path().c_str(), &startup.StartupInfo, &info) != FALSE;
         } else {
-            ok = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE,
-                CREATE_NO_WINDOW, nullptr, exe.parent_path().c_str(), &startup, &info) != FALSE;
+            ok = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
+                CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, exe.parent_path().c_str(), &startup.StartupInfo, &info) != FALSE;
         }
+        const auto error = ok ? ERROR_SUCCESS : GetLastError();
+        DeleteProcThreadAttributeList(startup.lpAttributeList);
+        CloseHandle(output); CloseHandle(input);
         if (restricted) CloseHandle(restricted);
         CloseHandle(token);
+        if (!ok) std::cout << "[INFO] child launch failed, Win32=" << error << ", exe=" << executable.filename().string() << ", mode=" << operation << '\n';
         return ok;
     }
     bool Exit(DWORD expected = 0) {
         DWORD code = 0;
-        return info.hProcess && WaitForSingleObject(info.hProcess, 15000) == WAIT_OBJECT_0 &&
-            GetExitCodeProcess(info.hProcess, &code) && code == expected;
+        const DWORD wait = info.hProcess ? WaitForSingleObject(info.hProcess, 15000) : WAIT_FAILED;
+        const DWORD wait_error = wait == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+        const bool queried = info.hProcess && GetExitCodeProcess(info.hProcess, &code);
+        const DWORD query_error = queried ? ERROR_SUCCESS : GetLastError();
+        Output();
+        if (wait != WAIT_OBJECT_0 || !queried || code != expected)
+            std::cout << "[INFO] child result, wait=" << wait << ", exit=0x" << std::hex << code
+                << ", expected=0x" << expected << std::dec << ", Win32=" << (wait_error ? wait_error : query_error)
+                << ", exe=" << executable.filename().string() << ", mode=" << operation << '\n';
+        return wait == WAIT_OBJECT_0 && queried && code == expected;
     }
 };
 using Snapshot = std::map<std::wstring, std::pair<uintmax_t, fs::file_time_type>>;
@@ -98,21 +150,25 @@ bool Send(HANDLE pipe, uint32_t type, uint32_t id, const std::vector<uint8_t>& p
     return Transfer(pipe, &header, sizeof(header), true) &&
         (payload.empty() || Transfer(pipe, const_cast<uint8_t*>(payload.data()), static_cast<DWORD>(payload.size()), true));
 }
-bool Search(HANDLE pipe) {
+bool Search(HANDLE pipe, const std::wstring& needle = L"portable-boundary", uint32_t expected = 1) {
     pulse::ipc::PayloadWriter writer;
     writer.PutU32(1); writer.PutU32(static_cast<uint32_t>(ResultSort::Index)); writer.PutU32(20); writer.PutU32(0);
-    writer.PutString(L"portable-boundary"); writer.PutString(L"");
+    writer.PutString(needle); writer.PutString(L"");
+    static uint32_t next_id = 0;
+    uint32_t stable = 0;
     for (uint32_t attempt = 1; attempt <= 50; ++attempt) {
-        if (!Send(pipe, REQ_IDX_SEARCH, attempt, writer.data())) return false;
+        const auto id = ++next_id;
+        if (!Send(pipe, REQ_IDX_SEARCH, id, writer.data())) return false;
         for (;;) {
             pulse::ipc::MsgHeader header{};
             if (!Transfer(pipe, &header, sizeof(header), false) || header.magic != kIndexMagic || header.payload_size > kIndexMaxPayload) return false;
             std::vector<uint8_t> bytes(header.payload_size);
             if (!bytes.empty() && !Transfer(pipe, bytes.data(), static_cast<DWORD>(bytes.size()), false)) return false;
-            if (header.type != RSP_IDX_SEARCH || header.request_id != attempt) continue;
+            if (header.type != RSP_IDX_SEARCH || header.request_id != id) continue;
             pulse::ipc::PayloadReader reader(bytes.data(), bytes.size()); uint32_t total = 0, count = 0;
             if (!reader.GetU32(total) || !reader.GetU32(count)) return false;
-            if (total == 1 && count == 1) return true;
+            stable = total == expected && count == expected ? stable + 1 : 0;
+            if (stable >= (expected ? 1u : 3u)) return true;
             break;
         }
         Sleep(100);
@@ -144,8 +200,24 @@ int Probe() {
 }
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 2 && std::wstring_view(argv[1]) == L"--probe") return Probe();
-    if (argc == 2 && std::wstring_view(argv[1]) == L"--expect-unwritable") return custom_storage::Writable() ? 1 : 0;
+    std::cout << std::unitbuf;
+    if (argc == 2 && (std::wstring_view(argv[1]) == L"--probe" || std::wstring_view(argv[1]) == L"--expect-unwritable")) {
+        std::ofstream result(fs::path(custom_storage::InstallDirectory()) / L"probe-result.log", std::ios::binary | std::ios::trunc);
+        if (!result) { std::cerr << "[INFO] cannot open probe-result.log, Win32=" << GetLastError() << '\n'; return 2; }
+        auto* output = std::cout.rdbuf(result.rdbuf());
+        std::cout << "[INFO] probe entered main\n";
+        int code = 0;
+        if (std::wstring_view(argv[1]) == L"--probe") code = Probe();
+        else {
+            const bool writable = custom_storage::Writable();
+            const DWORD error = GetLastError();
+            std::cout << "[INFO] unwritable probe, writable=" << writable << ", Win32=" << error << '\n';
+            code = writable ? 1 : 0;
+        }
+        std::cout << "[INFO] probe exit=" << code << '\n';
+        std::cout.rdbuf(output);
+        return code;
+    }
     const auto original = LegacySnapshot();
     wchar_t temporary[32768]{};
     if (!GetTempPathW(ARRAYSIZE(temporary), temporary)) return 1;
@@ -164,6 +236,14 @@ int wmain(int argc, wchar_t** argv) {
     const auto fixture = scratch / L"fixture";
     fs::create_directories(fixture);
     std::ofstream(fixture / L"portable-boundary.txt") << "fixture";
+    const auto excluded = fixture / L"excluded";
+    fs::create_directories(excluded);
+    std::ofstream(excluded / L"excluded-initial-token.txt") << "excluded";
+    {
+        Process child;
+        Check(child.Start(host, L"--configure-exclude " + pulse::QuoteWindowsArgument(excluded.wstring()) + L" --enable") && child.Exit(),
+            "explicit fixture exclusion is configured without elevation");
+    }
     for (int run = 0; run < 2; ++run) {
         const auto token = L"portable-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(run);
         Process child;
@@ -173,6 +253,56 @@ int wmain(int argc, wchar_t** argv) {
         HANDLE pipe = started ? Connect(L"\\\\.\\pipe\\PulseIndex.Test." + token) : INVALID_HANDLE_VALUE;
         Check(pipe != INVALID_HANDLE_VALUE && Search(pipe), run ? "cached helper restart returns the fixture through the real search protocol" : "cold helper returns the fixture through the real search protocol");
         if (pipe != INVALID_HANDLE_VALUE) {
+            Check(Search(pipe, L"excluded-initial-token", 0), "cold and cached searches honor the configured fixture exclusion");
+            if (run == 0) {
+                const auto snapshot = install / L"index" / L"pulse-index.bin";
+                const auto before_empty = fs::last_write_time(snapshot);
+                fs::create_directory(fixture / L"live-empty-directory-token");
+                Check(Search(pipe, L"live-empty-directory-token"), "live empty directory is indexed incrementally");
+                Sleep(750);
+                Check(fs::last_write_time(snapshot) == before_empty, "creating an empty directory never rewrites the full filename snapshot");
+
+                const auto incoming = scratch / L"prepared-tree";
+                fs::create_directories(incoming / L"nested");
+                std::ofstream(incoming / L"nested" / L"incoming-descendant-token.txt") << "prepared outside the watch";
+                const auto before_incoming = fs::last_write_time(snapshot);
+                fs::rename(incoming, fixture / L"incoming-tree");
+                Check(Search(pipe, L"incoming-descendant-token"), "moving in a populated directory discovers missing descendants incrementally");
+                Check(fs::last_write_time(snapshot) == before_incoming, "subtree reconciliation does not rebuild the full filename snapshot");
+
+                const auto created = fixture / L"live-created-token.txt", renamed = fixture / L"live-renamed-token.txt";
+                std::ofstream(created) << "created while helper runs";
+                Check(Search(pipe, L"live-created-token"), "live file creation is returned without restarting the helper");
+                fs::rename(created, renamed);
+                Check(Search(pipe, L"live-renamed-token") && Search(pipe, L"live-created-token", 0), "live rename updates the new and old search names");
+                fs::remove(renamed);
+                Check(Search(pipe, L"live-renamed-token", 0), "live deletion removes the search hit");
+
+                const auto hidden = excluded / L"excluded-live-token.txt";
+                const auto marker = fixture / L"after-excluded-token.txt";
+                std::ofstream(hidden) << "must remain excluded";
+                std::ofstream(marker) << "notification ordering marker";
+                Check(Search(pipe, L"after-excluded-token") && Search(pipe, L"excluded-live-token", 0),
+                    "live creation inside an excluded directory never becomes searchable");
+                fs::rename(marker, excluded / marker.filename());
+                const auto confirmed = fixture / L"rename-confirmation-token.txt";
+                std::ofstream(confirmed) << "notification ordering marker";
+                Check(Search(pipe, L"rename-confirmation-token") && Search(pipe, L"after-excluded-token", 0),
+                    "moving an indexed file into an excluded directory hides its search hit");
+                fs::rename(hidden, fixture / hidden.filename());
+                Check(Search(pipe, L"excluded-live-token"), "moving a file out of an excluded directory makes it searchable");
+
+                const auto tree = fixture / L"live-tree";
+                fs::create_directories(tree);
+                std::ofstream(tree / L"directory-crossing-token.txt") << "directory subtree";
+                Check(Search(pipe, L"directory-crossing-token"), "live directory population is reconciled");
+                fs::rename(tree, excluded / tree.filename());
+                Check(Search(pipe, L"directory-crossing-token", 0), "moving a populated directory into an exclusion hides descendants");
+                fs::rename(excluded / tree.filename(), tree);
+                Check(Search(pipe, L"directory-crossing-token"), "moving a populated directory out of an exclusion restores descendants");
+                fs::remove_all(tree);
+                Check(Search(pipe, L"directory-crossing-token", 0), "live directory deletion removes descendant search hits");
+            }
             Send(pipe, REQ_IDX_TEST_SHUTDOWN, 0); CloseHandle(pipe);
             Check(child.Exit(), "fixture helper stops cleanly");
         }

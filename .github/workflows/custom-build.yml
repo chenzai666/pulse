@@ -197,6 +197,8 @@ jobs:
           name: Pulse-Custom-build-diagnostics
           path: |
             build-custom/*.log
+            build-custom/pulse_custom_index_storage_test.exe
+            build-custom/Pulse.Index.exe
             bench_data/search-routing/**
             bench_data/search-settings/**
             bench_data/custom-index-storage/**
