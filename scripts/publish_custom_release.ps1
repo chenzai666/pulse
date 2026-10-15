@@ -50,7 +50,7 @@ $notes = Join-Path $InstallerDirectory 'release-notes.md'
 
 ## 下载安装
 
-- Windows x64 安装包：**$installerName**。安装到当前用户目录，使用独立快捷方式和卸载项，与原版程序及配置隔离。
+- Windows x64 安装包：**$installerName**。支持自定义安装目录（例如 **E:\PulseCustom**），升级沿用已选目录；使用独立快捷方式和卸载项，与原版程序及配置隔离。
 - 首次安装和覆盖升级不会自动启动软件、设置文件关联或安装索引服务；卸载保留用户配置。
 - 安装包尚未进行代码签名，SHA256：``$expectedHash``。
 
