@@ -60,7 +60,8 @@ struct StatusCenterWindowTestAccess {
         window.scale_ = scale;
         window.dark_ = dark;
         window.backdrop_ = false;
-        window.compositor_.Resize(static_cast<int>(464 * scale), static_cast<int>(520 * scale));
+        window.records_ = records;
+        window.compositor_.Resize(static_cast<int>(440 * scale), static_cast<int>(window.PreferredHeight() * scale));
         window.compositor_.RecreateTextFormats(scale);
         window.painter_.SetCompositor(&window.compositor_);
         window.painter_.SetScale(scale);

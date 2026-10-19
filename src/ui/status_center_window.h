@@ -39,6 +39,8 @@ private:
     D2D1_RECT_F ButtonRect(int control) const;
     bool Enabled(int control) const;
     void FocusNext(bool backwards);
+    float PreferredHeight() const;
+    void ResizeToContent();
 
     HWND hwnd_ = nullptr;
     HWND owner_ = nullptr;
@@ -53,6 +55,7 @@ private:
     int hover_ = 0;
     int pressed_ = 0;
     int focus_ = 1;
+    bool keyboard_focus_ = false;
     D2D1_COLOR_F accent_ = HexColor(0x0078D4);
 };
 

@@ -1,0 +1,47 @@
+name: 验证状态中心布局
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  status-center:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 构建主程序并验证状态中心实际绘制
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_status_center_ci.ps1
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Custom-status-center-update
+          path: build-custom/status-center-update/**
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Custom-complete
+          path: |
+            dist/Pulse-Custom-*.zip
+            dist/Pulse-Custom-*.sha256
+            dist/custom-build.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Pulse-Custom-status-center-gallery
+          path: |
+            build-custom/status-center-gallery/**
+            build-custom/*.log
+          if-no-files-found: ignore

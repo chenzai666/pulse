@@ -15,6 +15,8 @@ namespace {
 constexpr wchar_t kClass[] = L"PulseStatusCenterWindow";
 constexpr float kHeader = 84.0f;
 constexpr float kRow = 132.0f;
+constexpr float kWidth = 440.0f;
+constexpr float kEmptyHeight = 232.0f;
 
 std::wstring TaskName(const app::StatusTaskRecord& record) {
     if (record.key.source == app::StatusTaskSource::FileConversion)
@@ -68,7 +70,7 @@ bool StatusCenterWindow::Create(HWND owner, StatusCenterCallbacks callbacks) {
     const UINT dpi = compat::WindowDpi(owner);
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP, kClass,
         l10n::Pick(L"状态中心", L"Status center"), WS_POPUP | WS_THICKFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(464, dpi, 96), MulDiv(520, dpi, 96),
+        CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(static_cast<int>(kWidth), dpi, 96), MulDiv(static_cast<int>(kEmptyHeight), dpi, 96),
         owner, nullptr, wc.hInstance, this);
     return hwnd_ != nullptr;
 }
@@ -98,6 +100,7 @@ void StatusCenterWindow::Update(const std::vector<app::StatusTaskRecord>& record
     const auto focused = key_for(focus_);
     const auto pressed = key_for(pressed_);
     records_ = records;
+    if (visible()) ResizeToContent();
     const auto rebase = [&](int control, const std::optional<app::StatusTaskKey>& key) {
         if (control < 3) return control;
         for (size_t i = 0; i < records_.size(); ++i)
@@ -121,16 +124,30 @@ void StatusCenterWindow::Show(POINT anchor) {
     MONITORINFO monitor{sizeof(monitor)};
     if (!GetMonitorInfoW(MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST), &monitor)) return;
     const RECT work = monitor.rcWork;
-    const int width = (std::min)(MulDiv(464, compat::WindowDpi(owner_), 96), static_cast<int>(work.right - work.left));
-    const int height = (std::min)(MulDiv(520, compat::WindowDpi(owner_), 96), static_cast<int>(work.bottom - work.top));
+    const int width = (std::min)(MulDiv(static_cast<int>(kWidth), compat::WindowDpi(owner_), 96), static_cast<int>(work.right - work.left));
+    const int height = (std::min)(MulDiv(static_cast<int>(PreferredHeight()), compat::WindowDpi(owner_), 96), static_cast<int>(work.bottom - work.top));
     const int x = std::clamp(static_cast<int>(anchor.x) - width, static_cast<int>(work.left), static_cast<int>(work.right) - width);
     const int y = std::clamp(static_cast<int>(anchor.y), static_cast<int>(work.top), static_cast<int>(work.bottom) - height);
+    keyboard_focus_ = false;
     SetWindowPos(hwnd_, HWND_TOP, x, y, width, height, SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
     SetForegroundWindow(hwnd_);
     SetFocus(hwnd_);
 }
 
 bool StatusCenterWindow::visible() const { return hwnd_ && IsWindowVisible(hwnd_); }
+
+float StatusCenterWindow::PreferredHeight() const {
+    return records_.empty() ? kEmptyHeight : (std::min)(520.0f, kHeader + static_cast<float>(records_.size()) * kRow + 12.0f);
+}
+
+void StatusCenterWindow::ResizeToContent() {
+    RECT rect{};
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!GetWindowRect(hwnd_, &rect) || !GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor)) return;
+    const int height = (std::min)(static_cast<int>(PreferredHeight() * scale_), static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top));
+    const int y = std::clamp(static_cast<int>(rect.top), static_cast<int>(monitor.rcWork.top), static_cast<int>(monitor.rcWork.bottom) - height);
+    SetWindowPos(hwnd_, nullptr, rect.left, y, rect.right - rect.left, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
 
 float StatusCenterWindow::MaxScroll() const {
     const float height = static_cast<float>(compositor_.Height()) / (std::max)(scale_, 0.001f);
@@ -144,7 +161,7 @@ void StatusCenterWindow::Scroll(float amount) {
 
 D2D1_RECT_F StatusCenterWindow::ButtonRect(int control) const {
     const float width = static_cast<float>(compositor_.Width()) / (std::max)(scale_, 0.001f);
-    if (control == 1) return DipRect(scale_, width - 42, 8, 30, 30);
+    if (control == 1) return DipRect(scale_, width - 46, 12, 30, 30);
     if (control == 2) return DipRect(scale_, width - 148, 44, 132, 28);
     if (control < 3) return {};
     const float y = kHeader + static_cast<float>((control - 3) / 2) * kRow - scroll_ + 92;
@@ -179,6 +196,7 @@ void StatusCenterWindow::Activate(int control) {
 }
 
 void StatusCenterWindow::FocusNext(bool backwards) {
+    keyboard_focus_ = true;
     const int controls = 3 + static_cast<int>(records_.size()) * 2;
     for (int attempt = 0; attempt < controls; ++attempt) {
         focus_ = (focus_ + (backwards ? controls - 1 : 1)) % controls;
@@ -207,6 +225,7 @@ void StatusCenterWindow::Render(bool present) {
     BeginSurface(compositor_, painter_, theme, dark_, contrast, backdrop_, scale_);
     const float width = static_cast<float>(compositor_.Width()) / scale_;
     const float height = static_cast<float>(compositor_.Height()) / scale_;
+    painter_.FillRoundedRect(DipRect(scale_, 1, 1, width - 2, height - 2), 11 * scale_, theme.surface_flyout);
     const auto text = [&](const std::wstring& value, float x, float y, float w, float h, bool heading = false, bool error = false) {
         painter_.DrawText(value, DipRect(scale_, x, y, w, h), heading ? compositor_.HeaderFormat() : compositor_.SmallFormat(),
             error ? theme.danger : heading ? theme.text : theme.text_secondary);
@@ -217,19 +236,31 @@ void StatusCenterWindow::Render(bool present) {
         spec.text = label;
         spec.glyph = glyph;
         spec.icon_only = control == 1;
-        spec.kind = control == 1 ? fluent::ButtonKind::Transparent : fluent::ButtonKind::Standard;
+        spec.kind = control <= 2 ? fluent::ButtonKind::Transparent : fluent::ButtonKind::Standard;
         spec.state.enabled = Enabled(control);
         spec.state.hovered = hover_ == control;
         spec.state.pressed = pressed_ == control;
         painter_.DrawButton(spec);
-        if (focus_ == control && GetFocus() == hwnd_) painter_.DrawFocusRing(spec.bounds, 4 * scale_);
+        if (keyboard_focus_ && focus_ == control && GetFocus() == hwnd_) painter_.DrawFocusRing(spec.bounds, 4 * scale_);
     };
-    text(l10n::Pick(L"状态中心", L"Status center"), 18, 10, width - 70, 26, true);
+    text(l10n::Pick(L"状态中心", L"Status center"), 20, 14, width - 84, 26, true);
     const auto active = std::count_if(records_.begin(), records_.end(), [](const auto& record) { return !app::StatusTaskTerminal(record.state); });
-    text(std::to_wstring(active) + l10n::Pick(L" 个进行中", L" active"), 18, 44, width - 176, 28);
+    const auto summary = records_.empty() ? l10n::Pick(L"文件操作与格式转换", L"File operations and conversions")
+        : std::to_wstring(active) + l10n::Pick(L" 个进行中", L" active");
+    text(summary, 20, 44, width - (Enabled(2) ? 184 : 40), 28);
     button(1, L"", L"\xE711");
-    button(2, l10n::Pick(L"清除完成记录", L"Clear history"));
-    if (records_.empty()) text(l10n::Pick(L"暂无任务记录", L"No tasks yet"), 18, 116, width - 36, 32);
+    if (Enabled(2)) button(2, l10n::Pick(L"清除完成记录", L"Clear history"));
+    painter_.FillRoundedRect(DipRect(scale_, 20, kHeader - 1, width - 40, 1), 0, theme.stroke_divider);
+    if (records_.empty()) {
+        const float center = kHeader + (height - kHeader) * 0.5f;
+        painter_.FillRoundedRect(DipRect(scale_, width * 0.5f - 20, center - 46, 40, 40), 20 * scale_, theme.fill_hover);
+        painter_.DrawGlyph(L"\xE9D9", DipRect(scale_, width * 0.5f - 12, center - 38, 24, 24), theme.text_secondary);
+        painter_.DrawText(l10n::Pick(L"暂无任务记录", L"No tasks yet"), DipRect(scale_, 20, center + 2, width - 40, 24),
+            compositor_.TextFormat(), theme.text, fluent::HorizontalAlignment::Center);
+        painter_.DrawText(l10n::Pick(L"复制、移动和转换任务会显示在这里", L"Copy, move and conversion tasks appear here"),
+            DipRect(scale_, 20, center + 28, width - 40, 24), compositor_.SmallFormat(), theme.text_secondary,
+            fluent::HorizontalAlignment::Center);
+    }
     auto* dc = compositor_.Dc();
     dc->PushAxisAlignedClip(DipRect(scale_, 0, kHeader, width, (std::max)(0.0f, height - kHeader - 12)), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (size_t i = 0; i < records_.size(); ++i) {
@@ -306,7 +337,7 @@ LRESULT StatusCenterWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         return BorderlessHitTest(hwnd_, lparam, 42 * scale_, ButtonRect(1));
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
-        limits->ptMinTrackSize = {static_cast<LONG>(320 * scale_), static_cast<LONG>(240 * scale_)};
+        limits->ptMinTrackSize = {static_cast<LONG>(360 * scale_), static_cast<LONG>(kEmptyHeight * scale_)};
         return 0;
     }
     case WM_SIZE:
@@ -332,6 +363,7 @@ LRESULT StatusCenterWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
     }
     case WM_MOUSELEAVE: hover_ = 0; InvalidateRect(hwnd_, nullptr, FALSE); return 0;
     case WM_LBUTTONDOWN:
+        keyboard_focus_ = false;
         pressed_ = HitTest(static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)));
         if (pressed_) { focus_ = pressed_; SetCapture(hwnd_); SetFocus(hwnd_); InvalidateRect(hwnd_, nullptr, FALSE); }
         return 0;
