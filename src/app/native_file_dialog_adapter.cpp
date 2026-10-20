@@ -498,6 +498,24 @@ bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
         (identifier != IDOK && identifier != IDCANCEL) ||
         GetDlgItem(dialog.window, identifier) != button || GetDlgCtrlID(button) != identifier ||
         ClassName(button) != L"Button" || !IsWindowEnabled(button)) return false;
+    if (dialog.kind != NativeDialogKind::Save || identifier != IDOK) {
+        // Folder dialogs keep their native provider's selection semantics.
+        ComPtr<IUIAutomation> automation;
+        std::wstring automation_reason;
+        ComPtr<IUIAutomationInvokePattern> invoke;
+        if (Automation(automation, automation_reason)) {
+            auto element = Element(automation.Get(), button);
+            if (element) element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke));
+        }
+        if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
+            GetDlgItem(dialog.window, identifier) != button || !IsWindowEnabled(button)) return false;
+        if (invoke) {
+            if (SUCCEEDED(invoke->Invoke())) return true;
+            return Fail(reason, L"原生按钮调用失败；不重复触发可能已执行的请求。");
+        }
+        if (PostMessageW(button, BM_CLICK, 0, 0)) return true;
+        return Fail(reason, L"无法向原生对话框发送按钮请求。");
+    }
     const HWND parent = GetParent(button);
     DWORD button_process = 0, parent_process = 0;
     if (!parent || (parent != dialog.window && !IsChild(dialog.window, parent)) ||

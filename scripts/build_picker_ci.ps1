@@ -81,15 +81,22 @@ if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target $targets
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
-& $buildBatch
-if ($LASTEXITCODE) { throw '文件窗口定向构建失败' }
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
 if ($NativeHandoff) {
+    $adapterBatch = Join-Path $taskBuild 'compile-picker-adapter-first.bat'
+    $adapterBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_native_file_dialog_adapter_test')
+    [IO.File]::WriteAllText($adapterBatch, $adapterBuild, [Text.UTF8Encoding]::new($false))
+    & $adapterBatch
+    if ($LASTEXITCODE) { throw '原生适配器构建失败' }
     $adapter = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_file_dialog_adapter_test.exe') -ArgumentList '--interaction' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'adapter.log') -RedirectStandardError (Join-Path $galleryOutput 'adapter-error.log')
     if (-not $adapter.WaitForExit(180000)) { $adapter.Kill(); throw '原生窗口提交验证超时' }
     $adapter.Refresh()
     if ($adapter.ExitCode) { throw '原生窗口单次提交验证失败' }
+}
+& $buildBatch
+if ($LASTEXITCODE) { throw '文件窗口定向构建失败' }
+if ($NativeHandoff) {
     $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
     $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
     $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-picker-data'
