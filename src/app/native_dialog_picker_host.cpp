@@ -244,6 +244,14 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
         return 1;
     }
     lifetime.PickerFinished();
+#ifdef PULSE_WITH_SELFTEST
+    // Reproduce a scheduler/history-write pause after the helper re-enables its owner.
+    // The parent's polling loop can disable that owner again before receiving Result.
+    wchar_t handoff_delay[8]{};
+    if (spec.mode == ui::PickerMode::Save && GetEnvironmentVariableW(
+            L"PULSE_TEST_NATIVE_HANDOFF_DELAY", handoff_delay, ARRAYSIZE(handoff_delay)) &&
+        wcscmp(handoff_delay, L"1") == 0) Sleep(100);
+#endif
     if (picked && !result.paths.empty()) {
         last_directory = spec.mode == ui::PickerMode::Folder ? result.paths.front()
             : ui::PickerParent(result.paths.front());

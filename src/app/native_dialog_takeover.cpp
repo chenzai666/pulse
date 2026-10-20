@@ -1,6 +1,7 @@
 #include "native_dialog_takeover.h"
 #include "native_dialog_wire.h"
 #include "../common/command_line.h"
+#include "../common/runtime_log.h"
 #include <atomic>
 #include <array>
 #include <cstring>
@@ -40,38 +41,61 @@ struct Session {
     bool owns_disable = false;
     bool concealed = false;
     bool added_layered = false;
-    bool SameSource() const {
+    COLORREF original_color_key = 0;
+    BYTE original_alpha = 255;
+    DWORD original_layered_flags = LWA_ALPHA;
+    bool SameWindow() const {
         DWORD pid = 0;
         FILETIME created{};
-        const HWND filename = source_filename.load(), confirm = source_confirm.load();
         return IsWindow(source) && GetWindowThreadProcessId(source, &pid) == source_thread && pid == source_pid &&
-            ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0 &&
-            (!filename || IsChild(source, filename)) && (!confirm || GetDlgItem(source, IDOK) == confirm);
+            ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0;
+    }
+    bool SameSource() const {
+        const HWND filename = source_filename.load(), confirm = source_confirm.load();
+        return SameWindow() && (!filename || IsChild(source, filename)) &&
+            (!confirm || GetDlgItem(source, IDOK) == confirm);
+    }
+    bool IsConcealed() {
+        std::lock_guard lock(owner_mutex);
+        return concealed;
     }
     void Conceal(bool disable) {
         std::lock_guard lock(owner_mutex);
         if (!SameSource()) return;
-        const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
-        if ((style & WS_EX_LAYERED) == 0) {
-            SetWindowLongPtrW(source, GWL_EXSTYLE, style | WS_EX_LAYERED);
-            added_layered = true;
+        if (!concealed) {
+            const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
+            if (style & WS_EX_LAYERED) {
+                if (!GetLayeredWindowAttributes(source, &original_color_key, &original_alpha,
+                        &original_layered_flags)) return;
+            } else {
+                SetLastError(ERROR_SUCCESS);
+                if (!SetWindowLongPtrW(source, GWL_EXSTYLE, style | WS_EX_LAYERED) &&
+                    GetLastError() != ERROR_SUCCESS) return;
+                added_layered = true;
+            }
+            // Alpha is set before the native dialog's first Show whenever its controls are ready.
+            if (!SetLayeredWindowAttributes(source, 0, 0, LWA_ALPHA)) {
+                if (added_layered) SetWindowLongPtrW(source, GWL_EXSTYLE, style);
+                added_layered = false;
+                return;
+            }
+            concealed = true;
+            diagnostics::runtime::Event("native_dialog_concealed", {{"pid", source_pid},
+                {"already_visible", IsWindowVisible(source) ? 1u : 0u}});
         }
-        // Keep the native dialog alive for its modal loop, but do not leave it on screen behind Pulse.
-        SetLayeredWindowAttributes(source, 0, 0, LWA_ALPHA);
         if (disable && IsWindowEnabled(source)) EnableWindow(source, FALSE);
         if (disable) owns_disable = true;
-        concealed = true;
     }
     void Restore() {
         std::lock_guard lock(owner_mutex);
-        if (!SameSource()) { owns_disable = false; concealed = false; added_layered = false; return; }
+        if (!SameWindow()) { owns_disable = false; concealed = false; added_layered = false; return; }
         if (owns_disable) EnableWindow(source, TRUE);
         if (concealed) {
             if (added_layered) {
                 const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
                 SetWindowLongPtrW(source, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
             } else {
-                SetLayeredWindowAttributes(source, 0, 255, LWA_ALPHA);
+                SetLayeredWindowAttributes(source, original_color_key, original_alpha, original_layered_flags);
             }
         }
         owns_disable = false;
@@ -97,13 +121,13 @@ std::wstring Executable() {
     if (!size || size >= path.size()) return {};
     path.resize(size); return path;
 }
-bool Candidate(HWND window) {
+bool Candidate(HWND window, bool require_visible = true) {
     wchar_t klass[64]{};
     DWORD pid = 0;
     const HWND popup = window ? GetWindow(window, GW_ENABLEDPOPUP) : nullptr;
     if (popup && popup != window && GetWindow(popup, GW_OWNER) == window &&
         GetClassNameW(popup, klass, ARRAYSIZE(klass)) && wcscmp(klass, L"PulseFolderPickerWindow") == 0) return false;
-    return window && IsWindowVisible(window) && IsWindowEnabled(window) && GetWindow(window, GW_OWNER) &&
+    return window && (!require_visible || IsWindowVisible(window)) && IsWindowEnabled(window) && GetWindow(window, GW_OWNER) &&
         GetWindowThreadProcessId(window, &pid) && pid != GetCurrentProcessId() &&
         GetClassNameW(window, klass, ARRAYSIZE(klass)) && wcscmp(klass, L"#32770") == 0;
 }
@@ -123,6 +147,23 @@ namespace {
 bool Cancelled(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, const Session& session) {
     return !shared->active || WaitForSingleObject(session.cancelled.value, 0) == WAIT_OBJECT_0;
 }
+enum class CommitCompletion { Closed, NativeValidation, TimedOut, Cancelled };
+CommitCompletion AwaitNativeCompletion(const std::shared_ptr<NativeDialogTakeover::Shared>& shared,
+    const std::shared_ptr<Session>& session) {
+    const ULONGLONG deadline = GetTickCount64() + 3000;
+    do {
+        if (Cancelled(shared, *session)) return CommitCompletion::Cancelled;
+        if (!session->SameWindow() || !IsWindowVisible(session->source)) return CommitCompletion::Closed;
+        const HWND popup = GetWindow(session->source, GW_ENABLEDPOPUP);
+        DWORD pid = 0;
+        if (popup && popup != session->source && popup != session->picker.load() &&
+            IsWindowVisible(popup) && GetWindowThreadProcessId(popup, &pid) && pid == session->source_pid &&
+            GetWindow(popup, GW_OWNER) == session->source && !IsWindowEnabled(session->source))
+            return CommitCompletion::NativeValidation;
+        WaitForSingleObject(session->cancelled.value, 20);
+    } while (GetTickCount64() < deadline);
+    return CommitCompletion::TimedOut;
+}
 void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, const std::shared_ptr<Session>& session) {
     if (shared->desktop && !SetThreadDesktop(shared->desktop)) { session->done = true; return; }
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -132,11 +173,23 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     NativeFileDialog source;
     std::wstring reason;
     bool identified = false;
-    for (int attempt = 0; attempt < 3 && !Cancelled(shared, *session); ++attempt) {
-        if (!session->SameSource() || !Candidate(session->source)) return;
-        if (InspectNativeFileDialog(session->source, source, reason)) { identified = true; break; }
-        WaitForSingleObject(session->cancelled.value, 150);
-    }
+    const ULONGLONG identify_deadline = GetTickCount64() + 1500;
+    do {
+        if (!session->SameSource() || !Candidate(session->source, false) || Cancelled(shared, *session)) return;
+        if (!session->IsConcealed()) {
+            NativeFileDialog early;
+            if (CanConcealNativeFileDialog(session->source, early, reason)) {
+                session->source_filename = early.filename_window;
+                session->source_confirm = early.confirm_window;
+                session->Conceal(false);
+            }
+        }
+        if (IsWindowVisible(session->source) && InspectNativeFileDialog(session->source, source, reason)) {
+            identified = true;
+            break;
+        }
+        WaitForSingleObject(session->cancelled.value, 10);
+    } while (GetTickCount64() < identify_deadline);
     if (!identified || Cancelled(shared, *session)) return;
     if (source.process_id != session->source_pid || source.window_thread_id != session->source_thread ||
         CompareFileTime(&source.process_created, &session->source_created) != 0 || !session->SameSource()) return;
@@ -253,11 +306,25 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
         if (!ready && GetTickCount64() - started > 15000) break;
         WaitForSingleObject(session->cancelled.value, 25);
     }
-    if (received && !Cancelled(shared, *session) && NativeDialogStillMatches(source)) {
-        if (session->SameSource()) EnableWindow(session->source, TRUE);
-        const auto cancelled = [&] { return Cancelled(shared, *session); };
-        if (picked) CommitNativeDialogSelection(source, paths, filter_index, reason, cancelled);
-        else if (!cancelled()) CancelNativeDialog(source, reason, cancelled);
+    if (received && !Cancelled(shared, *session) && session->SameSource()) {
+        // Inspect rejects disabled dialogs. The polling conceal can disable the source
+        // after the helper enabled it, so restore that state before validating the handoff.
+        EnableWindow(session->source, TRUE);
+        if (NativeDialogStillMatches(source)) {
+            const auto cancelled = [&] { return Cancelled(shared, *session); };
+            const bool submitted = picked ? CommitNativeDialogSelection(source, paths, filter_index, reason, cancelled)
+                : !cancelled() && CancelNativeDialog(source, reason, cancelled);
+            // Posting the button notification precedes the native modal loop handling it.
+            // Keep the source concealed through that handoff; never send a second confirmation.
+            const auto completion = AwaitNativeCompletion(shared, session);
+            diagnostics::runtime::Event("native_dialog_commit", {{"pid", source.process_id},
+                {"kind", static_cast<uint64_t>(source.kind)}, {"picked", picked ? 1u : 0u},
+                {"submitted", submitted ? 1u : 0u}, {"completion", static_cast<uint64_t>(completion)}},
+                completion == CommitCompletion::TimedOut ? diagnostics::runtime::Level::Warning : diagnostics::runtime::Level::Info);
+        } else {
+            diagnostics::runtime::Event("native_dialog_handoff_rejected", {{"pid", source.process_id}},
+                diagnostics::runtime::Level::Warning);
+        }
     }
     session->Restore();
     // 关闭接管仅关闭我们自己的 picker；原生对话框不提交、不取消。
@@ -272,7 +339,7 @@ DWORD WINAPI SessionThread(void* raw) {
     return 0;
 }
 void CALLBACK OnWindow(HWINEVENTHOOK, DWORD, HWND window, LONG object, LONG child, DWORD, DWORD) {
-    if (watcher && watcher->active && object == OBJID_WINDOW && child == CHILDID_SELF && Candidate(window))
+    if (watcher && watcher->active && object == OBJID_WINDOW && child == CHILDID_SELF && Candidate(window, false))
         PostThreadMessageW(watcher->thread, kCandidateMessage, 0, reinterpret_cast<LPARAM>(window));
 }
 DWORD WINAPI WatchThread(void* raw) {
@@ -281,20 +348,23 @@ DWORD WINAPI WatchThread(void* raw) {
     if (shared->desktop && !SetThreadDesktop(shared->desktop)) { watcher = nullptr; return 0; }
     MSG message{}; PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
     shared->thread = GetCurrentThreadId();
+    const HWINEVENTHOOK created = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, nullptr, OnWindow, 0, 0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     const HWINEVENTHOOK shown = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, OnWindow, 0, 0,
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     const HWINEVENTHOOK focused = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnWindow, 0, 0,
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     const UINT_PTR timer = SetTimer(nullptr, kSweepTimer, 500, nullptr);
     struct HookGuard {
-        HWINEVENTHOOK shown, focused; UINT_PTR timer;
+        HWINEVENTHOOK created, shown, focused; UINT_PTR timer;
         ~HookGuard() {
+            if (created) UnhookWinEvent(created);
             if (shown) UnhookWinEvent(shown);
             if (focused) UnhookWinEvent(focused);
             if (timer) KillTimer(nullptr, timer);
             watcher = nullptr;
         }
-    } hook_guard{shown, focused, timer};
+    } hook_guard{created, shown, focused, timer};
     const auto scan = [&] {
         EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), [](HWND window, LPARAM param) -> BOOL {
             auto* state = reinterpret_cast<NativeDialogTakeover::Shared*>(param);
@@ -308,7 +378,7 @@ DWORD WINAPI WatchThread(void* raw) {
     while (shared->active && GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (message.message == kCandidateMessage) {
             const HWND window = reinterpret_cast<HWND>(message.lParam); DWORD pid = 0;
-            if (!Candidate(window) || !GetWindowThreadProcessId(window, &pid) || seen.contains(window)) continue;
+            if (!Candidate(window, false) || !GetWindowThreadProcessId(window, &pid) || seen.contains(window)) continue;
             auto session = std::make_shared<Session>(); session->source = window; session->source_pid = pid;
             session->source_thread = GetWindowThreadProcessId(window, nullptr);
             if (!ProcessCreated(pid, session->source_created)) continue;

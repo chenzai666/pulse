@@ -54,6 +54,8 @@ bool NormalizeFixtureDirectory(std::filesystem::path& directory) {
 class NativeHostObserver final : public IFileDialogEvents {
 public:
     std::atomic<HWND> filename_window = nullptr;
+    std::atomic<unsigned> file_ok_count = 0;
+    DWORD file_ok_delay = 0;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) return E_POINTER;
         *object = nullptr;
@@ -69,6 +71,8 @@ public:
         return remaining;
     }
     HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* dialog) override {
+        ++file_ok_count;
+        if (file_ok_delay) Sleep(file_ok_delay);
         PWSTR filename = nullptr;
         const HRESULT named = dialog->GetFileName(&filename);
         std::printf("[HOST] OnFileOk GetFileName HRESULT=0x%08lX\n", static_cast<unsigned long>(named));
@@ -351,6 +355,87 @@ void ClassicCase(const Fixture& fixture) {
         "classic Explorer common dialog returns the path and changed native filter");
 }
 
+constexpr UINT kActivateFixtureWindow = WM_APP + 49;
+
+LRESULT CALLBACK InactiveSaveHost(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == kActivateFixtureWindow) {
+        SetActiveWindow(window);
+        return GetActiveWindow() == window;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+void InactiveSaveCase(const Fixture& fixture) {
+    std::printf("[CASE] inactive modern save sends one host notification\n");
+    constexpr wchar_t host_class[] = L"PulseInactiveNativeSaveFixture";
+    WNDCLASSW window_class{};
+    window_class.lpfnWndProc = InactiveSaveHost;
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.lpszClassName = host_class;
+    if (!RegisterClassW(&window_class)) { Check(false, "register isolated inactive-save host"); return; }
+    const HWND host = CreateWindowExW(WS_EX_TOOLWINDOW, host_class, L"Owned inactive-save fixture",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, 320, 200, nullptr, nullptr, window_class.hInstance, nullptr);
+    struct Cleanup {
+        HWND window;
+        const wchar_t* name;
+        HINSTANCE instance;
+        ~Cleanup() { if (window) DestroyWindow(window); UnregisterClassW(name, instance); }
+    } cleanup{host, host_class, window_class.hInstance};
+    if (!host) { Check(false, "create isolated inactive-save host"); return; }
+    ComPtr<IFileSaveDialog> native;
+    if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&native)))) {
+        Check(false, "create inactive system save dialog"); return;
+    }
+    const COMDLG_FILTERSPEC filter{L"Text (*.txt)", L"*.txt"};
+    native->SetFileTypes(1, &filter);
+    native->SetFileName(L"original.txt");
+    ComPtr<IShellItem> initial;
+    if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
+        native->SetFolder(initial.Get());
+    const std::wstring expected = (fixture.directory / L"inactive new save.txt").wstring();
+    ComPtr<NativeHostObserver> observer;
+    observer.Attach(new NativeHostObserver());
+    observer->file_ok_delay = 300;
+    DWORD cookie = 0;
+    if (FAILED(native->Advise(observer.Get(), &cookie))) { Check(false, "observe inactive-save host notification"); return; }
+    std::atomic<bool> concealed = false, inactive = false;
+    unsigned submissions = 0;
+    Driver driver([&](const NativeFileDialog& inspected, std::wstring& reason) {
+        observer->filename_window = inspected.filename_window;
+        ShowWindowAsync(inspected.window, SW_HIDE);
+        const ULONGLONG deadline = GetTickCount64() + 2000;
+        while (IsWindowVisible(inspected.window) && GetTickCount64() < deadline) Sleep(10);
+        NativeFileDialog early;
+        concealed = !IsWindowVisible(inspected.window) && CanConcealNativeFileDialog(inspected.window, early, reason) &&
+            early.window == inspected.window && early.process_id == inspected.process_id &&
+            early.window_thread_id == inspected.window_thread_id && early.filename_window == inspected.filename_window &&
+            early.confirm_window == inspected.confirm_window;
+        ShowWindowAsync(inspected.window, SW_SHOWNOACTIVATE);
+        while (!IsWindowVisible(inspected.window) && GetTickCount64() < deadline) Sleep(10);
+        DWORD_PTR active = 0;
+        inactive = SendMessageTimeoutW(host, kActivateFixtureWindow, 0, 0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &active) && active != 0;
+        if (!concealed || !inactive) return false;
+        ++submissions;
+        return CommitNativeDialogSelection(inspected, {expected}, 0, reason);
+    });
+    if (!driver.ready) { driver.Finish(); native->Unadvise(cookie); Check(false, "inactive-save driver initializes on fixture desktop"); return; }
+    const HRESULT shown = native->Show(nullptr);
+    driver.Finish();
+    native->Unadvise(cookie);
+    Check(concealed, "lightweight identity/structure precheck recognizes a hidden top-level native dialog");
+    Check(inactive, "save native dialog is inactive before submitting its single confirmation");
+    ComPtr<IShellItem> selected;
+    PWSTR path = nullptr;
+    const bool got_result = SUCCEEDED(shown) && SUCCEEDED(native->GetResult(&selected)) &&
+        SUCCEEDED(selected->GetDisplayName(SIGDN_FILESYSPATH, &path));
+    Check(driver.passed && submissions == 1 && observer->file_ok_count == 1 && got_result && path &&
+        CompareStringOrdinal(path, -1, expected.c_str(), -1, TRUE) == CSTR_EQUAL,
+        "one inactive-save submission completes once after delayed native validation and returns the exact path");
+    CoTaskMemFree(path);
+    Check(!std::filesystem::exists(expected), "inactive-save adapter never creates the selected file");
+}
+
 void ModernMultiselectCase(const Fixture& fixture) {
     std::printf("[CASE] modern multiselect\n");
     ComPtr<IFileOpenDialog> native;
@@ -453,6 +538,7 @@ int wmain(int argc, wchar_t** argv) {
         Fixture fixture;
         ModernCase(fixture, NativeDialogKind::Open, false);
         ModernCase(fixture, NativeDialogKind::Save, false);
+        InactiveSaveCase(fixture);
         ModernCase(fixture, NativeDialogKind::Folder, false);
         ModernCase(fixture, NativeDialogKind::Open, true);
         ModernMultiselectCase(fixture);

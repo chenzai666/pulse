@@ -423,6 +423,13 @@ bool ExpectedResult(TestLog& log, HDESK desktop, ChildProcess& child, const std:
     }
     const bool accepted = valid && same && actual_status == (cancelled ? L"cancelled" : L"accepted");
     log.Check(accepted, branch + ": fixture receives the exact expected paths/status from production native adapter");
+    if (mode == L"save" && !cancelled) {
+        uint32_t file_ok_count = 0;
+        log.Check(syntax && Number(json, L"file_ok_count", file_ok_count) && file_ok_count == 1,
+            branch + ": one Pulse confirmation reaches native OnFileOk exactly once after delayed host validation");
+        log.Check(syntax && pulse::json::ExtractBool(json, L"file_ok_concealed"),
+            branch + ": native save remains concealed throughout delayed OnFileOk validation");
+    }
     if (mode == L"opaque-open") {
         uint32_t worker_error = ERROR_GEN_FAILURE;
         log.Check(syntax && pulse::json::ExtractBool(json, L"fixture_cancel_posted") &&

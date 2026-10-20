@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <atomic>
 #include <fcntl.h>
 #include <io.h>
 #include <iterator>
@@ -25,6 +26,8 @@ struct DialogResult {
     UINT filter_index = 0;
     bool fixture_cancel_posted = false;
     DWORD fixture_cancel_error = ERROR_SUCCESS;
+    unsigned file_ok_count = 0;
+    bool file_ok_concealed = false;
 };
 
 struct ComScope {
@@ -105,6 +108,11 @@ int EmitResult(const char* mode, DialogResult result, int error_exit = 1) {
         }
     }
     json += "],\"filter_index\":" + std::to_string(result.filter_index);
+    if (std::string_view(mode) == "save") {
+        json += ",\"file_ok_count\":" + std::to_string(result.file_ok_count);
+        json += ",\"file_ok_concealed\":";
+        json += result.file_ok_concealed ? "true" : "false";
+    }
     if (std::string_view(mode) == "opaque-open") {
         json += ",\"fixture_cancel_posted\":";
         json += result.fixture_cancel_posted ? "true" : "false";
@@ -187,6 +195,52 @@ private:
     bool posted_ = false;
 };
 
+class SaveObserver final : public IFileDialogEvents {
+public:
+    unsigned file_ok_count = 0;
+    bool file_ok_concealed = false;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (!IsEqualIID(iid, IID_IUnknown) && !IsEqualIID(iid, IID_IFileDialogEvents)) return E_NOINTERFACE;
+        *object = static_cast<IFileDialogEvents*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG remaining = --references_;
+        if (!remaining) delete this;
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* dialog) override {
+        ++file_ok_count;
+        Sleep(300);
+        ComPtr<IOleWindow> native_window;
+        HWND window = nullptr;
+        BYTE alpha = 255;
+        DWORD flags = 0;
+        file_ok_concealed = SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&native_window))) &&
+            SUCCEEDED(native_window->GetWindow(&window)) && window &&
+            GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && (flags & LWA_ALPHA) != 0 && alpha == 0;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
+        if (response) *response = FDESVR_DEFAULT;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
+        if (response) *response = FDEOR_DEFAULT;
+        return S_OK;
+    }
+private:
+    std::atomic<ULONG> references_ = 1;
+};
+
 DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const std::wstring& filename) {
     DialogResult result;
     ComPtr<IFileDialog> dialog;
@@ -236,7 +290,19 @@ DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const
             return result;
         }
     }
+    ComPtr<SaveObserver> observer;
+    DWORD observer_cookie = 0;
+    if (mode == FixtureMode::Save) {
+        observer.Attach(new SaveObserver());
+        result.error = dialog->Advise(observer.Get(), &observer_cookie);
+        if (FAILED(result.error)) return result;
+    }
     result.error = dialog->Show(owner);
+    if (observer) {
+        result.file_ok_count = observer->file_ok_count;
+        result.file_ok_concealed = observer->file_ok_concealed;
+        dialog->Unadvise(observer_cookie);
+    }
     if (mode == FixtureMode::OpaqueOpen) {
         cancellation.Stop();
         result.fixture_cancel_posted = cancellation.Posted();

@@ -30,6 +30,8 @@ struct NativeFileDialog {
 };
 
 // 专用工作线程须在初始化 COM 前切换到目标桌面；原生窗口须保持存在。
+// 仅预检结构与身份，允许顶层尚未显示；模式、文件名和过滤器仍须完整 Inspect。
+bool CanConcealNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring& reason);
 bool InspectNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring& reason);
 bool NativeDialogStillMatches(const NativeFileDialog& dialog);
 

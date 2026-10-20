@@ -1,4 +1,5 @@
 #requires -Version 7.2
+param([switch]$NativeHandoff)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -15,6 +16,11 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')
+if ($NativeHandoff) {
+    $allowed += @('src/app/native_dialog_takeover.cpp', 'src/app/native_file_dialog_adapter.cpp',
+        'src/app/native_file_dialog_adapter.h', 'src/app/native_dialog_takeover_test.cpp',
+        'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp')
+}
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
     & git fetch --no-tags --depth=1 origin $baseCommit
@@ -63,20 +69,39 @@ if (-not $vsRoot) { throw '需要 Visual Studio 2022 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
+$selftestMode = if ($NativeHandoff) { 'ON' } else { 'OFF' }
+$targets = if ($NativeHandoff) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' } else { 'pulse' }
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
-cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=OFF -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
+cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse
+cmake --build "$taskBuild" --parallel 4 --target $targets
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '文件窗口定向构建失败' }
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
+if ($NativeHandoff) {
+    $adapter = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_file_dialog_adapter_test.exe') -ArgumentList '--interaction' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'adapter.log') -RedirectStandardError (Join-Path $galleryOutput 'adapter-error.log')
+    if (-not $adapter.WaitForExit(180000)) { $adapter.Kill(); throw '原生窗口提交验证超时' }
+    $adapter.Refresh()
+    if ($adapter.ExitCode) { throw '原生窗口单次提交验证失败' }
+    $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
+    $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
+    $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-picker-data'
+    $env:PULSE_TEST_NATIVE_HANDOFF_DELAY = '1'
+    New-Item -ItemType Directory -Path 'bench_data' -Force | Out-Null
+    $handoff = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'handoff-output.log') -RedirectStandardError (Join-Path $galleryOutput 'handoff-error.log')
+    if (-not $handoff.WaitForExit(300000)) { $handoff.Kill(); throw '原生窗口接管链路验证超时' }
+    $handoff.Refresh()
+    Copy-Item 'bench_data/native-dialogs-takeover.log' (Join-Path $galleryOutput 'handoff.log')
+    Remove-Item Env:PULSE_SELFTEST_CASE, Env:PULSE_SELFTEST_NO_SCREENSHOTS, Env:PULSE_TEST_DATA_DIR, Env:PULSE_TEST_NATIVE_HANDOFF_DELAY -ErrorAction SilentlyContinue
+    if ($handoff.ExitCode) { throw '原生窗口接管链路验证失败' }
+}
 foreach ($case in @('history', 'save')) {
     $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
     $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test',("--"+$case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case+'.log')) -RedirectStandardError (Join-Path $galleryOutput ($case+'-error.log'))

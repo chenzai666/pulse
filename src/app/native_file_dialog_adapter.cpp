@@ -142,22 +142,23 @@ bool WindowIdentity(HWND window, DWORD& process_id, DWORD& thread_id,
     return true;
 }
 
-Controls FindControls(HWND window) {
+Controls FindControls(HWND window, bool before_show = false) {
     Controls controls;
     controls.confirm = GetDlgItem(window, IDOK);
     controls.cancel = GetDlgItem(window, IDCANCEL);
-    struct Context { Controls* controls; size_t count = 0; } context{&controls};
+    struct Context { Controls* controls; bool before_show; size_t count = 0; } context{&controls, before_show};
     EnumChildWindows(window, [](HWND child, LPARAM data) -> BOOL {
         auto& state = *reinterpret_cast<Context*>(data);
         if (++state.count > 512) return FALSE;
         auto& result = *state.controls;
         const auto name = ClassName(child);
+        const bool visible = state.before_show ? (GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != 0 : IsWindowVisible(child) != FALSE;
         if (name == L"SHELLDLL_DefView") result.shell = child;
         if (name == L"DirectUIHWND") result.direct = child;
         if (name == L"SHBrowseForFolder ShellNameSpace Control") result.browse = child;
         if (name == L"SysTreeView32") result.tree = child;
         const int identifier = GetDlgCtrlID(child);
-        if (name == L"ComboBox" && IsWindowVisible(child) && identifier == cmb1) {
+        if (name == L"ComboBox" && visible && identifier == cmb1) {
             if (result.standard_filter) {
                 if (result.filter != child) result.ambiguous_filter = true;
             } else {
@@ -165,7 +166,7 @@ Controls FindControls(HWND window) {
                 result.standard_filter = true;
                 result.ambiguous_filter = false;
             }
-        } else if (name == L"ComboBox" && IsWindowVisible(child) && !result.standard_filter &&
+        } else if (name == L"ComboBox" && visible && !result.standard_filter &&
             identifier != cmb13 && identifier != 41477 &&
             !FindWindowExW(child, nullptr, L"Edit", nullptr) &&
             (GetWindowLongPtrW(child, GWL_STYLE) & 3) == CBS_DROPDOWNLIST) {
@@ -174,7 +175,7 @@ Controls FindControls(HWND window) {
         }
         if ((identifier == edt1 || identifier == cmb13 || identifier == 14148 ||
              (identifier == 1001 && ClassName(GetParent(child)) == L"ComboBox")) &&
-            name == L"Edit" && IsWindowVisible(child))
+            name == L"Edit" && visible)
             result.filename = child;
         if (identifier == cmb13 && name == L"ComboBox" && !result.filename)
             result.filename = FindWindowExW(child, nullptr, L"Edit", nullptr);
@@ -493,27 +494,55 @@ bool SelectionText(const NativeFileDialog& dialog, const std::vector<std::wstrin
 
 bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
     std::wstring& reason, const std::function<bool()>& cancelled = {}) {
-    ComPtr<IUIAutomation> automation;
-    std::wstring automation_reason;
-    ComPtr<IUIAutomationInvokePattern> invoke;
-    if (Automation(automation, automation_reason)) {
-        auto element = Element(automation.Get(), button);
-        if (element) element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke));
-    }
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
-        GetDlgItem(dialog.window, identifier) != button || !IsWindowEnabled(button)) return false;
+        (identifier != IDOK && identifier != IDCANCEL) ||
+        GetDlgItem(dialog.window, identifier) != button || GetDlgCtrlID(button) != identifier ||
+        ClassName(button) != L"Button" || !IsWindowEnabled(button)) return false;
+    const HWND parent = GetParent(button);
+    DWORD button_process = 0, parent_process = 0;
+    if (!parent || (parent != dialog.window && !IsChild(dialog.window, parent)) ||
+        GetWindowThreadProcessId(button, &button_process) != dialog.window_thread_id || button_process != dialog.process_id ||
+        GetWindowThreadProcessId(parent, &parent_process) != dialog.window_thread_id || parent_process != dialog.process_id)
+        return Fail(reason, L"原生按钮的命令接收窗口身份发生变化。");
     if (Cancelled(cancelled, reason)) return false;
-    if (invoke) {
-        if (SUCCEEDED(invoke->Invoke())) return true;
-        return Fail(reason, L"原生按钮调用失败；不重复触发可能已执行的请求。");
-    }
-    // Let the real Button route its command to its actual parent (a modern
-    // dialog may use a notification sink below the top-level #32770).
-    if (PostMessageW(button, BM_CLICK, 0, 0)) return true;
+    // BM_CLICK (including UIA's Button provider) may do nothing when the dialog
+    // is inactive. Route its single normal notification to the verified actual
+    // parent; a modern dialog's command sink can be below the top-level HWND.
+    if (PostMessageW(parent, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button))) return true;
     return Fail(reason, L"无法向原生对话框发送按钮请求。");
 }
 
 } // namespace
+
+bool CanConcealNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring& reason) {
+    reason.clear();
+    dialog = {};
+    NativeFileDialog result;
+    result.window = window;
+    if (!WindowIdentity(window, result.process_id, result.window_thread_id, result.process_created, reason)) return false;
+    const Controls controls = FindControls(window, true);
+    const bool legacy = controls.browse && controls.tree && !controls.shell && !controls.direct;
+    if (!legacy && (!controls.shell || (!controls.direct && !controls.filter)))
+        return Fail(reason, L"原生文件对话框结构尚未就绪。");
+    for (const HWND control : {controls.filename, controls.confirm, controls.cancel}) {
+        DWORD process = 0;
+        if (!control || !IsChild(window, control) ||
+            GetWindowThreadProcessId(control, &process) != result.window_thread_id || process != result.process_id)
+            return Fail(reason, L"原生标准控件身份尚未就绪。");
+    }
+    if (ClassName(controls.filename) != L"Edit" || ClassName(controls.confirm) != L"Button" ||
+        ClassName(controls.cancel) != L"Button" ||
+        !(GetWindowLongPtrW(controls.filename, GWL_STYLE) & WS_VISIBLE) ||
+        (GetWindowLongPtrW(controls.filename, GWL_STYLE) & ES_READONLY) ||
+        !IsWindowEnabled(controls.confirm) || !IsWindowEnabled(controls.cancel))
+        return Fail(reason, L"原生文件名或标准按钮尚未就绪。");
+    result.filename_window = controls.filename;
+    result.confirm_window = controls.confirm;
+    result.legacy_folder = legacy;
+    if (legacy) result.kind = NativeDialogKind::Folder;
+    dialog = std::move(result);
+    return true;
+}
 
 bool InspectNativeFileDialog(HWND window, NativeFileDialog& dialog, std::wstring& reason) {
     reason.clear();
