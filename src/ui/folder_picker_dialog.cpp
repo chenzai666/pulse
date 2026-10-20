@@ -1947,10 +1947,13 @@ private:
             if (path.find(L'\0') != std::wstring::npos || path.find_first_of(L"\r\n\"") != std::wstring::npos ||
                 !((path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
                   (path.starts_with(L"\\\\") && !path.starts_with(L"\\\\.\\")))) return FALSE;
-            if (wparam == 2) {
+            if (wparam == 2 && mode_ != PickerMode::Save) {
                 SetFilename(path);
                 SubmitSelection();
             } else {
+                // A Listary result in Save chooses a name; only the Save button submits it.
+                // Otherwise selecting an existing file unexpectedly opens native overwrite UI.
+                if (wparam == 2) SetFilename(path);
                 // Validate on the existing loader; Listary never blocks the UI on a share.
                 validation_navigation_only_ = true;
                 validating_ = true;

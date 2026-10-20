@@ -214,6 +214,21 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                 return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), fixture.root.wstring()) && Send(hwnd, WM_CLOSE);
             });
             check("unavailable remembered folder falls back to caller directory", outcome.driven && !outcome.picked);
+            spec.initial_path = nested;
+            const auto existing_file = (fixture.root / L"alpha.txt").wstring();
+            outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                COPYDATASTRUCT data{0x504C5354, static_cast<DWORD>((existing_file.size() + 1) * sizeof(wchar_t)),
+                    const_cast<wchar_t*>(existing_file.c_str())};
+                DWORD_PTR accepted = 0;
+                if (!SendMessageTimeoutW(hwnd, WM_COPYDATA, 2, reinterpret_cast<LPARAM>(&data),
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &accepted) || !accepted) return false;
+                if (!Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), fixture.root.wstring()) &&
+                        Text(GetDlgItem(hwnd, kFilenameId)) == L"alpha.txt" &&
+                        IsWindowEnabled(GetDlgItem(hwnd, kFilenameId)); }, done)) return false;
+                return !done.load() && Send(hwnd, WM_CLOSE);
+            });
+            check("Listary file result in Save selects name and folder without submitting", outcome.driven && !outcome.picked &&
+                std::filesystem::file_size(existing_file) == 0);
             CoUninitialize();
             return failures ? 1 : 0;
         }
