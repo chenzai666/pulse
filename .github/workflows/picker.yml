@@ -6,9 +6,16 @@ on:
         description: '验证第三方原生窗口的提前隐藏和单次保存提交'
         type: boolean
         default: false
+      reuse_native_verification:
+        description: '源码未变时校验复用已通过的接管证据，直接构建正式程序'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       native_handoff:
+        type: boolean
+        default: false
+      reuse_native_verification:
         type: boolean
         default: false
 permissions:
@@ -30,7 +37,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_picker_ci.ps1 -NativeHandoff:('${{ inputs.native_handoff }}' -eq 'true')
+        run: ./scripts/build_picker_ci.ps1 -NativeHandoff:('${{ inputs.native_handoff }}' -eq 'true') -ReuseNativeVerification:('${{ inputs.reuse_native_verification }}' -eq 'true')
       - uses: actions/upload-artifact@v4
         if: success()
         with:

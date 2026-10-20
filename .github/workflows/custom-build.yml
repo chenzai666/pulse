@@ -18,6 +18,10 @@ on:
         description: '验证文件窗口提前隐藏及一次保存提交'
         type: boolean
         default: false
+      reuse_native_verification:
+        description: '原生源码未变时校验复用已通过证据，构建正式程序'
+        type: boolean
+        default: false
       home_widgets_only:
         description: 'file-ui 范围中仅验证主页和侧边栏设置'
         type: boolean
@@ -184,6 +188,7 @@ jobs:
     uses: ./.github/workflows/picker.yml
     with:
       native_handoff: ${{ inputs.native_handoff == true }}
+      reuse_native_verification: ${{ inputs.reuse_native_verification == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'
     uses: ./.github/workflows/status-center.yml

@@ -1,6 +1,7 @@
 #requires -Version 7.2
-param([switch]$NativeHandoff)
+param([switch]$NativeHandoff, [switch]$ReuseNativeVerification)
 $ErrorActionPreference = 'Stop'
+if ($ReuseNativeVerification -and -not $NativeHandoff) { throw '复用证据必须指定原生接管验证范围' }
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
@@ -12,7 +13,7 @@ $taskBuild = Join-Path $taskRepo 'build-custom'
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 
 # 仅替换主程序；任何已有组件源码变化都必须走完整构建。
-$allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', 'scripts/build_picker_ci.ps1', 'scripts/package_custom.ps1',
+$allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', 'scripts/build_picker_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1', 'scripts/package_custom.ps1',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')
@@ -69,8 +70,8 @@ if (-not $vsRoot) { throw '需要 Visual Studio 2022 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
-$selftestMode = if ($NativeHandoff) { 'ON' } else { 'OFF' }
-$targets = if ($NativeHandoff) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' } else { 'pulse' }
+$selftestMode = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'ON' } else { 'OFF' }
+$targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' } else { 'pulse' }
 @"
 @echo off
 call "$vcvars"
@@ -83,7 +84,8 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
-if ($NativeHandoff) {
+if ($ReuseNativeVerification) { & "$PSScriptRoot/verify_native_handoff_evidence.ps1" -OutputDirectory $galleryOutput }
+if ($NativeHandoff -and -not $ReuseNativeVerification) {
     $adapterBatch = Join-Path $taskBuild 'compile-picker-adapter-first.bat'
     $adapterBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_native_file_dialog_adapter_test')
     [IO.File]::WriteAllText($adapterBatch, $adapterBuild, [Text.UTF8Encoding]::new($false))
@@ -96,7 +98,7 @@ if ($NativeHandoff) {
 }
 & $buildBatch
 if ($LASTEXITCODE) { throw '文件窗口定向构建失败' }
-if ($NativeHandoff) {
+if ($NativeHandoff -and -not $ReuseNativeVerification) {
     $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
     $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
     $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-picker-data'
@@ -108,6 +110,11 @@ if ($NativeHandoff) {
     Copy-Item 'bench_data/native-dialogs-takeover.log' (Join-Path $galleryOutput 'handoff.log')
     Remove-Item Env:PULSE_SELFTEST_CASE, Env:PULSE_SELFTEST_NO_SCREENSHOTS, Env:PULSE_TEST_DATA_DIR, Env:PULSE_TEST_NATIVE_HANDOFF_DELAY -ErrorAction SilentlyContinue
     if ($handoff.ExitCode) { throw '原生窗口接管链路验证失败' }
+    $releaseBatch = Join-Path $taskBuild 'compile-picker-release.bat'
+    $releaseBuild = [IO.File]::ReadAllText($buildBatch).Replace('-DPULSE_WITH_SELFTEST=ON', '-DPULSE_WITH_SELFTEST=OFF').Replace("--target $targets", '--target pulse')
+    [IO.File]::WriteAllText($releaseBatch, $releaseBuild, [Text.UTF8Encoding]::new($false))
+    & $releaseBatch
+    if ($LASTEXITCODE) { throw '关闭内置测试后构建正式程序失败' }
 }
 foreach ($case in @('history', 'save')) {
     $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
