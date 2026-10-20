@@ -182,7 +182,7 @@ std::wstring AppPrefs::ToJson() const {
     out += L",\n  \"startup_open\":";
     out += startup_open == 1 ? L"1" : L"0";
     out += L",\n  \"new_tab_open\":";
-    out += new_tab_open == 1 ? L"1" : L"0";
+    out += std::to_wstring(new_tab_open == 2 ? 2 : new_tab_open == 1 ? 1 : 0);
     out += L",\n  \"external_open\":";
     out += std::to_wstring(external_open >= 0 && external_open <= 2 ? external_open : 0);
     out += L",\n  \"close_window_with_last_tab\":";
@@ -333,7 +333,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     details_columns = ui::NormalizeDetailsColumns(static_cast<uint32_t>(pulse::json::ExtractInt(
         json, L"details_columns", static_cast<int>(ui::kDetailsColumnsDefault))));
     startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
-    new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 1) == 1 ? 1 : 0;
+    const int new_tab_mode = pulse::json::ExtractInt(json, L"new_tab_open", 1);
+    new_tab_open = new_tab_mode == 1 || new_tab_mode == 2 ? new_tab_mode : 0;
     external_open = pulse::json::ExtractInt(json, L"external_open", 0);
     if (external_open < 0 || external_open > 2) external_open = 0;
     // Missing key = preferences saved before the setting existed: keep their behavior.

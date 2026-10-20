@@ -666,6 +666,7 @@ enum class StringId : UINT {
     LockedItemEndRetry = IDS_LOCKED_ITEM_END_RETRY,
     LockedItemRetry = IDS_LOCKED_ITEM_RETRY,
     NewTabOpenCurrent = IDS_NEW_TAB_OPEN_CURRENT,
+    NewTabOpenHome = IDS_NEW_TAB_OPEN_HOME,
     ColumnCreated = IDS_COLUMN_CREATED,
     ColumnAccessed = IDS_COLUMN_ACCESSED,
     SortHintCreated = IDS_SORT_HINT_CREATED,

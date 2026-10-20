@@ -345,6 +345,11 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         return r;
                     }
                 }
+                if (ContainsPt(lay.new_tab_open_row[2], x, y)) {
+                    r.region = HitTestResult::SettingsNewTabOpen;
+                    r.index = 2;
+                    return r;
+                }
                 if (ContainsPt(lay.home_folder_choose, x, y)) {
                     r.region = HitTestResult::SettingsHomeFolder;
                     r.index = 0;

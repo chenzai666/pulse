@@ -294,8 +294,9 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         }
         const I startup_open[]={I::StartupOpenLastTabs,I::OpenDefaultLocation};const int two_values[]={0,1};
         segmented(lay.startup_open_card,lay.startup_open_row,startup_open,two_values,vm.settings_startup_open,H::SettingsStartupOpen,I::SettingsStartupOpen,I::SettingsStartupOpenDesc,2,L"\xE81C");divider(lay.startup_open_card);
-        const I new_tab_open[]={I::NewTabOpenCurrent,I::OpenDefaultLocation};
-        segmented(lay.new_tab_open_card,lay.new_tab_open_row,new_tab_open,two_values,vm.settings_new_tab_open,H::SettingsNewTabOpen,I::SettingsNewTabOpen,I::SettingsNewTabOpenDesc,2,L"\xE710");divider(lay.new_tab_open_card);
+        const I new_tab_open[]={I::NewTabOpenCurrent,I::OpenDefaultLocation,I::NewTabOpenHome};
+        const int new_tab_values[]={0,1,2};
+        segmented(lay.new_tab_open_card,lay.new_tab_open_row,new_tab_open,new_tab_values,vm.settings_new_tab_open,H::SettingsNewTabOpen,I::SettingsNewTabOpen,I::SettingsNewTabOpenDesc,3,L"\xE710");divider(lay.new_tab_open_card);
         const I external_open[]={I::ExternalOpenSmart,I::ExternalOpenTab,I::ExternalOpenWindow};const int external_values[]={0,1,2};
         segmented(lay.external_open_card,lay.external_open_row,external_open,external_values,vm.settings_external_open,H::SettingsExternalOpen,I::SettingsExternalOpen,I::SettingsExternalOpenDesc,3,L"\xE8A7");divider(lay.external_open_card);
         toggle(lay.close_last_tab_row,I::SettingsCloseLastTab,I::SettingsCloseLastTabDesc,L"\xE711",vm.settings_close_last_tab,26);divider(lay.close_last_tab_row);

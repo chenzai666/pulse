@@ -14,6 +14,7 @@ bool RestoresLastTabs(const AppPrefs& prefs, bool restore_update_session) noexce
 }
 
 std::wstring NewTabLocation(const AppPrefs& prefs, const std::wstring& current) {
+    if (prefs.new_tab_open == 2) return L"pulse:home";
     return prefs.new_tab_open == 1 ? DefaultLocation(prefs) : current;
 }
 

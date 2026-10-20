@@ -12,7 +12,11 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 
 # 仅替换主程序；任何已有组件源码变化都必须走完整构建。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/status-center.yml', 'scripts/build_status_center_ci.ps1',
-    'src/ui/status_center_window.h', 'src/ui/status_center_window.cpp', 'src/bench/dialog_gallery.cpp')
+    'src/ui/status_center_window.h', 'src/ui/status_center_window.cpp', 'src/bench/dialog_gallery.cpp',
+    'src/common/string_ids.h', 'src/common/localization.h', 'src/common/localization.cpp',
+    'src/common/strings.rcinc', 'src/common/strings_zh_tw.rcinc',
+    'src/app/startup_location.cpp', 'src/app/app_prefs.cpp', 'src/app/app_main.cpp', 'src/app/settings_controller.cpp', 'src/app/selftest_1b2.cpp',
+    'src/ui/ui_settings_core.cpp', 'src/ui/settings_layout_sections.h', 'src/ui/ui_renderer_internal.h', 'src/ui/ui_hit_test.cpp')
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
     & git fetch --no-tags --depth=1 origin $baseCommit

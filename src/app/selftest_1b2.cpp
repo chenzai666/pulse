@@ -3479,6 +3479,8 @@ void TestStartupLocation() {
           L"startup location: defaults restore the last tabs and new tabs open Home");
     Check(app::NewTabLocation(prefs, L"D:\\Current") == L"pulse:home",
           L"startup location: new tabs open the default Home location");
+    prefs.new_tab_open = 2; prefs.home_folder.clear();
+    Check(app::NewTabLocation(prefs, L"D:\\Current") == L"pulse:home", L"explicit Home ignores This PC");
     prefs.startup_open = 1;
     prefs.new_tab_open = 1;
     prefs.home_folder = L"\\\\server\\share\\照片";

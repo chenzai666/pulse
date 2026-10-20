@@ -754,8 +754,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             [s] { BindCurrentLayout(*s); },
             [s] { RememberLayoutFocus(*s); },
             [s](std::wstring& path) {
-                if (s->appPrefs.new_tab_open != 1) return false;
-                path = app::DefaultLocation(s->appPrefs);
+                if (s->appPrefs.new_tab_open == 0) return false;
+                path = app::NewTabLocation(s->appPrefs, path);
                 return true;
             },
             [s] { return s->appPrefs.close_window_with_last_tab; },

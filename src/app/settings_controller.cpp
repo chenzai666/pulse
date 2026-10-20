@@ -764,7 +764,7 @@ void SettingsController::NotifyIcon(int index) {
 }
 
 void SettingsController::NewTabOpen(int index) {
-    static constexpr int values[] = {0, 1};
+    static constexpr int values[] = {0, 1, 2};
     if (prefs_ && SelectValue(index, values, prefs_->new_tab_open))
         SaveAndApply(SettingsEffect::None);
 }
