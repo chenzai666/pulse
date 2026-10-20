@@ -21,6 +21,13 @@ jobs:
           dotnet build $project -c Release --no-restore --nologo -o out/picker-plugin
           if ($LASTEXITCODE) { throw '编译失败' }
           & ./integrations/Listary.Picker/verify_discovery.ps1 -PluginPath out/picker-plugin/Listary.FileAppPlugin.PulsePicker.dll
+          $tests='integrations/Listary.Picker/tests/PickerProtocol.csproj'
+          dotnet restore $tests --locked-mode --configfile integrations/Listary.Picker/NuGet.config --nologo
+          if ($LASTEXITCODE) { throw '协议测试依赖验证失败' }
+          dotnet build $tests -c Release --no-restore --nologo
+          if ($LASTEXITCODE) { throw '协议测试编译失败' }
+          & ./out/listary-plugin/bin/PickerProtocol/Release/net48/pulse.exe
+          if ($LASTEXITCODE) { throw 'Listary 路径协议测试失败' }
           Copy-Item integrations/Listary.Picker/README.md out/picker-plugin/
       - uses: actions/upload-artifact@v4
         with:

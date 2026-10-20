@@ -73,7 +73,7 @@ public sealed class PickerWindow : IFileWindow
             return Task.FromResult(false);
         var bytes = Encoding.Unicode.GetBytes(path + "\0");
         return Task.FromResult(_host.SendCopyData(Handle, new IntPtr(operation), new IntPtr(0x504C5354),
-            bytes, 2, 1500) != IntPtr.Zero);
+            bytes, (uint)bytes.Length, 1500) != IntPtr.Zero);
     }
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr window, StringBuilder text, int capacity);
