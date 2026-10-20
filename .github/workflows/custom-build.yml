@@ -8,7 +8,7 @@ on:
       validation_scope:
         description: '验证范围：完整集成、属性界面或标签／回收站／原生预览／搜索修复'
         type: choice
-        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, search, installer, status-center, picker]
+        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, search, installer, status-center, picker, picker-plugin]
         default: full
       verify_settings_regression:
         description: '先验证设置页相邻场景在旧实现失败，再验证修复版本'
@@ -59,7 +59,7 @@ concurrency:
 
 jobs:
   build:
-    if: inputs.validation_scope != 'installer' && inputs.validation_scope != 'search' && inputs.validation_scope != 'status-center' && inputs.validation_scope != 'picker'
+    if: inputs.validation_scope != 'installer' && inputs.validation_scope != 'search' && inputs.validation_scope != 'status-center' && inputs.validation_scope != 'picker' && inputs.validation_scope != 'picker-plugin'
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -172,6 +172,9 @@ jobs:
             build-custom/native-image-ui.png
             bench_data/listary-search-entry/*.log
           if-no-files-found: ignore
+  picker-plugin:
+    if: inputs.validation_scope == 'picker-plugin'
+    uses: ./.github/workflows/picker-plugin.yml
   picker:
     if: inputs.validation_scope == 'picker'
     uses: ./.github/workflows/picker.yml

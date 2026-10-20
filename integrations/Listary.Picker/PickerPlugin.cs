@@ -23,7 +23,7 @@ public sealed class PickerPlugin : IFileAppPlugin
     }
 }
 
-public sealed class PickerWindow : IFileWindow, IFileTab, IGetFolder, IOpenFolder, IOpenFile
+public sealed class PickerWindow : IFileWindow
 {
     private readonly IFileAppPluginHost _host;
     private readonly uint _processId;
@@ -54,7 +54,7 @@ public sealed class PickerWindow : IFileWindow, IFileTab, IGetFolder, IOpenFolde
         GetWindowThreadProcessId(Handle, out var pid);
         return pid == _processId && Matches(Handle);
     }
-    public Task<IFileTab> GetCurrentTab() => Task.FromResult(Live() ? (IFileTab)this : null!);
+    public Task<IFileTab> GetCurrentTab() => Task.FromResult(Live() ? (IFileTab)new PickerTab(this) : null!);
     public Task<string> GetCurrentFolder()
     {
         if (!Live()) return Task.FromResult<string>(null!);
@@ -82,4 +82,14 @@ public sealed class PickerWindow : IFileWindow, IFileTab, IGetFolder, IOpenFolde
     [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr window, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeoutW(
         IntPtr window, uint message, IntPtr wparam, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+}
+
+// Listary discovers the window and tab implementations in separate branches.
+public sealed class PickerTab : IFileTab, IGetFolder, IOpenFolder, IOpenFile
+{
+    private readonly PickerWindow _window;
+    internal PickerTab(PickerWindow window) { _window = window; }
+    public Task<string> GetCurrentFolder() => _window.GetCurrentFolder();
+    public Task<bool> OpenFolder(string path) => _window.OpenFolder(path);
+    public Task<bool> OpenFile(string path) => _window.OpenFile(path);
 }
