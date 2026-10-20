@@ -95,6 +95,10 @@ void DrawPickerChrome(Compositor& compositor, fluent::Painter& painter, const Th
     const float scale = l.scale;
     const float radius = Dip(scale, theme.radius_control);
 
+    // The host leaves the title strip translucent, so Mica shows the desktop
+    // through it. Paint the caption with the same opaque surface as the dialog.
+    painter.FillRoundedRect(l.title, 0.0f, theme.surface_title);
+
     // Title strip: what the caller asked for, and the close button.
     const wchar_t* glyph = c.mode == PickerMode::Image ? L"\xEB9F"
                          : c.mode == PickerMode::Save ? L"\xE74E"

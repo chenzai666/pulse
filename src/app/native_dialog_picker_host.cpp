@@ -196,7 +196,11 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     if (FAILED(initialized)) return 1;
     struct OleLifetime { ~OleLifetime() { OleUninitialize(); } } ole;
     compat::EnableDpiAwareness();
-    l10n::SetLanguage(request.appearance.language);
+    // This process never runs the main window startup. Without the module,
+    // resource strings stay empty (Cancel, column titles) and Pick() treats
+    // the unset language as English.
+    l10n::Initialize(GetModuleHandleW(nullptr), request.appearance.language.empty()
+        ? std::wstring_view(L"system") : std::wstring_view(request.appearance.language));
     auto spec = request.appearance.style;
     spec.mode = request.source.kind == NativeDialogKind::Folder ? ui::PickerMode::Folder :
         request.source.kind == NativeDialogKind::Save ? ui::PickerMode::Save : ui::PickerMode::File;
