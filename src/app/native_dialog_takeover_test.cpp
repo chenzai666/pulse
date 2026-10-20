@@ -357,8 +357,15 @@ bool AwaitPicker(TestLog& log, HDESK desktop, ChildProcess& child, const std::ws
     log.Check(ready, branch + ": production watcher identifies native dialog and displays owned Pulse picker");
     if (!ready) Diagnostics(log, desktop, child, branch + (exited_early
         ? ": fixture exited before takeover" : ": attach-timeout / native detector compatibility branch"));
-    else log.Check(SourceMatches(source) && IsWindowVisible(source.window) && !IsWindowEnabled(source.window),
-        branch + ": original native dialog remains visible and is disabled only while picker is open");
+    else {
+        const bool concealed = Until([&] {
+            BYTE alpha = 255; DWORD flags = 0;
+            return SourceMatches(source) && IsWindowVisible(source.window) && !IsWindowEnabled(source.window) &&
+                GetLayeredWindowAttributes(source.window, nullptr, &alpha, &flags) &&
+                (flags & LWA_ALPHA) != 0 && alpha == 0;
+        }, 2000);
+        log.Check(concealed, branch + ": original native dialog stays alive but is invisible and disabled while Pulse is open");
+    }
     return ready;
 }
 

@@ -16,7 +16,8 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/status-cen
     'src/common/string_ids.h', 'src/common/localization.h', 'src/common/localization.cpp',
     'src/common/strings.rcinc', 'src/common/strings_zh_tw.rcinc',
     'src/app/startup_location.cpp', 'src/app/app_prefs.cpp', 'src/app/app_main.cpp', 'src/app/settings_controller.cpp', 'src/app/selftest_1b2.cpp',
-    'src/ui/ui_settings_core.cpp', 'src/ui/settings_layout_sections.h', 'src/ui/ui_renderer_internal.h', 'src/ui/ui_hit_test.cpp')
+    'src/ui/ui_settings_core.cpp', 'src/ui/settings_layout_sections.h', 'src/ui/ui_renderer_internal.h', 'src/ui/ui_hit_test.cpp',
+    'src/app/native_dialog_takeover.cpp', 'src/app/native_dialog_takeover_test.cpp')
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
     & git fetch --no-tags --depth=1 origin $baseCommit

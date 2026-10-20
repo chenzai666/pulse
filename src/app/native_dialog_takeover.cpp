@@ -38,6 +38,8 @@ struct Session {
     std::mutex owner_mutex;
     std::mutex worker_mutex;
     bool owns_disable = false;
+    bool concealed = false;
+    bool added_layered = false;
     bool SameSource() const {
         DWORD pid = 0;
         FILETIME created{};
@@ -46,10 +48,35 @@ struct Session {
             ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0 &&
             (!filename || IsChild(source, filename)) && (!confirm || GetDlgItem(source, IDOK) == confirm);
     }
+    void Conceal(bool disable) {
+        std::lock_guard lock(owner_mutex);
+        if (!SameSource()) return;
+        const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
+        if ((style & WS_EX_LAYERED) == 0) {
+            SetWindowLongPtrW(source, GWL_EXSTYLE, style | WS_EX_LAYERED);
+            added_layered = true;
+        }
+        // Keep the native dialog alive for its modal loop, but do not leave it on screen behind Pulse.
+        SetLayeredWindowAttributes(source, 0, 0, LWA_ALPHA);
+        if (disable && IsWindowEnabled(source)) EnableWindow(source, FALSE);
+        if (disable) owns_disable = true;
+        concealed = true;
+    }
     void Restore() {
         std::lock_guard lock(owner_mutex);
-        if (owns_disable && SameSource()) EnableWindow(source, TRUE);
+        if (!SameSource()) { owns_disable = false; concealed = false; added_layered = false; return; }
+        if (owns_disable) EnableWindow(source, TRUE);
+        if (concealed) {
+            if (added_layered) {
+                const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
+                SetWindowLongPtrW(source, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
+            } else {
+                SetLayeredWindowAttributes(source, 0, 255, LWA_ALPHA);
+            }
+        }
         owns_disable = false;
+        concealed = false;
+        added_layered = false;
     }
     void Cancel(bool restore = true) {
         if (cancelled.value) SetEvent(cancelled.value);
@@ -114,6 +141,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     if (source.process_id != session->source_pid || source.window_thread_id != session->source_thread ||
         CompareFileTime(&source.process_created, &session->source_created) != 0 || !session->SameSource()) return;
     session->source_filename = source.filename_window; session->source_confirm = source.confirm_window;
+    session->Conceal(false);
     dialog_wire::RequestData request;
     request.source = source; request.parent = GetCurrentProcessId();
     { std::lock_guard lock(shared->mutex); request.appearance = shared->appearance; }
@@ -221,15 +249,17 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
             continue;
         }
         if (!available && WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0) break;
+        if (ready) session->Conceal(true);
         if (!ready && GetTickCount64() - started > 15000) break;
         WaitForSingleObject(session->cancelled.value, 25);
     }
-    session->Restore();
     if (received && !Cancelled(shared, *session) && NativeDialogStillMatches(source)) {
+        if (session->SameSource()) EnableWindow(session->source, TRUE);
         const auto cancelled = [&] { return Cancelled(shared, *session); };
         if (picked) CommitNativeDialogSelection(source, paths, filter_index, reason, cancelled);
         else if (!cancelled()) CancelNativeDialog(source, reason, cancelled);
     }
+    session->Restore();
     // 关闭接管仅关闭我们自己的 picker；原生对话框不提交、不取消。
     session->Cancel();
 }
