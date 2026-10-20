@@ -201,6 +201,8 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     // the unset language as English.
     l10n::Initialize(GetModuleHandleW(nullptr), request.appearance.language.empty()
         ? std::wstring_view(L"system") : std::wstring_view(request.appearance.language));
+    if (l10n::Get(l10n::StringId::Cancel).empty())
+        l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
     auto spec = request.appearance.style;
     spec.mode = request.source.kind == NativeDialogKind::Folder ? ui::PickerMode::Folder :
         request.source.kind == NativeDialogKind::Save ? ui::PickerMode::Save : ui::PickerMode::File;

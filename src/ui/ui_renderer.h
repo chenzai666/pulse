@@ -178,11 +178,20 @@ struct ColumnStripView {
 // Folder compare (two panes): per-entry status relative to the other pane.
 enum class CompareMark : uint8_t { Same = 0, OnlyHere = 1, Newer = 2, Older = 3, Differs = 4 };
 
+// One clickable breadcrumb segment (display text + its full path).
+struct BreadcrumbSegment {
+    std::wstring text;
+    std::wstring path;
+};
+
 struct PaneViewModel {
     using FilterMap = std::vector<int>;
     using TagDots = std::unordered_map<int, std::vector<D2D1_COLOR_F>>;
 
     std::wstring path;
+    // When set, the address bar uses these segments instead of splitting path.
+    // The file picker roots them at the folder the user selected.
+    std::vector<BreadcrumbSegment> breadcrumb;
     std::wstring header_text;
     std::unordered_map<int, ChangeBadge> change_badges;
     std::unordered_map<int, std::wstring> folder_size_labels;
@@ -321,12 +330,6 @@ struct PaneViewModel {
         return it != filter_map->end() && *it == source_index
             ? static_cast<int>(it - filter_map->begin()) : -1;
     }
-};
-
-// One clickable breadcrumb segment (display text + its full path).
-struct BreadcrumbSegment {
-    std::wstring text;
-    std::wstring path;
 };
 
 // Splits "C:\Users\TestUser" into [{C:\, C:\}, {Users, C:\Users}, ...].

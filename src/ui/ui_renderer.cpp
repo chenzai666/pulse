@@ -444,7 +444,8 @@ std::vector<BreadcrumbSegment> SplitBreadcrumb(const std::wstring& path) {
 void MainRenderer::BreadcrumbLayout(const PaneViewModel& vm, float w,
                                     std::vector<BreadcrumbPlaced>& out) const {
     out.clear();
-    auto segments = SplitBreadcrumb(vm.is_query_search && vm.has_search_origin ? vm.search_origin : vm.path);
+    auto segments = !vm.breadcrumb.empty() ? vm.breadcrumb
+        : SplitBreadcrumb(vm.is_query_search && vm.has_search_origin ? vm.search_origin : vm.path);
     if (vm.is_query_search && vm.has_search_origin) {
         BreadcrumbSegment search;
         search.text = vm.search_crumb.empty() ? pulse::l10n::Get(pulse::l10n::StringId::Search) : vm.search_crumb;

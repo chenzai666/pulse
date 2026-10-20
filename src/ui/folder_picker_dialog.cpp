@@ -12,6 +12,8 @@
 #include "ui_motion.h"
 #include "window_helpers.h"
 #include "../common/display_path.h"
+#include "../common/edition.h"
+#include "../common/utf8_file.h"
 #include "../common/localization.h"
 #include "../common/text_format.h"
 #include "../ops/clipboard.h"
@@ -73,23 +75,109 @@ std::wstring KnownFolder(REFKNOWNFOLDERID id) {
     return path;
 }
 
+std::wstring PickerText(l10n::StringId id, const wchar_t* zh, const wchar_t* en) {
+    std::wstring text = l10n::Get(id);
+    return text.empty() ? std::wstring(l10n::Pick(zh, en)) : text;
+}
+
+bool PickerDirectory(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool PickerUnder(const std::wstring& root, const std::wstring& path) {
+    if (SamePickerPath(root, path)) return true;
+    std::wstring prefix = root;
+    while (prefix.size() > 3 && (prefix.back() == L'\\' || prefix.back() == L'/')) prefix.pop_back();
+    if (prefix.empty() || path.size() <= prefix.size()) return false;
+    if (CompareStringOrdinal(path.c_str(), static_cast<int>(prefix.size()),
+                             prefix.c_str(), static_cast<int>(prefix.size()), TRUE) != CSTR_EQUAL)
+        return false;
+    const wchar_t next = path[prefix.size()];
+    return next == L'\\' || next == L'/';
+}
+
+std::wstring PickerLocationsFile() {
+    wchar_t path[MAX_PATH]{};
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return {};
+    std::wstring dir = std::wstring(path) + L"\\" + edition::kDataFolder;
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\picker-locations.txt";
+}
+
+const wchar_t* PickerModeKey(int index) {
+    switch (index) {
+    case 1: return L"image";
+    case 2: return L"file";
+    case 3: return L"save";
+    default: return L"folder";
+    }
+}
+
+void LoadPickerLocations() {
+    const std::wstring file = PickerLocationsFile();
+    std::wstring text;
+    if (file.empty() || !ReadUtf8File(file, text)) return;
+    size_t cursor = 0;
+    while (cursor < text.size()) {
+        size_t end = text.find(L'\n', cursor);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring line = text.substr(cursor, end - cursor);
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        const size_t eq = line.find(L'=');
+        if (eq != std::wstring::npos) {
+            const std::wstring key = line.substr(0, eq);
+            const std::wstring value = line.substr(eq + 1);
+            for (int mode = 0; mode < 4; ++mode) {
+                if (key == PickerModeKey(mode) && PickerDirectory(value))
+                    g_last_folder[mode] = value;
+            }
+        }
+        cursor = end + 1;
+    }
+}
+
+void SavePickerLocations() {
+    const std::wstring file = PickerLocationsFile();
+    if (file.empty()) return;
+    std::wstring text;
+    for (int mode = 0; mode < 4; ++mode) {
+        if (g_last_folder[mode].empty()) continue;
+        text += PickerModeKey(mode);
+        text += L'=';
+        text += g_last_folder[mode];
+        text += L'\n';
+    }
+    WriteUtf8FileAtomic(file, text);
+}
+
+void RememberPickerFolder(int mode, const std::wstring& path) {
+    if (mode < 0 || mode > 3 || !PickerDirectory(path)) return;
+    if (SamePickerPath(g_last_folder[mode], path)) return;
+    g_last_folder[mode] = path;
+    SavePickerLocations();
+}
+
 std::vector<PickerPlace> KnownPlaces() {
     struct Known {
         const KNOWNFOLDERID* id;
         l10n::StringId label;
+        const wchar_t* zh;
+        const wchar_t* en;
         const wchar_t* glyph;
     };
     const Known known[] = {
-        {&FOLDERID_Desktop, l10n::StringId::Desktop, L"\xE7F4"},
-        {&FOLDERID_Downloads, l10n::StringId::Downloads, L"\xE896"},
-        {&FOLDERID_Documents, l10n::StringId::PickerDocuments, L"\xE8B7"},
-        {&FOLDERID_Pictures, l10n::StringId::PickerPictures, L"\xE8B7"},
-        {&FOLDERID_Profile, l10n::StringId::PickerHome, L"\xE8B7"},
+        {&FOLDERID_Desktop, l10n::StringId::Desktop, L"桌面", L"Desktop", L"\xE7F4"},
+        {&FOLDERID_Downloads, l10n::StringId::Downloads, L"下载", L"Downloads", L"\xE896"},
+        {&FOLDERID_Documents, l10n::StringId::PickerDocuments, L"文档", L"Documents", L"\xE8B7"},
+        {&FOLDERID_Pictures, l10n::StringId::PickerPictures, L"图片", L"Pictures", L"\xE8B7"},
+        {&FOLDERID_Profile, l10n::StringId::PickerHome, L"主文件夹", L"Home", L"\xE8B7"},
     };
     std::vector<PickerPlace> places;
     for (const Known& k : known) {
         std::wstring path = KnownFolder(*k.id);
-        if (!path.empty()) places.push_back({l10n::Get(k.label), std::move(path), k.glyph});
+        if (!path.empty()) places.push_back({PickerText(k.label, k.zh, k.en), std::move(path), k.glyph});
     }
     return places;
 }
@@ -143,6 +231,65 @@ std::vector<SidebarItem> ReadSidebarDrives() {
 }
 
 // "\\server\share" reads better whole than as just "share".
+std::vector<BreadcrumbSegment> PickerBreadcrumb(const std::wstring& current,
+                                                const std::vector<PickerPlace>& places,
+                                                const std::vector<SidebarItem>& drives) {
+    std::vector<BreadcrumbSegment> out;
+    if (current.empty()) {
+        out.push_back({PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC"), L""});
+        return out;
+    }
+    const std::wstring profile = KnownFolder(FOLDERID_Profile);
+    const PickerPlace* best = nullptr;
+    for (const PickerPlace& place : places) {
+        const bool home = !profile.empty() && SamePickerPath(place.path, profile);
+        const bool match = home ? SamePickerPath(place.path, current) : PickerUnder(place.path, current);
+        if (!match) continue;
+        if (!best || place.path.size() > best->path.size()) best = &place;
+    }
+    auto append_rest = [&](const std::wstring& root) {
+        std::wstring prefix = root;
+        while (prefix.size() > 3 && (prefix.back() == L'\\' || prefix.back() == L'/')) prefix.pop_back();
+        std::wstring rest = current.size() > prefix.size() ? current.substr(prefix.size()) : std::wstring();
+        size_t i = 0;
+        while (i < rest.size() && (rest[i] == L'\\' || rest[i] == L'/')) ++i;
+        while (i < rest.size()) {
+            const size_t sep = rest.find_first_of(L"\\/", i);
+            const std::wstring part = sep == std::wstring::npos ? rest.substr(i) : rest.substr(i, sep - i);
+            if (!part.empty()) {
+                if (!prefix.empty() && prefix.back() != L'\\') prefix += L'\\';
+                prefix += part;
+                out.push_back({part, prefix});
+            }
+            if (sep == std::wstring::npos) break;
+            i = sep + 1;
+        }
+    };
+    if (best) {
+        std::wstring label = best->label;
+        if (label.empty()) {
+            label = best->path;
+            const size_t slash = label.find_last_of(L"\\/");
+            if (slash != std::wstring::npos && slash + 1 < label.size()) label = label.substr(slash + 1);
+        }
+        out.push_back({label, best->path});
+        append_rest(best->path);
+        return out;
+    }
+    out = SplitBreadcrumb(current);
+    for (BreadcrumbSegment& segment : out) {
+        if (segment.path.empty())
+            segment.text = PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC");
+        for (const SidebarItem& drive : drives) {
+            if (!drive.label.empty() && SamePickerPath(drive.path, segment.path)) {
+                segment.text = drive.label;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 bool IsShareRootName(const std::wstring& path) {
     return path.rfind(L"\\\\", 0) == 0 && PickerParent(path).empty();
 }
@@ -256,7 +403,7 @@ public:
             : l10n::Get(mode_ != PickerMode::Folder
                                              ? l10n::StringId::PickerSelect
                                              : l10n::StringId::PickerSelectFolder);
-        chrome_.cancel_text = l10n::Get(l10n::StringId::Cancel);
+        chrome_.cancel_text = PickerText(l10n::StringId::Cancel, L"取消", L"Cancel");
         chrome_.hosted_edit = true;
         UpdateFilterText();
         focus_ = kPickList;
@@ -270,8 +417,13 @@ public:
         drives_ = ReadSidebarDrives();
 
         fallback_ = KnownFolder(mode_ == PickerMode::Image ? FOLDERID_Pictures : FOLDERID_Desktop);
+        LoadPickerLocations();
         std::wstring start = NormalizePickerInput(spec.initial_path);
-        if (start.empty()) start = g_last_folder[mode_index_];
+        const std::wstring remembered = g_last_folder[mode_index_];
+        // A caller that only names Desktop or Pictures is using the generic
+        // default. Resume the folder used last time instead.
+        if (PickerDirectory(remembered) && (start.empty() || SamePickerPath(start, fallback_)))
+            start = remembered;
         if (start.empty()) start = fallback_;
         scale_ = static_cast<float>(pulse::compat::WindowDpi(owner ? owner : GetDesktopWindow()))
                / 96.0f;
@@ -383,6 +535,7 @@ private:
             setting_edits_ = false;
         }
         UpdateChosen();
+        if (push_history && moved) RememberPickerFolder(mode_index_, path);
         if (loader_) loader_->Load(++generation_, path, mode_, options_);
         if (hwnd_) {
             SetTimer(hwnd_, kLoadTimer, kSpinnerDelayMs, nullptr);
@@ -627,7 +780,7 @@ private:
             return;
         }
         result_ = std::move(validation->paths);
-        g_last_folder[mode_index_] = current_.empty() ? PickerParent(result_.front()) : current_;
+        RememberPickerFolder(mode_index_, current_.empty() ? PickerParent(result_.front()) : current_);
         g_last_view[mode_index_] = view_mode_;
         done_ = true;
         PostMessageW(hwnd_, WM_NULL, 0, 0);
@@ -730,6 +883,7 @@ private:
                 pane.cut_names.insert(PickerLeafName(cut_path));
         }
         pane.path = current_;
+        pane.breadcrumb = PickerBreadcrumb(current_, places_, drives_);
         pane.header_text.clear();
         pane.snapshot = snapshot_;
         pane.entries.clear();
