@@ -12,8 +12,6 @@
 #include "ui_motion.h"
 #include "window_helpers.h"
 #include "../common/display_path.h"
-#include "../common/edition.h"
-#include "../common/utf8_file.h"
 #include "../common/localization.h"
 #include "../common/text_format.h"
 #include "../ops/clipboard.h"
@@ -80,12 +78,6 @@ std::wstring PickerText(l10n::StringId id, const wchar_t* zh, const wchar_t* en)
     return text.empty() ? std::wstring(l10n::Pick(zh, en)) : text;
 }
 
-bool PickerDirectory(const std::wstring& path) {
-    if (path.empty()) return false;
-    const DWORD attributes = GetFileAttributesW(path.c_str());
-    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
-}
-
 bool PickerUnder(const std::wstring& root, const std::wstring& path) {
     if (SamePickerPath(root, path)) return true;
     std::wstring prefix = root;
@@ -94,69 +86,9 @@ bool PickerUnder(const std::wstring& root, const std::wstring& path) {
     if (CompareStringOrdinal(path.c_str(), static_cast<int>(prefix.size()),
                              prefix.c_str(), static_cast<int>(prefix.size()), TRUE) != CSTR_EQUAL)
         return false;
+    if (prefix.back() == L'\\' || prefix.back() == L'/') return true;
     const wchar_t next = path[prefix.size()];
     return next == L'\\' || next == L'/';
-}
-
-std::wstring PickerLocationsFile() {
-    wchar_t path[MAX_PATH]{};
-    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) return {};
-    std::wstring dir = std::wstring(path) + L"\\" + edition::kDataFolder;
-    CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\picker-locations.txt";
-}
-
-const wchar_t* PickerModeKey(int index) {
-    switch (index) {
-    case 1: return L"image";
-    case 2: return L"file";
-    case 3: return L"save";
-    default: return L"folder";
-    }
-}
-
-void LoadPickerLocations() {
-    const std::wstring file = PickerLocationsFile();
-    std::wstring text;
-    if (file.empty() || !ReadUtf8File(file, text)) return;
-    size_t cursor = 0;
-    while (cursor < text.size()) {
-        size_t end = text.find(L'\n', cursor);
-        if (end == std::wstring::npos) end = text.size();
-        std::wstring line = text.substr(cursor, end - cursor);
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        const size_t eq = line.find(L'=');
-        if (eq != std::wstring::npos) {
-            const std::wstring key = line.substr(0, eq);
-            const std::wstring value = line.substr(eq + 1);
-            for (int mode = 0; mode < 4; ++mode) {
-                if (key == PickerModeKey(mode) && PickerDirectory(value))
-                    g_last_folder[mode] = value;
-            }
-        }
-        cursor = end + 1;
-    }
-}
-
-void SavePickerLocations() {
-    const std::wstring file = PickerLocationsFile();
-    if (file.empty()) return;
-    std::wstring text;
-    for (int mode = 0; mode < 4; ++mode) {
-        if (g_last_folder[mode].empty()) continue;
-        text += PickerModeKey(mode);
-        text += L'=';
-        text += g_last_folder[mode];
-        text += L'\n';
-    }
-    WriteUtf8FileAtomic(file, text);
-}
-
-void RememberPickerFolder(int mode, const std::wstring& path) {
-    if (mode < 0 || mode > 3 || !PickerDirectory(path)) return;
-    if (SamePickerPath(g_last_folder[mode], path)) return;
-    g_last_folder[mode] = path;
-    SavePickerLocations();
 }
 
 std::vector<PickerPlace> KnownPlaces() {
@@ -239,11 +171,10 @@ std::vector<BreadcrumbSegment> PickerBreadcrumb(const std::wstring& current,
         out.push_back({PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC"), L""});
         return out;
     }
-    const std::wstring profile = KnownFolder(FOLDERID_Profile);
+
     const PickerPlace* best = nullptr;
     for (const PickerPlace& place : places) {
-        const bool home = !profile.empty() && SamePickerPath(place.path, profile);
-        const bool match = home ? SamePickerPath(place.path, current) : PickerUnder(place.path, current);
+        const bool match = PickerUnder(place.path, current);
         if (!match) continue;
         if (!best || place.path.size() > best->path.size()) best = &place;
     }
@@ -417,13 +348,9 @@ public:
         drives_ = ReadSidebarDrives();
 
         fallback_ = KnownFolder(mode_ == PickerMode::Image ? FOLDERID_Pictures : FOLDERID_Desktop);
-        LoadPickerLocations();
+        if (!spec.fallback_path.empty()) fallback_ = NormalizePickerInput(spec.fallback_path);
         std::wstring start = NormalizePickerInput(spec.initial_path);
-        const std::wstring remembered = g_last_folder[mode_index_];
-        // A caller that only names Desktop or Pictures is using the generic
-        // default. Resume the folder used last time instead.
-        if (PickerDirectory(remembered) && (start.empty() || SamePickerPath(start, fallback_)))
-            start = remembered;
+        if (start.empty()) start = g_last_folder[mode_index_];
         if (start.empty()) start = fallback_;
         scale_ = static_cast<float>(pulse::compat::WindowDpi(owner ? owner : GetDesktopWindow()))
                / 96.0f;
@@ -535,7 +462,6 @@ private:
             setting_edits_ = false;
         }
         UpdateChosen();
-        if (push_history && moved) RememberPickerFolder(mode_index_, path);
         if (loader_) loader_->Load(++generation_, path, mode_, options_);
         if (hwnd_) {
             SetTimer(hwnd_, kLoadTimer, kSpinnerDelayMs, nullptr);
@@ -582,6 +508,10 @@ private:
             }
             error_ = ErrorText(listing->error, listing->path);
             if (error_.empty()) error_ = l10n::Get(l10n::StringId::PickerOpenFailed);
+        }
+        if (listing->error == ERROR_SUCCESS && !current_.empty()) {
+            g_last_folder[mode_index_] = current_;
+            if (spec_.on_directory_changed) spec_.on_directory_changed(current_);
         }
         initial_load_ = false;
         entries_ = std::move(listing->entries);
@@ -768,7 +698,7 @@ private:
             return;
         }
         if (!validation->navigate.empty()) {
-            if (mode_ != PickerMode::Folder) SetFilename(L"");
+            if (mode_ != PickerMode::Folder && mode_ != PickerMode::Save) SetFilename(L"");
             Navigate(validation->navigate, true);
             FocusList();
             return;
@@ -780,7 +710,7 @@ private:
             return;
         }
         result_ = std::move(validation->paths);
-        RememberPickerFolder(mode_index_, current_.empty() ? PickerParent(result_.front()) : current_);
+        g_last_folder[mode_index_] = current_.empty() ? PickerParent(result_.front()) : current_;
         g_last_view[mode_index_] = view_mode_;
         done_ = true;
         PostMessageW(hwnd_, WM_NULL, 0, 0);
@@ -2005,7 +1935,35 @@ private:
 
     LRESULT Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         switch (message) {
+        case WM_COPYDATA: {
+            if (!spec_.listary_integration || waiting_ || validating_ || operating_) return FALSE;
+            const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+            if (!data || data->dwData != 0x504C5354 || !data->lpData || data->cbData < 4 ||
+                data->cbData > 65536 || data->cbData % sizeof(wchar_t) || (wparam != 1 && wparam != 2)) return FALSE;
+            const auto* text = static_cast<const wchar_t*>(data->lpData);
+            const size_t count = data->cbData / sizeof(wchar_t);
+            if (text[count - 1] != L'\0') return FALSE;
+            const std::wstring path(text, count - 1);
+            if (path.find(L'\0') != std::wstring::npos || path.find_first_of(L"\r\n\"") != std::wstring::npos ||
+                !((path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
+                  (path.starts_with(L"\\\\") && !path.starts_with(L"\\\\.\\")))) return FALSE;
+            if (wparam == 2) {
+                SetFilename(path);
+                SubmitSelection();
+            } else {
+                // Validate on the existing loader; Listary never blocks the UI on a share.
+                validation_navigation_only_ = true;
+                validating_ = true;
+                PickerOptions all = options_;
+                all.filters.clear();
+                loader_->Validate(++generation_, current_, {path}, PickerMode::File, all);
+                UpdateChosen();
+                Invalidate();
+            }
+            return TRUE;
+        }
         case WM_CREATE:
+            if (spec_.listary_integration) SetPropW(hwnd_, L"Pulse.Picker.Listary.v1", reinterpret_cast<HANDLE>(1));
             scale_ = static_cast<float>(pulse::compat::WindowDpi(hwnd_)) / 96.0f;
             backdrop_enabled_ = ApplyBackdrop(hwnd_, dark_);
             if (!compositor_.Init(hwnd_)) return -1;
@@ -2198,6 +2156,7 @@ private:
         case WM_ERASEBKGND:
             return 1;
         case WM_DESTROY:
+            RemovePropW(hwnd_, L"Pulse.Picker.Listary.v1");
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);
             renderer_.SetIconNotifyWindow(nullptr);

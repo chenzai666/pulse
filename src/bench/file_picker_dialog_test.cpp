@@ -1,6 +1,7 @@
 // Explicitly opt in to short-lived, process-owned picker windows with --interaction.
 #include "../common/localization.h"
 #include "../common/windows_compat.h"
+#include "../app/native_dialog_history.h"
 #include "../ui/folder_picker_dialog.h"
 
 #include <atomic>
@@ -129,14 +130,17 @@ bool HasPaths(const Outcome& outcome, const std::vector<std::wstring>& expected)
 } // namespace
 
 int RunFilePickerDialogTest(int argc, wchar_t** argv) {
+    if (argc == 4 && std::wstring_view(argv[1]) == L"--history-read")
+        return SamePickerPath(pulse::app::ReadDialogHistory(argv[2], PickerMode::Save), argv[3]) ? 0 : 1;
+    const bool history_mode = argc == 2 && std::wstring_view(argv[1]) == L"--history";
     const bool save_mode = argc == 2 && std::wstring_view(argv[1]) == L"--save";
     const bool input_surfaces = argc == 2 && std::wstring_view(argv[1]) == L"--input-surfaces";
-    if (!save_mode && !input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
+    if (!history_mode && !save_mode && !input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
         std::puts("Use --interaction, --input-surfaces or --save for scoped file picker regression cases.");
         return 2;
     }
     // Surface regression runs without activating any window on the user's desktop.
-    if (input_surfaces || save_mode) {
+    if (history_mode || input_surfaces || save_mode) {
         const auto name = L"PulsePickerInputs_" + std::to_wstring(GetCurrentProcessId());
         HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
         if (!desktop || !SetThreadDesktop(desktop)) return 3;
@@ -153,6 +157,66 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
     };
     try {
         Fixture fixture;
+        if (history_mode) {
+            FolderPickerSpec spec;
+            spec.mode = PickerMode::Save;
+            spec.initial_path = fixture.root.wstring();
+            spec.filename = L"retained.txt";
+            spec.listary_integration = true;
+            std::wstring last;
+            spec.on_directory_changed = [&](const std::wstring& path) { last = path; };
+            const auto nested = (fixture.root / L"nested").wstring();
+            auto outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                if (GetPropW(hwnd, L"Pulse.Picker.Listary.v1") != reinterpret_cast<HANDLE>(1)) return false;
+                COPYDATASTRUCT data{0x504C5354, static_cast<DWORD>((nested.size() + 1) * sizeof(wchar_t)),
+                    const_cast<wchar_t*>(nested.c_str())};
+                DWORD_PTR accepted = 0;
+                if (!SendMessageTimeoutW(hwnd, WM_COPYDATA, 1, reinterpret_cast<LPARAM>(&data),
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &accepted) || !accepted) return false;
+                if (!Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) &&
+                        IsWindowEnabled(GetDlgItem(hwnd, kFilenameId)); }, done)) return false;
+                if (Text(GetDlgItem(hwnd, kFilenameId)) != L"retained.txt") return false;
+                wchar_t snapshot[32768]{};
+                if (GetEnvironmentVariableW(L"PULSE_PICKER_TEST_SNAPSHOT", snapshot, 32768)) {
+                    SetPropW(hwnd, L"Pulse.PickerTestSnapshot", snapshot);
+                    Send(hwnd, WM_PAINT);
+                }
+                return Send(hwnd, WM_CLOSE);
+            });
+            check("Listary directory jump updates address and preserves Save filename", outcome.driven && !outcome.picked);
+            check("last successfully visited folder survives Cancel", SamePickerPath(last, nested));
+            check("write last directory", pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::Save, last));
+            check("Open history stays independent", pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::File, fixture.root.wstring()) &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save), nested));
+            wchar_t executable[32768]{};
+            GetModuleFileNameW(nullptr, executable, 32768);
+            std::wstring command = L"\"" + std::wstring(executable) + L"\" --picker-dialog-test --history-read \"" +
+                fixture.root.wstring() + L"\" \"" + nested + L"\"";
+            STARTUPINFOW startup{sizeof(startup)};
+            PROCESS_INFORMATION child{};
+            bool read_in_child = CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                nullptr, nullptr, &startup, &child) != FALSE;
+            if (read_in_child) {
+                DWORD exit = 1;
+                read_in_child = WaitForSingleObject(child.hProcess, 10000) == WAIT_OBJECT_0 &&
+                    GetExitCodeProcess(child.hProcess, &exit) && exit == 0;
+                CloseHandle(child.hThread); CloseHandle(child.hProcess);
+            }
+            check("fresh process restores last directory", read_in_child);
+            spec.initial_path = pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save);
+            outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
+                return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) && Send(hwnd, WM_CLOSE);
+            });
+            check("next picker starts in remembered folder", outcome.driven && !outcome.picked);
+            spec.initial_path = (fixture.root / L"removed-folder").wstring();
+            spec.fallback_path = fixture.root.wstring();
+            outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
+                return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), fixture.root.wstring()) && Send(hwnd, WM_CLOSE);
+            });
+            check("unavailable remembered folder falls back to caller directory", outcome.driven && !outcome.picked);
+            CoUninitialize();
+            return failures ? 1 : 0;
+        }
         if (save_mode) {
             FolderPickerSpec spec;
             spec.mode = PickerMode::Save;

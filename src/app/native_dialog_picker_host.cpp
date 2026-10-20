@@ -1,5 +1,7 @@
 #include "native_dialog_takeover.h"
 #include "native_dialog_wire.h"
+#include "native_dialog_history.h"
+#include "session.h"
 #include "../common/localization.h"
 #include "../common/windows_compat.h"
 
@@ -201,13 +203,18 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     // the unset language as English.
     l10n::Initialize(GetModuleHandleW(nullptr), request.appearance.language.empty()
         ? std::wstring_view(L"system") : std::wstring_view(request.appearance.language));
-    if (l10n::Get(l10n::StringId::Cancel).empty())
-        l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
     auto spec = request.appearance.style;
     spec.mode = request.source.kind == NativeDialogKind::Folder ? ui::PickerMode::Folder :
         request.source.kind == NativeDialogKind::Save ? ui::PickerMode::Save : ui::PickerMode::File;
     spec.title = request.source.title;
     spec.initial_path = request.source.initial_path;
+    const auto history_directory = GetPulseDataDir();
+    const auto remembered = ReadDialogHistory(history_directory, spec.mode);
+    spec.fallback_path = spec.initial_path;
+    if (!remembered.empty()) spec.initial_path = remembered;
+    std::wstring last_directory;
+    spec.on_directory_changed = [&](const std::wstring& path) { last_directory = path; };
+    spec.listary_integration = true;
     spec.filename = request.source.filename;
     spec.filters = request.source.filters;
     spec.filter_index = request.source.filter_index;
@@ -237,6 +244,11 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
         return 1;
     }
     lifetime.PickerFinished();
+    if (picked && !result.paths.empty()) {
+        last_directory = spec.mode == ui::PickerMode::Folder ? result.paths.front()
+            : ui::PickerParent(result.paths.front());
+    }
+    if (!last_directory.empty()) WriteDialogHistory(history_directory, spec.mode, last_directory);
     ipc::PayloadWriter response;
     if (!PackNativeDialogPickerResult(picked && !lifetime.Closing() && SourceMatches(request.source), result, response)) return 1;
     return dialog_wire::Write(output, dialog_wire::Result, response) ? 0 : 1;

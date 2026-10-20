@@ -1,0 +1,13 @@
+{
+  "ManifestVersion": 1,
+  "Id": "PulseCustom.FileDialog",
+  "PluginType": "FileAppPlugin",
+  "PluginVersion": "1.0.0",
+  "DisplayName": "Pulse Custom File Dialog",
+  "Authors": ["Pulse Custom"],
+  "Description": "为 Pulse 文件选择窗口提供 Listary 底部搜索框和目录快速切换。",
+  "Icon": "Icon.png",
+  "Api": "NetFramework",
+  "ApiVersion": 1,
+  "Entry": "Listary.FileAppPlugin.PulsePicker.dll"
+}

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Listary.FileAppPlugin.PulsePicker</AssemblyName>
+    <RootNamespace>Listary.FileAppPlugin.PulsePicker</RootNamespace>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Listary.FileAppPlugin" Version="1.0.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <None Update="ListaryPluginManifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../assets/global-search-logo.png" Link="Icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Remove="tests/**/*.cs" />
+  </ItemGroup>
+</Project>

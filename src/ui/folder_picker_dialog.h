@@ -30,6 +30,9 @@ struct FolderPickerSpec {
     PickerMode mode = PickerMode::Folder;
     std::wstring title;         // empty: "Choose a folder" / "Choose background image" / "Open" / "Save"
     std::wstring initial_path;  // empty: where the last pick of this mode was made
+    std::wstring fallback_path;
+    std::function<void(const std::wstring&)> on_directory_changed;
+    bool listary_integration = false;
     std::vector<PickerFilter> filters;
     size_t filter_index = 0;
     std::wstring filename;

@@ -1,0 +1,36 @@
+name: 验证文件弹窗与 Listary
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  picker:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 构建并验证目录联动、取消和跨进程历史
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_picker_ci.ps1
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Custom-picker-update
+          path: build-custom/picker-update/**
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Pulse-Custom-picker-verification
+          path: |
+            build-custom/picker-verification/**
+            build-custom/*.log
