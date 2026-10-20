@@ -11,7 +11,7 @@ $taskBuild = Join-Path $taskRepo 'build-custom'
 New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 
 # 仅替换主程序；任何已有组件源码变化都必须走完整构建。
-$allowed = @('.github/workflows/picker.yml', 'scripts/build_picker_ci.ps1', 'scripts/package_custom.ps1',
+$allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', 'scripts/build_picker_ci.ps1', 'scripts/package_custom.ps1',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')

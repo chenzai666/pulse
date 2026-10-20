@@ -1,6 +1,7 @@
 name: 验证文件弹窗与 Listary
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
   actions: read
