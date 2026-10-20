@@ -175,12 +175,17 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     bool identified = false;
     const ULONGLONG identify_deadline = GetTickCount64() + 1500;
     do {
-        if (!session->SameSource() || !Candidate(session->source, false) || Cancelled(shared, *session)) return;
+        if (!session->SameSource() || Cancelled(shared, *session)) return;
+        if (!Candidate(session->source, false)) {
+            // CREATE can precede the dialog becoming enabled. Keep waiting for
+            // that initialization instead of consuming its later SHOW event.
+            if (IsWindowVisible(session->source)) return;
+            WaitForSingleObject(session->cancelled.value, 10);
+            continue;
+        }
         if (!session->IsConcealed()) {
             NativeFileDialog early;
             if (CanConcealNativeFileDialog(session->source, early, reason)) {
-                session->source_filename = early.filename_window;
-                session->source_confirm = early.confirm_window;
                 session->Conceal(false);
             }
         }
