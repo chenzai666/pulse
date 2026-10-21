@@ -3,6 +3,7 @@
 #include "../common/windows_compat.h"
 #include "../app/native_dialog_history.h"
 #include "../ui/folder_picker_dialog.h"
+#include "../ui/folder_picker_loader.h"
 #include "../ui/folder_picker_view.h"
 #include "../ui/ui_renderer.h"
 
@@ -208,12 +209,21 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                     renderer.SetEmbedded(kPickerTitleDip, PickerFooterDip(PickerMode::File));
                     renderer.SetSidebarWidthDip(196.0f);
                     DetailsColumnWidths widths{};
+                    const auto listing = ReadPickerListing(fixture.root.wstring(), PickerMode::File);
+                    if (listing.error != ERROR_SUCCESS) return false;
+                    PaneViewModel pane;
+                    pane.view_mode = ViewMode::Details;
+                    pane.snapshot = listing.snapshot;
+                    pane.is_file_system = true;
                     const auto bounds = [&] {
                         RECT rect{};
                         GetClientRect(hwnd, &rect);
                         return renderer.ContentRect(static_cast<float>(rect.right), static_cast<float>(rect.bottom));
                     };
-                    const auto layout = [&] { return renderer.DetailsColumns(bounds(), widths); };
+                    const auto layout = [&] {
+                        pane.details_column_dividers = widths;
+                        return renderer.DetailsColumns(bounds(), pane);
+                    };
                     const auto y = [&] { return static_cast<int>(std::lround(bounds().top +
                         renderer.PaneHeaderHeight() + renderer.ColumnHeaderHeight() * 0.5f)); };
                     const auto captured = [&] {
