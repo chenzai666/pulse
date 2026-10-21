@@ -5,6 +5,7 @@
 #include "app_navigation.h"
 #include "app_runtime.h"
 #include "app_state.h"
+#include "folder_source.h"
 #include "open_routing.h"
 #include "tray_reveal.h"
 #include "window_registry.h"
@@ -117,6 +118,12 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 } // namespace
 
 void SyncShellWindows(AppState& s) {
+    const bool folder_source_enabled = !s.isolatedTest && ShellIntegrationAllowed(s, nullptr) &&
+        s.appPrefs.integration_enabled && s.appPrefs.integration_file_dialogs;
+    const app::Tab* active = ActiveTab(s);
+    std::wstring source_folder = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
+    if (source_folder.empty() || !app::IsShellWindowPath(source_folder)) source_folder.clear();
+    app::PublishFolderSource(s.hwnd, source_folder, folder_source_enabled);
     SyncExplorerTakeover(s);
     SyncNativeDialogs(s);
     std::vector<app::ShellWindowEntry> wanted;

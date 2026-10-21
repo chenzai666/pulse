@@ -8,10 +8,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <thread>
 
 namespace {
@@ -55,6 +57,7 @@ class NativeHostObserver final : public IFileDialogEvents {
 public:
     std::atomic<HWND> filename_window = nullptr;
     std::atomic<unsigned> file_ok_count = 0;
+    std::atomic<unsigned> overwrite_count = 0;
     DWORD file_ok_delay = 0;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) return E_POINTER;
@@ -98,6 +101,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* dialog) override { return LogType(dialog, "OnTypeChange"); }
     HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
+        ++overwrite_count;
         if (response) *response = FDEOR_DEFAULT;
         return S_OK;
     }
@@ -279,7 +283,7 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
     if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
         native->SetFolder(initial.Get());
     const std::wstring expected = folder ? fixture.folder.wstring() :
-        (kind == NativeDialogKind::Save ? (fixture.directory / L"new file.txt").wstring() : fixture.file.wstring());
+        (kind == NativeDialogKind::Save ? (fixture.folder / L"new file.txt").wstring() : fixture.file.wstring());
     ComPtr<NativeHostObserver> observer;
     observer.Attach(new NativeHostObserver());
     DWORD cookie = 0;
@@ -324,13 +328,29 @@ void ModernCase(const Fixture& fixture, NativeDialogKind kind, bool cancel) {
         std::printf("[RESULT] native filter HRESULT=0x%08lX index=%u\n", static_cast<unsigned long>(type_result), index);
         Check(SUCCEEDED(type_result) && index == 1, "native host retains the selected file type");
     }
-    if (kind == NativeDialogKind::Save)
+    if (kind == NativeDialogKind::Save) {
+        Check(observer->file_ok_count == 1, "cross-directory save reaches native validation exactly once");
         Check(!std::filesystem::exists(expected), "save adapter does not create or overwrite a file");
+    }
 }
 
-void ClassicCase(const Fixture& fixture) {
-    std::printf("[CASE] classic Explorer file dialog\n");
+UINT_PTR CALLBACK ClassicSaveHook(HWND, UINT message, WPARAM, LPARAM data) {
+    if (message == WM_NOTIFY && data) {
+        const auto* notification = reinterpret_cast<const OFNOTIFYW*>(data);
+        if (notification->hdr.code == CDN_FILEOK && notification->lpOFN && notification->lpOFN->lCustData) {
+            auto* confirmations = reinterpret_cast<std::atomic<unsigned>*>(notification->lpOFN->lCustData);
+            ++*confirmations;
+        }
+    }
+    return 0;
+}
+
+void ClassicCase(const Fixture& fixture, bool save = false) {
+    std::printf("[CASE] classic Explorer file dialog save=%u\n", static_cast<unsigned>(save));
     wchar_t result[32768]{};
+    if (save) wcscpy_s(result, L"original model.log");
+    const std::wstring expected = save ? (fixture.folder / L"classic cross directory.txt").wstring() : fixture.file.wstring();
+    std::atomic<unsigned> confirmations = 0;
     const std::wstring initial = fixture.directory.wstring();
     OPENFILENAMEW spec{};
     spec.lStructSize = sizeof(spec);
@@ -339,20 +359,26 @@ void ClassicCase(const Fixture& fixture) {
     spec.lpstrFile = result;
     spec.nMaxFile = 32768;
     spec.lpstrInitialDir = initial.c_str();
-    spec.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    spec.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+        (save ? OFN_ENABLEHOOK | OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    if (save) { spec.lpfnHook = ClassicSaveHook; spec.lCustData = reinterpret_cast<LPARAM>(&confirmations); }
     Driver driver([&](const NativeFileDialog& inspected, std::wstring& reason) {
-        return inspected.kind == NativeDialogKind::Open &&
-            CommitNativeDialogSelection(inspected, {fixture.file.wstring()}, 0, reason);
+        return inspected.kind == (save ? NativeDialogKind::Save : NativeDialogKind::Open) &&
+            CommitNativeDialogSelection(inspected, {expected}, 0, reason);
     });
     if (!driver.ready) { driver.Finish(); Check(false, "classic driver initializes on fixture desktop"); return; }
-    const bool shown = GetOpenFileNameW(&spec) != FALSE;
+    const bool shown = (save ? GetSaveFileNameW(&spec) : GetOpenFileNameW(&spec)) != FALSE;
     driver.Finish();
     std::printf("[RESULT] classic shown=%u extended_error=%lu selected_filter=%lu\n",
         static_cast<unsigned>(shown), CommDlgExtendedError(), spec.nFilterIndex);
-    PathDiagnostic(L"classic.expected", fixture.file.wstring());
+    PathDiagnostic(L"classic.expected", expected);
     PathDiagnostic(L"classic.actual", result);
-    Check(driver.passed && shown && std::wstring_view(result) == fixture.file.wstring() && spec.nFilterIndex == 1,
+    Check(driver.passed && shown && std::wstring_view(result) == expected && spec.nFilterIndex == 1,
         "classic Explorer common dialog returns the path and changed native filter");
+    if (save) {
+        Check(confirmations == 1, "classic cross-directory save receives only one native file confirmation");
+        Check(!std::filesystem::exists(expected), "classic save adapter does not create or overwrite the selected file");
+    }
 }
 
 constexpr UINT kActivateFixtureWindow = WM_APP + 49;
@@ -392,7 +418,7 @@ void InactiveSaveCase(const Fixture& fixture) {
     ComPtr<IShellItem> initial;
     if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
         native->SetFolder(initial.Get());
-    const std::wstring expected = (fixture.directory / L"inactive new save.txt").wstring();
+    const std::wstring expected = (fixture.folder / L"inactive new save.txt").wstring();
     ComPtr<NativeHostObserver> observer;
     observer.Attach(new NativeHostObserver());
     observer->file_ok_delay = 300;
@@ -434,6 +460,90 @@ void InactiveSaveCase(const Fixture& fixture) {
         "one inactive-save submission completes once after delayed native validation and returns the exact path");
     CoTaskMemFree(path);
     Check(!std::filesystem::exists(expected), "inactive-save adapter never creates the selected file");
+}
+
+thread_local IFileDialog* overwrite_fixture_dialog = nullptr;
+
+void CALLBACK CancelOverwriteFixture(HWND, UINT, UINT_PTR timer, DWORD) {
+    KillTimer(nullptr, timer);
+    if (overwrite_fixture_dialog) overwrite_fixture_dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+}
+
+void ExistingFileSaveCase(const Fixture& fixture) {
+    std::printf("[CASE] cross-directory save preserves native overwrite confirmation\n");
+    const auto expected = fixture.folder / L"existing save.txt";
+    constexpr char original[] = "original owned content";
+    std::ofstream(expected, std::ios::binary) << original;
+    ComPtr<IFileSaveDialog> native;
+    if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&native)))) {
+        Check(false, "create native overwrite-prompt fixture"); return;
+    }
+    FILEOPENDIALOGOPTIONS options = 0;
+    native->GetOptions(&options);
+    native->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR |
+        FOS_OVERWRITEPROMPT | FOS_NOTESTFILECREATE | FOS_DONTADDTORECENT);
+    const COMDLG_FILTERSPEC filter{L"Text (*.txt)", L"*.txt"};
+    native->SetFileTypes(1, &filter);
+    native->SetFileName(L"original.txt");
+    ComPtr<IShellItem> initial;
+    if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
+        native->SetFolder(initial.Get());
+    ComPtr<NativeHostObserver> observer;
+    observer.Attach(new NativeHostObserver());
+    DWORD cookie = 0;
+    if (FAILED(native->Advise(observer.Get(), &cookie))) { Check(false, "observe native overwrite validation"); return; }
+    std::atomic<bool> prompt_seen = false, declined = false;
+    unsigned submissions = 0;
+    Driver driver([&](const NativeFileDialog& inspected, std::wstring& reason) {
+        observer->filename_window = inspected.filename_window;
+        ++submissions;
+        const bool submitted = CommitNativeDialogSelection(inspected, {expected.wstring()}, 0, reason);
+        if (!submitted) return false;
+        HWND prompt = nullptr;
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        do {
+            const HWND popup = GetWindow(inspected.window, GW_ENABLEDPOPUP);
+            DWORD process = 0;
+            wchar_t klass[32]{};
+            if (popup && popup != inspected.window && GetWindow(popup, GW_OWNER) == inspected.window &&
+                GetWindowThreadProcessId(popup, &process) == inspected.window_thread_id && process == inspected.process_id &&
+                GetClassNameW(popup, klass, 32) && std::wstring_view(klass) == L"#32770" &&
+                IsWindowVisible(popup) && !IsWindowEnabled(inspected.window) && observer->overwrite_count == 1) {
+                prompt = popup;
+                break;
+            }
+            Sleep(20);
+        } while (GetTickCount64() < deadline);
+        prompt_seen = prompt != nullptr;
+        if (prompt) {
+            const HWND no = GetDlgItem(prompt, IDNO);
+            const HWND yes = GetDlgItem(prompt, IDYES);
+            // Decline only our verified fixture prompt; never accept overwriting.
+            if (no && yes && IsWindowVisible(no) && IsWindowEnabled(no) && GetParent(no) == prompt)
+                PostMessageW(prompt, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), reinterpret_cast<LPARAM>(no));
+            const ULONGLONG decline_deadline = GetTickCount64() + 2000;
+            while (IsWindow(prompt) && GetTickCount64() < decline_deadline) Sleep(20);
+            declined = !IsWindow(prompt) && IsWindow(inspected.window) && IsWindowEnabled(inspected.window);
+        }
+        CloseOwnedDialog(inspected.window);
+        return submitted && prompt_seen && declined;
+    });
+    if (!driver.ready) { driver.Finish(); native->Unadvise(cookie); Check(false, "overwrite driver initializes privately"); return; }
+    const UINT_PTR cleanup_timer = SetTimer(nullptr, 0, 10000, CancelOverwriteFixture);
+    if (!cleanup_timer) { driver.Finish(); native->Unadvise(cookie); Check(false, "arm owned overwrite-fixture cleanup"); return; }
+    overwrite_fixture_dialog = native.Get();
+    const HRESULT shown = native->Show(nullptr);
+    overwrite_fixture_dialog = nullptr;
+    KillTimer(nullptr, cleanup_timer);
+    driver.Finish();
+    native->Unadvise(cookie);
+    Check(driver.passed && submissions == 1 && prompt_seen && observer->overwrite_count == 1,
+        "one cross-directory save invokes the host overwrite check and exposes its native confirmation");
+    Check(declined && shown == HRESULT_FROM_WIN32(ERROR_CANCELLED) && observer->file_ok_count <= 1,
+        "declining the fixture overwrite leaves save pending until explicit cancellation without repeated confirmation");
+    std::ifstream preserved(expected, std::ios::binary);
+    const std::string actual(std::istreambuf_iterator<char>(preserved), {});
+    Check(actual == original, "declined native overwrite preserves the existing fixture file byte for byte");
 }
 
 void ModernMultiselectCase(const Fixture& fixture) {
@@ -539,10 +649,12 @@ int wmain(int argc, wchar_t** argv) {
         ModernCase(fixture, NativeDialogKind::Open, false);
         ModernCase(fixture, NativeDialogKind::Save, false);
         InactiveSaveCase(fixture);
+        ExistingFileSaveCase(fixture);
         ModernCase(fixture, NativeDialogKind::Folder, false);
         ModernCase(fixture, NativeDialogKind::Open, true);
         ModernMultiselectCase(fixture);
         ClassicCase(fixture);
+        ClassicCase(fixture, true);
         LegacyFolderCase(fixture);
     }
     CoUninitialize();

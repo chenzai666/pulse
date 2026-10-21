@@ -429,6 +429,8 @@ bool ExpectedResult(TestLog& log, HDESK desktop, ChildProcess& child, const std:
             branch + ": one Pulse confirmation reaches native OnFileOk exactly once after delayed host validation");
         log.Check(syntax && pulse::json::ExtractBool(json, L"file_ok_concealed"),
             branch + ": native save remains concealed throughout delayed OnFileOk validation");
+        log.Check(syntax && pulse::json::ExtractBool(json, L"transient_popup_observed"),
+            branch + ": a short host modal popup does not restore the concealed native save window");
     }
     if (mode == L"opaque-open") {
         uint32_t worker_error = ERROR_GEN_FAILURE;
@@ -666,7 +668,7 @@ void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) 
     const auto nested = root / L"nested";
     const auto first = root / L"alpha.txt";
     const auto second = root / L"two words 中文.txt";
-    const auto saved = root / L"new 保存.txt";
+    const auto saved = nested / L"new 保存.txt";
     if (!log.Check(std::filesystem::create_directory(nested) && WriteFixture(first) && WriteFixture(second),
         "create only disposable fixture directories and files")) return;
     const std::wstring names = L"\"" + first.wstring() + L"\" \"" + second.wstring() + L"\"";

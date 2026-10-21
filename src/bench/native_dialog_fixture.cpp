@@ -28,6 +28,7 @@ struct DialogResult {
     DWORD fixture_cancel_error = ERROR_SUCCESS;
     unsigned file_ok_count = 0;
     bool file_ok_concealed = false;
+    bool transient_popup_observed = false;
 };
 
 struct ComScope {
@@ -112,6 +113,8 @@ int EmitResult(const char* mode, DialogResult result, int error_exit = 1) {
         json += ",\"file_ok_count\":" + std::to_string(result.file_ok_count);
         json += ",\"file_ok_concealed\":";
         json += result.file_ok_concealed ? "true" : "false";
+        json += ",\"transient_popup_observed\":";
+        json += result.transient_popup_observed ? "true" : "false";
     }
     if (std::string_view(mode) == "opaque-open") {
         json += ",\"fixture_cancel_posted\":";
@@ -199,6 +202,7 @@ class SaveObserver final : public IFileDialogEvents {
 public:
     unsigned file_ok_count = 0;
     bool file_ok_concealed = false;
+    bool transient_popup_observed = false;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) return E_POINTER;
         *object = nullptr;
@@ -215,13 +219,33 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* dialog) override {
         ++file_ok_count;
-        Sleep(300);
         ComPtr<IOleWindow> native_window;
         HWND window = nullptr;
+        const bool own_window = SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&native_window))) &&
+            SUCCEEDED(native_window->GetWindow(&window)) && window;
+        DWORD process = 0;
+        if (own_window && GetWindowThreadProcessId(window, &process) == GetCurrentThreadId() &&
+            process == GetCurrentProcessId()) {
+            const bool was_enabled = IsWindowEnabled(window) != FALSE;
+            const HWND progress = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Owned fixture save progress",
+                WS_POPUP | WS_VISIBLE, 0, 0, 200, 60, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+            if (progress) {
+                EnableWindow(window, FALSE);
+                transient_popup_observed = GetWindow(progress, GW_OWNER) == window &&
+                    IsWindowVisible(progress) && !IsWindowEnabled(window);
+            }
+            Sleep(100);
+            if (progress) {
+                DestroyWindow(progress);
+                EnableWindow(window, was_enabled ? TRUE : FALSE);
+            }
+        } else {
+            Sleep(100);
+        }
+        Sleep(200);
         BYTE alpha = 255;
         DWORD flags = 0;
-        file_ok_concealed = SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&native_window))) &&
-            SUCCEEDED(native_window->GetWindow(&window)) && window &&
+        file_ok_concealed = own_window &&
             GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && (flags & LWA_ALPHA) != 0 && alpha == 0;
         return S_OK;
     }
@@ -301,6 +325,7 @@ DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const
     if (observer) {
         result.file_ok_count = observer->file_ok_count;
         result.file_ok_concealed = observer->file_ok_concealed;
+        result.transient_popup_observed = observer->transient_popup_observed;
         dialog->Unadvise(observer_cookie);
     }
     if (mode == FixtureMode::OpaqueOpen) {

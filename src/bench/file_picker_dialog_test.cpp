@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <thread>
@@ -130,8 +131,11 @@ bool HasPaths(const Outcome& outcome, const std::vector<std::wstring>& expected)
 } // namespace
 
 int RunFilePickerDialogTest(int argc, wchar_t** argv) {
-    if (argc == 4 && std::wstring_view(argv[1]) == L"--history-read")
-        return SamePickerPath(pulse::app::ReadDialogHistory(argv[2], PickerMode::Save), argv[3]) ? 0 : 1;
+    if (argc == 4 && std::wstring_view(argv[1]) == L"--history-read") {
+        for (const auto mode : {PickerMode::File, PickerMode::Save, PickerMode::Folder})
+            if (!SamePickerPath(pulse::app::ReadDialogHistory(argv[2], mode), argv[3])) return 1;
+        return 0;
+    }
     const bool history_mode = argc == 2 && std::wstring_view(argv[1]) == L"--history";
     const bool save_mode = argc == 2 && std::wstring_view(argv[1]) == L"--save";
     const bool input_surfaces = argc == 2 && std::wstring_view(argv[1]) == L"--input-surfaces";
@@ -158,14 +162,19 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
     try {
         Fixture fixture;
         if (history_mode) {
+            namespace runtime = pulse::diagnostics::runtime;
+            const bool logging = runtime::Initialize(fixture.root.wstring(), "picker-history-test");
+            struct LogLifetime { ~LogLifetime() { pulse::diagnostics::runtime::Shutdown(); } } log_lifetime;
+            check("history test initializes real runtime log sink", logging && runtime::Enabled());
             FolderPickerSpec spec;
             spec.mode = PickerMode::Save;
             spec.initial_path = fixture.root.wstring();
             spec.filename = L"retained.txt";
             spec.listary_integration = true;
-            std::wstring last;
-            spec.on_directory_changed = [&](const std::wstring& path) { last = path; };
+            pulse::app::DialogHistoryWriter history(fixture.root.wstring(), spec.mode);
+            spec.on_directory_changed = [&](const std::wstring& path) { history.Visit(path); };
             const auto nested = (fixture.root / L"nested").wstring();
+            bool saved_while_open = false;
             auto outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
                 if (GetPropW(hwnd, L"Pulse.Picker.Listary.v1") != reinterpret_cast<HANDLE>(1)) return false;
                 COPYDATASTRUCT data{0x504C5354, static_cast<DWORD>((nested.size() + 1) * sizeof(wchar_t)),
@@ -176,6 +185,10 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                 if (!Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) &&
                         IsWindowEnabled(GetDlgItem(hwnd, kFilenameId)); }, done)) return false;
                 if (Text(GetDlgItem(hwnd, kFilenameId)) != L"retained.txt") return false;
+                saved_while_open = Until([&] {
+                    return SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::File), nested);
+                }, done);
+                if (!saved_while_open) return false;
                 wchar_t snapshot[32768]{};
                 if (GetEnvironmentVariableW(L"PULSE_PICKER_TEST_SNAPSHOT", snapshot, 32768)) {
                     SetPropW(hwnd, L"Pulse.PickerTestSnapshot", snapshot);
@@ -184,10 +197,21 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                 return Send(hwnd, WM_CLOSE);
             });
             check("Listary directory jump updates address and preserves Save filename", outcome.driven && !outcome.picked);
-            check("last successfully visited folder survives Cancel", SamePickerPath(last, nested));
-            check("write last directory", pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::Save, last));
-            check("Open history stays independent", pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::File, fixture.root.wstring()) &&
+            check("visited directory is persisted while the picker remains open", saved_while_open);
+            check("Cancel retains successfully visited shared directory", history.Flush() &&
                 SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save), nested));
+            check("Open Save and Folder read the same recent directory",
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::File), nested) &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Folder), nested));
+            {
+                pulse::app::DialogHistoryWriter other_mode(fixture.root.wstring(), PickerMode::Folder);
+                other_mode.Visit(fixture.root.wstring());
+                check("Folder visit updates the next Save and Open directory", other_mode.Flush() &&
+                    SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save), fixture.root.wstring()) &&
+                    SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::File), fixture.root.wstring()));
+                other_mode.Visit(nested);
+                other_mode.Flush();
+            }
             wchar_t executable[32768]{};
             GetModuleFileNameW(nullptr, executable, 32768);
             std::wstring command = L"\"" + std::wstring(executable) + L"\" --picker-dialog-test --history-read \"" +
@@ -198,22 +222,32 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                 nullptr, nullptr, &startup, &child) != FALSE;
             if (read_in_child) {
                 DWORD exit = 1;
-                read_in_child = WaitForSingleObject(child.hProcess, 10000) == WAIT_OBJECT_0 &&
-                    GetExitCodeProcess(child.hProcess, &exit) && exit == 0;
+                const bool exited = WaitForSingleObject(child.hProcess, 10000) == WAIT_OBJECT_0;
+                if (!exited) {
+                    TerminateProcess(child.hProcess, ERROR_TIMEOUT);
+                    WaitForSingleObject(child.hProcess, 3000);
+                }
+                read_in_child = exited && GetExitCodeProcess(child.hProcess, &exit) && exit == 0;
                 CloseHandle(child.hThread); CloseHandle(child.hProcess);
             }
-            check("fresh process restores last directory", read_in_child);
+            check("fresh process restores shared directory for every mode", read_in_child);
             spec.initial_path = pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save);
             outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
                 return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) && Send(hwnd, WM_CLOSE);
             });
             check("next picker starts in remembered folder", outcome.driven && !outcome.picked);
-            spec.initial_path = (fixture.root / L"removed-folder").wstring();
+            history.Flush();
+            check("stale remembered directory can be stored before it becomes unavailable",
+                pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::Save,
+                    (fixture.root / L"removed-folder").wstring()));
+            spec.initial_path = pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::File);
             spec.fallback_path = fixture.root.wstring();
             outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
                 return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), fixture.root.wstring()) && Send(hwnd, WM_CLOSE);
             });
             check("unavailable remembered folder falls back to caller directory", outcome.driven && !outcome.picked);
+            check("fallback success replaces unavailable shared directory", history.Flush() &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Folder), fixture.root.wstring()));
             spec.initial_path = nested;
             const auto existing_file = (fixture.root / L"alpha.txt").wstring();
             outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
@@ -229,6 +263,68 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
             });
             check("Listary file result in Save selects name and folder without submitting", outcome.driven && !outcome.picked &&
                 std::filesystem::file_size(existing_file) == 0);
+            history.Flush();
+
+            const auto legacy_root = fixture.root / L"legacy-history";
+            std::filesystem::create_directories(legacy_root);
+            const auto legacy_open = pulse::app::DialogHistoryFile(legacy_root.wstring(), PickerMode::File);
+            const auto legacy_save = pulse::app::DialogHistoryFile(legacy_root.wstring(), PickerMode::Save);
+            const auto set_time = [](const std::wstring& file, uint64_t ticks) {
+                HANDLE handle = CreateFileW(file.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                    FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (handle == INVALID_HANDLE_VALUE) return false;
+                const FILETIME modified{static_cast<DWORD>(ticks), static_cast<DWORD>(ticks >> 32)};
+                const bool changed = SetFileTime(handle, nullptr, nullptr, &modified) != FALSE;
+                CloseHandle(handle);
+                return changed;
+            };
+            const bool legacy_written = pulse::WriteUtf8FileAtomic(legacy_open, fixture.root.wstring()) &&
+                pulse::WriteUtf8FileAtomic(legacy_save, nested) &&
+                set_time(legacy_open, 132537600000000000ull) && set_time(legacy_save, 132537600100000000ull);
+            check("legacy modes migrate from the most recent record", legacy_written &&
+                SamePickerPath(pulse::app::ReadDialogHistory(legacy_root.wstring(), PickerMode::Folder), nested));
+            check("shared record takes priority over legacy mode records",
+                pulse::app::WriteDialogHistory(legacy_root.wstring(), PickerMode::File, fixture.root.wstring()) &&
+                SamePickerPath(pulse::app::ReadDialogHistory(legacy_root.wstring(), PickerMode::Save), fixture.root.wstring()));
+            check("invalid stored path never replaces a valid shared record",
+                !pulse::app::WriteDialogHistory(fixture.root.wstring(), PickerMode::Save, L"relative-folder") &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save), fixture.root.wstring()));
+
+            const auto shared_file = pulse::app::SharedDialogHistoryFile(fixture.root.wstring());
+            HANDLE locked = CreateFileW(shared_file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            check("write failure fixture locks only its own shared history", locked != INVALID_HANDLE_VALUE);
+            DWORD write_error = ERROR_SUCCESS;
+            history.Visit(nested);
+            const bool failed = !history.Flush(&write_error);
+            if (locked != INVALID_HANDLE_VALUE) CloseHandle(locked);
+            check("history write failure reports the original Win32 error", failed &&
+                (write_error == ERROR_SHARING_VIOLATION || write_error == ERROR_ACCESS_DENIED));
+            check("failed history replacement preserves the previous directory",
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::File), fixture.root.wstring()));
+            history.Visit(nested);
+            check("a later valid visit recovers after history write failure", history.Flush() &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Folder), nested));
+            const bool flushed = runtime::Flush(3000);
+            const auto log_file = fixture.root / L"Diagnostics" / L"Runtime" /
+                (L"picker-history-test-" + std::to_wstring(GetCurrentProcessId()) + L".jsonl");
+            std::ifstream log(log_file, std::ios::binary);
+            const std::string log_text((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+            check("runtime history log includes real success and failure results", flushed &&
+                log_text.find("\"event\":\"native_dialog_history_write\"") != std::string::npos &&
+                log_text.find("\"saved\":1,\"error\":0") != std::string::npos &&
+                log_text.find("\"saved\":0,\"error\":" + std::to_string(write_error)) != std::string::npos);
+            log.close();
+            HANDLE log_lock = CreateFileW(log_file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            history.Visit(fixture.root.wstring());
+            const bool saved_without_log = history.Flush();
+            const bool log_flushed = runtime::Flush(3000);
+            const auto log_health = runtime::GetHealth();
+            if (log_lock != INVALID_HANDLE_VALUE) CloseHandle(log_lock);
+            check("diagnostic write failure never discards shared directory", log_lock != INVALID_HANDLE_VALUE &&
+                saved_without_log && !log_flushed && log_health.write_errors > 0 &&
+                SamePickerPath(pulse::app::ReadDialogHistory(fixture.root.wstring(), PickerMode::Save), fixture.root.wstring()));
             CoUninitialize();
             return failures ? 1 : 0;
         }

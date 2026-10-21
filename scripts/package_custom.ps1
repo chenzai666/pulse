@@ -20,8 +20,10 @@ foreach ($directory in @('quicklook', 'packs', 'conversion')) {
     if (-not (Test-Path -LiteralPath $source)) { throw "完整组件缺失：$directory" }
     Copy-Item -LiteralPath $source -Destination (Join-Path $stage $directory) -Recurse
 }
-if (Test-Path -LiteralPath (Join-Path $taskBuild 'listary-picker')) {
-    Copy-Item -LiteralPath (Join-Path $taskBuild 'listary-picker') -Destination (Join-Path $stage 'listary-picker') -Recurse
+foreach ($directory in @('listary-picker', 'listary-folder-source')) {
+    if (Test-Path -LiteralPath (Join-Path $taskBuild $directory)) {
+        Copy-Item -LiteralPath (Join-Path $taskBuild $directory) -Destination (Join-Path $stage $directory) -Recurse
+    }
 }
 $licenseRoot = Join-Path $stage 'licenses'
 Copy-Item -LiteralPath (Join-Path $taskBuild 'licenses') -Destination $licenseRoot -Recurse

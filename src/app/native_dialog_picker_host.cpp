@@ -212,8 +212,8 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     const auto remembered = ReadDialogHistory(history_directory, spec.mode);
     spec.fallback_path = spec.initial_path;
     if (!remembered.empty()) spec.initial_path = remembered;
-    std::wstring last_directory;
-    spec.on_directory_changed = [&](const std::wstring& path) { last_directory = path; };
+    DialogHistoryWriter history(history_directory, spec.mode);
+    spec.on_directory_changed = [&](const std::wstring& path) { history.Visit(path); };
     spec.listary_integration = true;
     spec.filename = request.source.filename;
     spec.filters = request.source.filters;
@@ -253,10 +253,10 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
         wcscmp(handoff_delay, L"1") == 0) Sleep(100);
 #endif
     if (picked && !result.paths.empty()) {
-        last_directory = spec.mode == ui::PickerMode::Folder ? result.paths.front()
-            : ui::PickerParent(result.paths.front());
+        history.Visit(spec.mode == ui::PickerMode::Folder ? result.paths.front()
+            : ui::PickerParent(result.paths.front()), 1);
     }
-    if (!last_directory.empty()) WriteDialogHistory(history_directory, spec.mode, last_directory);
+    history.Flush();
     ipc::PayloadWriter response;
     if (!PackNativeDialogPickerResult(picked && !lifetime.Closing() && SourceMatches(request.source), result, response)) return 1;
     return dialog_wire::Write(output, dialog_wire::Result, response) ? 0 : 1;

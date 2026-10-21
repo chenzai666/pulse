@@ -148,18 +148,48 @@ bool Cancelled(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, cons
     return !shared->active || WaitForSingleObject(session.cancelled.value, 0) == WAIT_OBJECT_0;
 }
 enum class CommitCompletion { Closed, NativeValidation, TimedOut, Cancelled };
+struct CommitPopup {
+    uint64_t window = 0;
+    uint32_t kind = 0, buttons = 0;
+};
 CommitCompletion AwaitNativeCompletion(const std::shared_ptr<NativeDialogTakeover::Shared>& shared,
-    const std::shared_ptr<Session>& session) {
+    const std::shared_ptr<Session>& session, CommitPopup& validation) {
     const ULONGLONG deadline = GetTickCount64() + 3000;
+    HWND pending_popup = nullptr;
+    DWORD pending_thread = 0;
+    ULONGLONG popup_since = 0;
     do {
         if (Cancelled(shared, *session)) return CommitCompletion::Cancelled;
         if (!session->SameWindow() || !IsWindowVisible(session->source)) return CommitCompletion::Closed;
         const HWND popup = GetWindow(session->source, GW_ENABLEDPOPUP);
         DWORD pid = 0;
+        const DWORD thread = popup ? GetWindowThreadProcessId(popup, &pid) : 0;
         if (popup && popup != session->source && popup != session->picker.load() &&
-            IsWindowVisible(popup) && GetWindowThreadProcessId(popup, &pid) && pid == session->source_pid &&
-            GetWindow(popup, GW_OWNER) == session->source && !IsWindowEnabled(session->source))
-            return CommitCompletion::NativeValidation;
+            IsWindowVisible(popup) && thread && pid == session->source_pid &&
+            GetWindow(popup, GW_OWNER) == session->source && !IsWindowEnabled(session->source)) {
+            const ULONGLONG now = GetTickCount64();
+            if (popup != pending_popup || thread != pending_thread) {
+                pending_popup = popup; pending_thread = thread; popup_since = now;
+            }
+            // Short-lived host progress windows are not user validation. Keep
+            // the save concealed until the same modal popup remains stable.
+            if (now - popup_since >= 200) {
+                wchar_t klass[64]{};
+                GetClassNameW(popup, klass, ARRAYSIZE(klass));
+                validation.window = reinterpret_cast<uintptr_t>(popup);
+                validation.kind = wcscmp(klass, L"#32770") == 0 ? 1u :
+                    wcscmp(klass, L"TaskDialog") == 0 ? 2u : 3u;
+                EnumChildWindows(popup, [](HWND child, LPARAM context) -> BOOL {
+                    const int id = GetDlgCtrlID(child);
+                    if (id >= IDOK && id <= IDCONTINUE && IsWindowVisible(child))
+                        reinterpret_cast<CommitPopup*>(context)->buttons |= 1u << id;
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(&validation));
+                return CommitCompletion::NativeValidation;
+            }
+        } else {
+            pending_popup = nullptr; pending_thread = 0; popup_since = 0;
+        }
         WaitForSingleObject(session->cancelled.value, 20);
     } while (GetTickCount64() < deadline);
     return CommitCompletion::TimedOut;
@@ -321,10 +351,12 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
                 : !cancelled() && CancelNativeDialog(source, reason, cancelled);
             // Posting the button notification precedes the native modal loop handling it.
             // Keep the source concealed through that handoff; never send a second confirmation.
-            const auto completion = AwaitNativeCompletion(shared, session);
+            CommitPopup validation;
+            const auto completion = AwaitNativeCompletion(shared, session, validation);
             diagnostics::runtime::Event("native_dialog_commit", {{"pid", source.process_id},
                 {"kind", static_cast<uint64_t>(source.kind)}, {"picked", picked ? 1u : 0u},
-                {"submitted", submitted ? 1u : 0u}, {"completion", static_cast<uint64_t>(completion)}},
+                {"submitted", submitted ? 1u : 0u}, {"completion", static_cast<uint64_t>(completion)},
+                {"popup", validation.window}, {"popup_kind", validation.kind}, {"popup_buttons", validation.buttons}},
                 completion == CommitCompletion::TimedOut ? diagnostics::runtime::Level::Warning : diagnostics::runtime::Level::Info);
         } else {
             diagnostics::runtime::Event("native_dialog_handoff_rejected", {{"pid", source.process_id}},

@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 # 仅替换主程序；任何已有组件源码变化都必须走完整构建。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', 'scripts/build_picker_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1', 'scripts/package_custom.ps1',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
+    'src/app/folder_source.h', 'src/app/shell_window_sync.cpp',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')
 if ($NativeHandoff -or $ExplorerReveal) {
@@ -34,7 +35,8 @@ if ($LASTEXITCODE) {
     if ($LASTEXITCODE) { throw '无法比较组件源码版本' }
 }
 foreach ($file in $changed) {
-    if ($file -notin $allowed -and -not $file.StartsWith('integrations/Listary.Picker/')) { throw "文件窗口定向构建不支持此改动，请执行完整构建：$file" }
+    if ($file -notin $allowed -and -not $file.StartsWith('integrations/Listary.Picker/') -and
+        -not $file.StartsWith('integrations/Listary.Picker.Source/')) { throw "文件窗口定向构建不支持此改动，请执行完整构建：$file" }
 }
 
 $env:PULSE_BASE_ARTIFACT = $baseArtifact
@@ -89,6 +91,14 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
+$sourceProject = 'integrations/Listary.Picker.Source/tests/SourceProtocol.csproj'
+dotnet restore $sourceProject --locked-mode --configfile 'integrations/Listary.Picker.Source/NuGet.config' --nologo
+if ($LASTEXITCODE) { throw 'Listary 当前目录来源测试依赖校验失败' }
+dotnet build $sourceProject -c Release --no-restore --nologo
+if ($LASTEXITCODE) { throw 'Listary 当前目录来源测试构建失败' }
+& (Join-Path $taskRepo 'out/listary-plugin/bin/SourceProtocol/Release/net48/pulse.exe') |
+    Tee-Object -FilePath (Join-Path $galleryOutput 'folder-source.log')
+if ($LASTEXITCODE) { throw 'Listary 当前目录来源协议回归失败' }
 if ($ExplorerReveal) {
     $guardBatch = Join-Path $taskBuild 'compile-explorer-guard-first.bat'
     $guardBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_explorer_takeover_guard_test pulse_explorer_takeover_connection_test')
@@ -151,6 +161,11 @@ $pluginOutput = Join-Path $payload 'listary-picker'
 dotnet build $pluginProject -c Release --no-restore --nologo -o $pluginOutput
 if ($LASTEXITCODE) { throw 'Listary 对话框适配编译失败' }
 Copy-Item 'integrations/Listary.Picker/README.md' -Destination $pluginOutput
+$sourcePlugin = 'integrations/Listary.Picker.Source/Listary.FileAppPlugin.PulseFolderSource.csproj'
+$sourceOutput = Join-Path $payload 'listary-folder-source'
+dotnet build $sourcePlugin -c Release --no-restore --nologo -o $sourceOutput
+if ($LASTEXITCODE) { throw 'Listary 当前目录来源插件构建失败' }
+Copy-Item 'integrations/Listary.Picker.Source/README.md' -Destination $sourceOutput
 Copy-Item -LiteralPath (Join-Path $taskBuild 'pulse.exe') -Destination (Join-Path $payload 'pulse.exe')
 Copy-Item -LiteralPath (Join-Path $taskBuild 'lumatext.dll') -Destination (Join-Path $payload 'lumatext.dll')
 & "$PSScriptRoot/package_custom.ps1" -BuildDir $payload
