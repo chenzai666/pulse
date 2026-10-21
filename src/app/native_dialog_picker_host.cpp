@@ -44,8 +44,13 @@ bool SourceMatches(const NativeFileDialog& source) {
     return target.get() && GetProcessTimes(target.get(), &created, &exited, &kernel, &user) &&
         CompareFileTime(&created, &source.process_created) == 0;
 }
+bool SourceOwnsTag(const NativeFileDialog& source, const NativeDialogRecovery& recovery) {
+    return recovery.nonce && SourceMatches(source) &&
+        GetPropW(source.window, kNativeDialogSessionProperty) == reinterpret_cast<HANDLE>(recovery.nonce);
+}
 
-bool ParentMatches(HANDLE parent, DWORD expected) {
+bool ParentMatches(HANDLE parent, DWORD expected, const FILETIME& expected_created) {
+    if (GetProcessId(parent) != expected) return false;
     OwnedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (snapshot.get() == INVALID_HANDLE_VALUE) return false;
     PROCESSENTRY32W process{sizeof(process)};
@@ -59,24 +64,28 @@ bool ParentMatches(HANDLE parent, DWORD expected) {
         } while (Process32NextW(snapshot.get(), &process));
     }
     if (!creator_matches) return false;
-    std::wstring current_path(32768, wchar_t{}), parent_path(32768, wchar_t{});
-    const DWORD current_size = GetModuleFileNameW(nullptr, current_path.data(), static_cast<DWORD>(current_path.size()));
-    DWORD parent_size = static_cast<DWORD>(parent_path.size());
-    if (!current_size || current_size >= current_path.size() ||
-        !QueryFullProcessImageNameW(parent, 0, parent_path.data(), &parent_size) ||
-        !parent_size || parent_size >= parent_path.size()) return false;
     FILETIME parent_created{}, current_created{}, exited{}, kernel{}, user{};
     if (!GetProcessTimes(parent, &parent_created, &exited, &kernel, &user) ||
         !GetProcessTimes(GetCurrentProcess(), &current_created, &exited, &kernel, &user) ||
+        CompareFileTime(&parent_created, &expected_created) != 0 ||
         CompareFileTime(&parent_created, &current_created) > 0) return false;
+    std::wstring current_path(32768, wchar_t{}), parent_path(32768, wchar_t{});
+    const DWORD current_size = GetModuleFileNameW(nullptr, current_path.data(), static_cast<DWORD>(current_path.size()));
+    DWORD parent_size = static_cast<DWORD>(parent_path.size());
+    if (!current_size || current_size >= current_path.size()) return false;
+    // Windows can discard the image name after exit. The inherited handle, creation time
+    // and creator PID still identify the exact dead parent; only nonce-bound recovery follows.
+    if (!QueryFullProcessImageNameW(parent, 0, parent_path.data(), &parent_size))
+        return WaitForSingleObject(parent, 0) == WAIT_OBJECT_0;
+    if (!parent_size || parent_size >= parent_path.size()) return false;
     return CompareStringOrdinal(current_path.data(), static_cast<int>(current_size),
         parent_path.data(), static_cast<int>(parent_size), TRUE) == CSTR_EQUAL;
 }
 
 class PickerLifetime {
 public:
-    PickerLifetime(const NativeFileDialog& source, HANDLE parent, HANDLE cancelled)
-        : source_(source), parent_(parent), cancelled_(cancelled),
+    PickerLifetime(const NativeFileDialog& source, const NativeDialogRecovery& recovery, HANDLE parent, HANDLE cancelled)
+        : source_(source), recovery_(recovery), parent_(parent), cancelled_(cancelled),
           finished_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
     ~PickerLifetime() {
         Close();
@@ -97,7 +106,7 @@ public:
     }
     bool BeginPicker(bool owner_enabled) {
         std::lock_guard lock(mutex_);
-        if (!owner_enabled || closing_ || !SourceMatches(source_) || !IsWindowEnabled(source_.window) ||
+        if (!owner_enabled || closing_ || !SourceOwnsTag(source_, recovery_) || !IsWindowEnabled(source_.window) ||
             WaitForSingleObject(parent_, 0) != WAIT_TIMEOUT || WaitForSingleObject(cancelled_, 0) != WAIT_TIMEOUT)
             return false;
         owner_started_ = true;
@@ -110,7 +119,7 @@ public:
             process != GetCurrentProcessId() || GetWindow(picker, GW_OWNER) != source_.window) return false;
         std::lock_guard lock(mutex_);
         picker_ = picker;
-        if (closing_ || !SourceMatches(source_) || WaitForSingleObject(parent_, 0) != WAIT_TIMEOUT ||
+        if (closing_ || !SourceOwnsTag(source_, recovery_) || WaitForSingleObject(parent_, 0) != WAIT_TIMEOUT ||
             WaitForSingleObject(cancelled_, 0) != WAIT_TIMEOUT) {
             CloseLocked();
             return false;
@@ -143,10 +152,31 @@ private:
         RestoreOwnerLocked();
     }
     void RestoreOwnerLocked() {
-        if (owner_started_ && owner_enabled_ && SourceMatches(source_) && !IsWindowEnabled(source_.window))
+        if (WaitForSingleObject(parent_, 0) == WAIT_OBJECT_0) {
+            RecoverAfterParentDeathLocked();
+            return;
+        }
+        if (owner_started_ && owner_enabled_ && SourceOwnsTag(source_, recovery_) && !IsWindowEnabled(source_.window))
             EnableWindow(source_.window, TRUE);
     }
+    void RecoverAfterParentDeathLocked() {
+        if (!SourceOwnsTag(source_, recovery_)) return;
+        EnableWindow(source_.window, recovery_.owner_enabled ? TRUE : FALSE);
+        if (!SourceOwnsTag(source_, recovery_) || (IsWindowEnabled(source_.window) != FALSE) != recovery_.owner_enabled) return;
+        bool restored = false;
+        if (recovery_.added_layered) {
+            const LONG_PTR style = GetWindowLongPtrW(source_.window, GWL_EXSTYLE);
+            SetLastError(ERROR_SUCCESS);
+            restored = SetWindowLongPtrW(source_.window, GWL_EXSTYLE, style & ~WS_EX_LAYERED) != 0 ||
+                GetLastError() == ERROR_SUCCESS;
+        } else {
+            restored = SetLayeredWindowAttributes(source_.window, recovery_.color_key,
+                recovery_.alpha, recovery_.layered_flags) != FALSE;
+        }
+        if (restored && SourceOwnsTag(source_, recovery_)) RemovePropW(source_.window, kNativeDialogSessionProperty);
+    }
     NativeFileDialog source_;
+    NativeDialogRecovery recovery_;
     HANDLE parent_, cancelled_;
     OwnedHandle finished_;
     OwnedHandle worker_{nullptr};
@@ -191,9 +221,11 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     if (!dialog_wire::Read(input, header, payload) || header.type != dialog_wire::Request ||
         !dialog_wire::UnpackRequest(payload, request) || !SourceMatches(request.source) ||
         request.parent == GetCurrentProcessId()) return 1;
-    OwnedHandle parent(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, request.parent));
-    if (!parent.get() || !ParentMatches(parent.get(), request.parent)) return 1;
-    PickerLifetime lifetime(request.source, parent.get(), cancelled);
+    OwnedHandle parent(request.parent_handle);
+    if (parent.get() == input || parent.get() == output || parent.get() == cancelled ||
+        !GetHandleInformation(parent.get(), &flags) || !SetHandleInformation(parent.get(), HANDLE_FLAG_INHERIT, 0) ||
+        !ParentMatches(parent.get(), request.parent, request.parent_created)) return 1;
+    PickerLifetime lifetime(request.source, request.recovery, parent.get(), cancelled);
     if (!lifetime.Start() || lifetime.Closing()) return 1;
     const HRESULT initialized = OleInitialize(nullptr);
     if (FAILED(initialized)) return 1;
@@ -225,7 +257,7 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     const uint32_t accent = request.appearance.accent;
     const auto color = D2D1::ColorF(static_cast<float>((accent >> 16) & 255) / 255.0f,
         static_cast<float>((accent >> 8) & 255) / 255.0f, static_cast<float>(accent & 255) / 255.0f);
-    if (lifetime.Closing() || !SourceMatches(request.source)) return 1;
+    if (lifetime.Closing() || !SourceOwnsTag(request.source, request.recovery)) return 1;
     const bool owner_enabled = IsWindowEnabled(request.source.window) != FALSE;
     if (!lifetime.BeginPicker(owner_enabled)) return 1;
     spec.on_ready = [&](HWND picker) {
@@ -243,7 +275,7 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     } catch (...) {
         lifetime.Close();
         lifetime.PickerFinished();
-        if (owner_enabled && SourceMatches(request.source) && !IsWindowEnabled(request.source.window))
+        if (owner_enabled && SourceOwnsTag(request.source, request.recovery) && !IsWindowEnabled(request.source.window))
             EnableWindow(request.source.window, TRUE);
         return 1;
     }
@@ -262,7 +294,7 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     }
     history.Flush();
     ipc::PayloadWriter response;
-    if (!PackNativeDialogPickerResult(picked && !lifetime.Closing() && SourceMatches(request.source), result, response)) return 1;
+    if (!PackNativeDialogPickerResult(picked && !lifetime.Closing() && SourceOwnsTag(request.source, request.recovery), result, response)) return 1;
     return dialog_wire::Write(output, dialog_wire::Result, response) ? 0 : 1;
 }
 }

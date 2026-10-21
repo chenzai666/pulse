@@ -50,6 +50,9 @@ int RunNativeDialogWireTest(const wchar_t* output) {
     request.source.confirm_window = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x123458));
     request.source.legacy_folder = true;
     request.parent = 43;
+    request.parent_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x123459));
+    request.parent_created = FILETIME{122, 456};
+    request.recovery = {0xC71A34u, false, RGB(1, 2, 3), 191, LWA_ALPHA | LWA_COLORKEY, true};
     request.source.kind = NativeDialogKind::Save;
     request.source.title = L"保存中文文档";
     request.source.initial_path = LR"(\\server\共享目录\草稿)";
@@ -70,6 +73,12 @@ int RunNativeDialogWireTest(const wchar_t* output) {
     wire::RequestData loaded;
     check(wire::UnpackRequest(packed.data(), loaded) && loaded.source.window == request.source.window &&
         loaded.source.process_id == 42 && loaded.parent == 43 && loaded.source.kind == NativeDialogKind::Save &&
+        loaded.parent_handle == request.parent_handle &&
+        loaded.parent_created.dwLowDateTime == request.parent_created.dwLowDateTime &&
+        loaded.parent_created.dwHighDateTime == request.parent_created.dwHighDateTime &&
+        loaded.recovery.nonce == request.recovery.nonce && !loaded.recovery.added_layered &&
+        loaded.recovery.color_key == request.recovery.color_key && loaded.recovery.alpha == request.recovery.alpha &&
+        loaded.recovery.layered_flags == request.recovery.layered_flags && loaded.recovery.owner_enabled &&
         loaded.source.window_thread_id == request.source.window_thread_id &&
         loaded.source.process_created.dwLowDateTime == request.source.process_created.dwLowDateTime &&
         loaded.source.process_created.dwHighDateTime == request.source.process_created.dwHighDateTime &&
@@ -137,6 +146,13 @@ int RunNativeDialogWireTest(const wchar_t* output) {
         appearance += 8 + 2 * (filter.label.size() + filter.pattern.size());
     check(mutation_rejected(appearance, 2), "invalid dark-theme flag is rejected");
     check(mutation_rejected(packed.data().size() - 16, 2), "invalid legacy-folder flag is rejected");
+    const size_t recovery = packed.data().size() - 60;
+    auto no_parent_handle = packed.data(); PutAt(no_parent_handle, recovery, 0); PutAt(no_parent_handle, recovery + 4, 0);
+    auto no_nonce = packed.data(); PutAt(no_nonce, recovery + 16, 0); PutAt(no_nonce, recovery + 20, 0);
+    check(rejects(no_parent_handle) && rejects(no_nonce) && mutation_rejected(recovery + 24, 2) &&
+        mutation_rejected(recovery + 32, 256) && mutation_rejected(recovery + 36, 4) &&
+        mutation_rejected(recovery + 40, 2),
+        "recovery rejects missing parent handle or nonce, invalid layered state, alpha and enabled flags");
     auto accepts_request = [&](wire::RequestData candidate) {
         ipc::PayloadWriter value;
         wire::RequestData copy;

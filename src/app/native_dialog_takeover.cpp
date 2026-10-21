@@ -15,8 +15,14 @@
 
 namespace pulse::app {
 namespace {
-constexpr wchar_t kSessionProperty[] = L"Pulse.NativeDialogTakeover.Session.v1";
+constexpr auto& kSessionProperty = kNativeDialogSessionProperty;
 std::mutex property_mutex;
+uintptr_t NewSessionNonce() {
+    GUID guid{};
+    uintptr_t nonce = 0;
+    if (SUCCEEDED(CoCreateGuid(&guid))) std::memcpy(&nonce, &guid, sizeof(nonce));
+    return nonce;
+}
 struct Handle {
     HANDLE value = nullptr;
     ~Handle() { Reset(); }
@@ -34,7 +40,7 @@ struct Session {
     DWORD source_thread = 0;
     FILETIME source_created{};
     ULONGLONG observed_time = GetTickCount64();
-    const std::unique_ptr<unsigned char> nonce = std::make_unique<unsigned char>();
+    const uintptr_t nonce = NewSessionNonce();
     std::atomic<bool> tag_claimed = false;
     std::atomic<bool> tag_released = false;
     std::atomic<HWND> source_filename = nullptr, source_confirm = nullptr;
@@ -52,13 +58,14 @@ struct Session {
     COLORREF original_color_key = 0;
     BYTE original_alpha = 255;
     DWORD original_layered_flags = LWA_ALPHA;
+    bool original_enabled = true;
     bool SameWindowIdentity() const {
         DWORD pid = 0;
         FILETIME created{};
         return !invalidated && IsWindow(source) && GetWindowThreadProcessId(source, &pid) == source_thread && pid == source_pid &&
             ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0;
     }
-    HANDLE TagValue() const { return reinterpret_cast<HANDLE>(nonce.get()); }
+    HANDLE TagValue() const { return reinterpret_cast<HANDLE>(nonce); }
     bool SameWindow() const {
         return SameWindowIdentity() && (!tag_claimed || GetPropW(source, kSessionProperty) == TagValue());
     }
@@ -70,7 +77,7 @@ struct Session {
     bool BindIdentity() {
         std::lock_guard owner_lock(owner_mutex);
         if (tag_claimed) return SameWindow();
-        if (!SameSource()) return false;
+        if (!nonce || !SameSource()) return false;
         std::lock_guard property_lock(property_mutex);
         if (GetPropW(source, kSessionProperty) || !SetPropW(source, kSessionProperty, TagValue())) return false;
         tag_claimed = true;
@@ -94,6 +101,7 @@ struct Session {
         std::lock_guard lock(owner_mutex);
         if (!tag_claimed || !SameSource()) return;
         if (!concealed) {
+            original_enabled = IsWindowEnabled(source) != FALSE;
             const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
             if (style & WS_EX_LAYERED) {
                 if (!GetLayeredWindowAttributes(source, &original_color_key, &original_alpha,
@@ -116,6 +124,12 @@ struct Session {
         }
         if (disable && IsWindowEnabled(source)) EnableWindow(source, FALSE);
         if (disable) owns_disable = true;
+    }
+    bool RecoverySnapshot(NativeDialogRecovery& recovery) const {
+        std::lock_guard lock(owner_mutex);
+        if (!concealed || !SameSource()) return false;
+        recovery = {nonce, added_layered, original_color_key, original_alpha, original_layered_flags, original_enabled};
+        return true;
     }
     void Restore(bool release_tag = false) {
         std::lock_guard lock(owner_mutex);
@@ -299,6 +313,13 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     if (!session->IsConcealed()) return;
     dialog_wire::RequestData request;
     request.source = source; request.parent = GetCurrentProcessId();
+    Handle parent;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &parent.value,
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, TRUE, 0)) return;
+    request.parent_handle = parent.value;
+    FILETIME exited{}, kernel{}, user{};
+    if (!GetProcessTimes(parent.value, &request.parent_created, &exited, &kernel, &user) ||
+        !session->RecoverySnapshot(request.recovery)) return;
     { std::lock_guard lock(shared->mutex); request.appearance = shared->appearance; }
     ipc::PayloadWriter payload;
     // 单次请求留在匿名管道缓冲区内，不让外部 UI 提供者拖住主程序。
@@ -315,7 +336,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
     if (!InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) return;
     struct AttributesGuard { LPPROC_THREAD_ATTRIBUTE_LIST value; ~AttributesGuard() { DeleteProcThreadAttributeList(value); } } attributes_guard{attributes};
-    const std::array<HANDLE, 3> inherited{input_read.value, output_write.value, session->cancelled.value};
+    const std::array<HANDLE, 4> inherited{input_read.value, output_write.value, session->cancelled.value, parent.value};
     if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         const_cast<HANDLE*>(inherited.data()), sizeof(inherited), nullptr, nullptr)) return;
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes;
@@ -327,14 +348,14 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
         std::to_wstring(reinterpret_cast<uintptr_t>(output_write.value)) + L" " +
         std::to_wstring(reinterpret_cast<uintptr_t>(session->cancelled.value));
     PROCESS_INFORMATION info{};
+    // Buffer recovery data before starting the helper so abrupt parent death cannot truncate bootstrap.
+    if (!dialog_wire::Write(input_write.value, dialog_wire::Request, payload)) return;
+    input_write.Reset();
     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr, &startup.StartupInfo, &info)) return;
     process.Reset(info.hProcess); primary.Reset(info.hThread); session->picker_pid = info.dwProcessId;
     { std::lock_guard lock(session->owner_mutex); session->owns_disable = true; }
     input_read.Reset(); output_write.Reset();
-    if (!dialog_wire::Write(input_write.value, dialog_wire::Request, payload)) {
-        SetEvent(session->cancelled.value); return;
-    }
     const ULONGLONG started = GetTickCount64();
     std::vector<uint8_t> buffer;
     bool ready = false, received = false, picked = false;

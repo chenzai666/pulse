@@ -1,8 +1,18 @@
 #pragma once
 #include "../ui/folder_picker_dialog.h"
+#include <cstdint>
 #include <memory>
 
 namespace pulse::app {
+inline constexpr wchar_t kNativeDialogSessionProperty[] = L"Pulse.NativeDialogTakeover.Session.v1";
+struct NativeDialogRecovery {
+    uintptr_t nonce = 0;
+    bool added_layered = false;
+    COLORREF color_key = 0;
+    BYTE alpha = 255;
+    DWORD layered_flags = LWA_ALPHA;
+    bool owner_enabled = true;
+};
 struct NativeDialogAppearance {
     ui::FolderPickerSpec style;
     bool dark = false;

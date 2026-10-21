@@ -15,6 +15,9 @@ struct RequestData {
     NativeFileDialog source;
     NativeDialogAppearance appearance;
     DWORD parent = 0;
+    HANDLE parent_handle = nullptr;
+    FILETIME parent_created{};
+    NativeDialogRecovery recovery;
 };
 inline bool TextValid(const std::wstring& text) {
     return text.size() <= 32768 && text.find(L'\0') == std::wstring::npos;
@@ -45,6 +48,9 @@ inline bool PackRequest(const RequestData& data, ipc::PayloadWriter& out) {
     const auto& source = data.source;
     const auto& style = data.appearance.style;
     if (!out.data().empty() || !source.window || !source.process_id || !data.parent ||
+        !data.parent_handle || data.parent_handle == INVALID_HANDLE_VALUE || !data.recovery.nonce ||
+        (!data.parent_created.dwLowDateTime && !data.parent_created.dwHighDateTime) ||
+        !data.recovery.layered_flags || (data.recovery.layered_flags & ~(LWA_ALPHA | LWA_COLORKEY)) ||
         static_cast<uint32_t>(source.kind) > 2 || !TextValid(source.title) || !TextValid(source.initial_path) ||
         !TextValid(source.filename) || source.filters.size() > 64 ||
         (source.filters.empty() ? source.filter_index != 0 : source.filter_index >= source.filters.size()) ||
@@ -63,6 +69,11 @@ inline bool PackRequest(const RequestData& data, ipc::PayloadWriter& out) {
     out.PutU32(source.window_thread_id);
     out.PutU32(source.process_created.dwLowDateTime); out.PutU32(source.process_created.dwHighDateTime);
     out.PutU64(reinterpret_cast<uintptr_t>(source.filename_window)); out.PutU64(reinterpret_cast<uintptr_t>(source.confirm_window));
+    out.PutU64(reinterpret_cast<uintptr_t>(data.parent_handle));
+    out.PutU32(data.parent_created.dwLowDateTime); out.PutU32(data.parent_created.dwHighDateTime);
+    out.PutU64(data.recovery.nonce); out.PutU32(data.recovery.added_layered ? 1u : 0u);
+    out.PutU32(data.recovery.color_key); out.PutU32(data.recovery.alpha);
+    out.PutU32(data.recovery.layered_flags); out.PutU32(data.recovery.owner_enabled ? 1u : 0u);
     out.PutU32(source.legacy_folder ? 1 : 0);
     out.PutU32((style.selection_outline ? 1u : 0u) | (style.show_hidden ? 2u : 0u) |
         (style.list_smart_date ? 4u : 0u) | (style.list_zebra_rows ? 8u : 0u) |
@@ -80,6 +91,8 @@ inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) 
         return true;
     };
     uint64_t window = 0, filename_window = 0, confirm_window = 0;
+    uint64_t parent_handle = 0, nonce = 0;
+    uint32_t added_layered = 0, alpha = 0, owner_enabled = 0;
     uint32_t kind = 0, multi = 0, index = 0, count = 0, dark = 0, flags = 0, legacy = 0;
     auto& source = data.source; auto& style = data.appearance.style;
     if (!in.GetU64(window) || !get_dword(source.process_id) || !get_dword(data.parent) || !in.GetU32(kind) || kind > 2 ||
@@ -96,11 +109,24 @@ inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) 
     if (!in.GetU32(dark) || dark > 1 || !in.GetU32(data.appearance.accent) || !in.GetString(data.appearance.language) ||
         !get_dword(source.window_thread_id) || !get_dword(source.process_created.dwLowDateTime) ||
         !get_dword(source.process_created.dwHighDateTime) || !in.GetU64(filename_window) || !in.GetU64(confirm_window) ||
+        !in.GetU64(parent_handle) || !parent_handle || parent_handle >= (std::numeric_limits<uintptr_t>::max)() ||
+        !get_dword(data.parent_created.dwLowDateTime) || !get_dword(data.parent_created.dwHighDateTime) ||
+        (!data.parent_created.dwLowDateTime && !data.parent_created.dwHighDateTime) ||
+        !in.GetU64(nonce) || !nonce || nonce > (std::numeric_limits<uintptr_t>::max)() ||
+        !in.GetU32(added_layered) || added_layered > 1 || !get_dword(data.recovery.color_key) ||
+        !in.GetU32(alpha) || alpha > 255 || !get_dword(data.recovery.layered_flags) ||
+        !data.recovery.layered_flags || (data.recovery.layered_flags & ~(LWA_ALPHA | LWA_COLORKEY)) ||
+        !in.GetU32(owner_enabled) || owner_enabled > 1 ||
         !in.GetU32(legacy) || legacy > 1 || window > (std::numeric_limits<uintptr_t>::max)() ||
         filename_window > (std::numeric_limits<uintptr_t>::max)() || confirm_window > (std::numeric_limits<uintptr_t>::max)() ||
         !in.GetU32(flags) || flags > 63 || !in.GetF32(style.row_height_dip) || !std::isfinite(style.row_height_dip) ||
         style.row_height_dip < 0 || style.row_height_dip > 100 || !in.GetU32(style.details_columns) || in.remaining()) return false;
     data.appearance.dark = dark != 0;
+    data.parent_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(parent_handle));
+    data.recovery.nonce = static_cast<uintptr_t>(nonce);
+    data.recovery.added_layered = added_layered != 0;
+    data.recovery.alpha = static_cast<BYTE>(alpha);
+    data.recovery.owner_enabled = owner_enabled != 0;
     source.filename_window = reinterpret_cast<HWND>(static_cast<uintptr_t>(filename_window));
     source.confirm_window = reinterpret_cast<HWND>(static_cast<uintptr_t>(confirm_window));
     source.legacy_folder = legacy != 0;

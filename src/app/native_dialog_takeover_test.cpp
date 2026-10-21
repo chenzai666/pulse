@@ -216,6 +216,12 @@ bool SourceMatches(const SourceWindow& source) {
         process == source.process && ClassName(source.window) == L"#32770" &&
         FixtureOwnerMatches(source.window, source.process);
 }
+bool SourceOpaque(HWND window) {
+    if (!IsWindowVisible(window)) return false;
+    if (!(GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED)) return true;
+    BYTE alpha = 0; DWORD flags = 0;
+    return GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && (!(flags & LWA_ALPHA) || alpha == 255);
+}
 
 SourceWindow FindSource(HDESK desktop, DWORD fixture_process) {
     SourceWindow result;
@@ -578,10 +584,11 @@ void RunStopRestart(TestLog& log, HDESK desktop, const std::wstring& desktop_nam
     watcher->Stop();
     watcher.reset();
     const bool restored = Until([&] {
-        return child.Running() && SourceMatches(source) && IsWindowVisible(source.window) && IsWindowEnabled(source.window) &&
+        return child.Running() && SourceMatches(source) && SourceOpaque(source.window) && IsWindowEnabled(source.window) &&
+            !GetPropW(source.window, pulse::app::kNativeDialogSessionProperty) &&
             !PickerMatches(picker) && helper.get() && WaitForSingleObject(helper.get(), 0) == WAIT_OBJECT_0;
     }, kResultTimeout);
-    log.Check(restored, branch + ": Stop/destruction closes picker but leaves original host alive, visible and enabled");
+    log.Check(restored, branch + ": Stop/destruction restores original host alive, fully opaque and enabled, removing its own nonce");
     if (!restored) { Diagnostics(log, desktop, child, branch + ": owner-restore-timeout"); return; }
     watcher = std::make_unique<NativeDialogTakeover>(Appearance(), desktop, desktop_name);
     PickerWindow replacement;
@@ -591,7 +598,8 @@ void RunStopRestart(TestLog& log, HDESK desktop, const std::wstring& desktop_nam
     Handle replacement_helper(OpenProcess(SYNCHRONIZE, FALSE, replacement.process));
     watcher->Stop();
     watcher.reset();
-    const bool restored_again = Until([&] { return child.Running() && SourceMatches(source) && IsWindowVisible(source.window) &&
+    const bool restored_again = Until([&] { return child.Running() && SourceMatches(source) && SourceOpaque(source.window) &&
+        !GetPropW(source.window, pulse::app::kNativeDialogSessionProperty) &&
         IsWindowEnabled(source.window) && !PickerMatches(replacement) && replacement_helper.get() &&
         WaitForSingleObject(replacement_helper.get(), 0) == WAIT_OBJECT_0; }, kResultTimeout);
     log.Check(restored_again, branch + ": second Stop restores native owner without forwarding selection or cancel");
@@ -620,10 +628,11 @@ void RunParentDeath(TestLog& log, HDESK desktop, const std::wstring& desktop_nam
     Handle helper(OpenProcess(SYNCHRONIZE, FALSE, picker.process));
     if (!log.Check(parent.Crash(), branch + ": simulate abrupt death only through the test-host handle returned by CreateProcess")) return;
     const bool restored = Until([&] {
-        return child.Running() && SourceMatches(source) && IsWindowVisible(source.window) && IsWindowEnabled(source.window) &&
+        return child.Running() && SourceMatches(source) && SourceOpaque(source.window) && IsWindowEnabled(source.window) &&
+            !GetPropW(source.window, pulse::app::kNativeDialogSessionProperty) &&
             !PickerMatches(picker) && helper.get() && WaitForSingleObject(helper.get(), 0) == WAIT_OBJECT_0;
     }, kResultTimeout);
-    log.Check(restored, branch + ": helper independently restores original native owner and exits after real parent death");
+    log.Check(restored, branch + ": helper restores original owner fully opaque and enabled, removes its nonce and exits after real parent death");
     if (!restored) { Diagnostics(log, desktop, child, branch + ": parent-death-owner-restore-timeout"); return; }
     NativeDialogTakeover watcher(Appearance(), desktop, desktop_name);
     PickerWindow replacement;

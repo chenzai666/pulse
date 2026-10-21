@@ -21,7 +21,8 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/bench/file_picker_dialog_test.cpp')
 if ($NativeHandoff -or $ExplorerReveal) {
     $allowed += @('src/app/native_dialog_takeover.cpp', 'src/app/native_file_dialog_adapter.cpp',
-        'src/app/native_file_dialog_adapter.h', 'src/app/native_dialog_takeover_test.cpp',
+        'src/app/native_file_dialog_adapter.h', 'src/app/native_dialog_takeover.h',
+        'src/app/native_dialog_wire.h', 'src/app/native_dialog_wire_test.cpp', 'src/app/native_dialog_takeover_test.cpp',
         'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp')
 }
 if ($ExplorerReveal) {
@@ -146,17 +147,20 @@ foreach ($case in @('history', 'save', 'columns', 'follow')) {
 Remove-Item Env:PULSE_PICKER_TEST_SNAPSHOT -ErrorAction SilentlyContinue
 
 if ($NativeHandoff -and -not $ReuseNativeVerification) {
-    $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
     $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
     $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-picker-data'
     $env:PULSE_TEST_NATIVE_HANDOFF_DELAY = '1'
     New-Item -ItemType Directory -Path 'bench_data' -Force | Out-Null
-    $handoff = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'handoff-output.log') -RedirectStandardError (Join-Path $galleryOutput 'handoff-error.log')
-    if (-not $handoff.WaitForExit(300000)) { $handoff.Kill(); throw '原生窗口接管链路验证超时' }
-    $handoff.Refresh()
-    Copy-Item 'bench_data/native-dialogs-takeover.log' (Join-Path $galleryOutput 'handoff.log')
+    foreach ($nativeCase in @('wire', 'takeover')) {
+        $env:PULSE_SELFTEST_CASE = 'native-dialog-' + $nativeCase
+        $label = if ($nativeCase -eq 'takeover') { 'handoff' } else { 'wire' }
+        $handoff = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($label + '-output.log')) -RedirectStandardError (Join-Path $galleryOutput ($label + '-error.log'))
+        if (-not $handoff.WaitForExit(300000)) { $handoff.Kill(); throw "原生窗口验证超时：$nativeCase" }
+        $handoff.Refresh()
+        Copy-Item ('bench_data/native-dialogs-' + $nativeCase + '.log') (Join-Path $galleryOutput ($label + '.log'))
+        if ($handoff.ExitCode) { throw "原生窗口验证失败：$nativeCase" }
+    }
     Remove-Item Env:PULSE_SELFTEST_CASE, Env:PULSE_SELFTEST_NO_SCREENSHOTS, Env:PULSE_TEST_DATA_DIR, Env:PULSE_TEST_NATIVE_HANDOFF_DELAY -ErrorAction SilentlyContinue
-    if ($handoff.ExitCode) { throw '原生窗口接管链路验证失败' }
     $releaseBatch = Join-Path $taskBuild 'compile-picker-release.bat'
     $releaseBuild = [IO.File]::ReadAllText($buildBatch).Replace('-DPULSE_WITH_SELFTEST=ON', '-DPULSE_WITH_SELFTEST=OFF').Replace("--target $targets", '--target pulse')
     [IO.File]::WriteAllText($releaseBatch, $releaseBuild, [Text.UTF8Encoding]::new($false))
