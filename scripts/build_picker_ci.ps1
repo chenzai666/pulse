@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$NativeHandoff, [switch]$ReuseNativeVerification)
+param([switch]$NativeHandoff, [switch]$ReuseNativeVerification, [switch]$ExplorerReveal)
 $ErrorActionPreference = 'Stop'
 if ($ReuseNativeVerification -and -not $NativeHandoff) { throw '复用证据必须指定原生接管验证范围' }
 $env:PYTHONUTF8 = '1'
@@ -17,10 +17,14 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')
-if ($NativeHandoff) {
+if ($NativeHandoff -or $ExplorerReveal) {
     $allowed += @('src/app/native_dialog_takeover.cpp', 'src/app/native_file_dialog_adapter.cpp',
         'src/app/native_file_dialog_adapter.h', 'src/app/native_dialog_takeover_test.cpp',
         'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp')
+}
+if ($ExplorerReveal) {
+    $allowed += @('CMakeLists.txt', 'src/app/explorer_window_takeover.cpp', 'src/app/explorer_takeover_guard.h',
+        'src/bench/explorer_takeover_guard_test.cpp')
 }
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
@@ -71,7 +75,8 @@ $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'ON' } else { 'OFF' }
-$targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' } else { 'pulse' }
+$targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' }
+    elseif ($ExplorerReveal) { 'pulse pulse_explorer_takeover_guard_test' } else { 'pulse' }
 @"
 @echo off
 call "$vcvars"
@@ -84,6 +89,15 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
+if ($ExplorerReveal) {
+    $guardBatch = Join-Path $taskBuild 'compile-explorer-guard-first.bat'
+    $guardBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_explorer_takeover_guard_test')
+    [IO.File]::WriteAllText($guardBatch, $guardBuild, [Text.UTF8Encoding]::new($false))
+    & $guardBatch
+    if ($LASTEXITCODE) { throw '资源管理器接管保护构建失败' }
+    & (Join-Path $taskBuild 'pulse_explorer_takeover_guard_test.exe') | Tee-Object -FilePath (Join-Path $galleryOutput 'explorer-guard.log')
+    if ($LASTEXITCODE) { throw '资源管理器接管保护回归失败' }
+}
 if ($ReuseNativeVerification) { & "$PSScriptRoot/verify_native_handoff_evidence.ps1" -OutputDirectory $galleryOutput }
 if ($NativeHandoff -and -not $ReuseNativeVerification) {
     $adapterBatch = Join-Path $taskBuild 'compile-picker-adapter-first.bat'

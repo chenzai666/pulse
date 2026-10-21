@@ -382,6 +382,9 @@ target_link_libraries(pulse_file_picker_model_test PRIVATE shell32 ole32 uuid pu
 target_link_libraries(pulse_file_picker_model_test PRIVATE pulse_fs_watch)
 
 add_executable(pulse_native_dialog_fixture src/bench/native_dialog_fixture.cpp)
+add_executable(pulse_explorer_takeover_guard_test
+    src/bench/explorer_takeover_guard_test.cpp src/app/shell_window_plan.cpp)
+target_link_libraries(pulse_explorer_takeover_guard_test PRIVATE user32)
 target_link_libraries(pulse_native_dialog_fixture PRIVATE shell32 ole32 uuid shcore user32)
 add_executable(pulse_native_file_dialog_adapter_test
     src/bench/native_file_dialog_adapter_test.cpp src/app/native_file_dialog_adapter.cpp)
