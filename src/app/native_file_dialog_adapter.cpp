@@ -443,6 +443,12 @@ bool SelectFilter(const NativeFileDialog& dialog, const Controls& controls, size
             (!Send(controls.filter, CB_SETCURSEL, index, 0, result) || result != index))
             return Fail(reason, L"关闭下拉列表后无法保留请求的保存文件类型。");
         if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) || !command_target_matches()) return false;
+        // A committed ComboBox choice reports SELENDOK before SELCHANGE.
+        // Classic hooked save dialogs also use that acceptance notification
+        // to publish the selected type in OPENFILENAME, beyond its UI state.
+        if (!Send(parent, WM_COMMAND, MAKEWPARAM(identifier, CBN_SELENDOK), reinterpret_cast<LPARAM>(controls.filter), result))
+            return Fail(reason, L"原生保存宿主未完成文件类型选择结束通知。");
+        if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) || !command_target_matches()) return false;
         if (!Send(parent, WM_COMMAND, MAKEWPARAM(identifier, CBN_SELCHANGE), reinterpret_cast<LPARAM>(controls.filter), result))
             return Fail(reason, L"原生保存宿主未完成文件类型变更通知。");
         if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected) || selected != index)
