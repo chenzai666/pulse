@@ -3,9 +3,13 @@
 #include "../common/windows_compat.h"
 #include "../app/native_dialog_history.h"
 #include "../ui/folder_picker_dialog.h"
+#include "../ui/folder_picker_view.h"
+#include "../ui/ui_renderer.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -139,12 +143,15 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
     const bool history_mode = argc == 2 && std::wstring_view(argv[1]) == L"--history";
     const bool save_mode = argc == 2 && std::wstring_view(argv[1]) == L"--save";
     const bool input_surfaces = argc == 2 && std::wstring_view(argv[1]) == L"--input-surfaces";
-    if (!history_mode && !save_mode && !input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
-        std::puts("Use --interaction, --input-surfaces or --save for scoped file picker regression cases.");
+    const bool columns_mode = argc == 2 && std::wstring_view(argv[1]) == L"--columns";
+    const bool follow_mode = argc == 2 && std::wstring_view(argv[1]) == L"--follow";
+    if (!history_mode && !save_mode && !input_surfaces && !columns_mode && !follow_mode &&
+        (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
+        std::puts("Use --interaction, --input-surfaces, --save, --columns or --follow for scoped file picker regression cases.");
         return 2;
     }
     // Surface regression runs without activating any window on the user's desktop.
-    if (history_mode || input_surfaces || save_mode) {
+    if (history_mode || input_surfaces || save_mode || columns_mode || follow_mode) {
         const auto name = L"PulsePickerInputs_" + std::to_wstring(GetCurrentProcessId());
         HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
         if (!desktop || !SetThreadDesktop(desktop)) return 3;
@@ -161,6 +168,214 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
     };
     try {
         Fixture fixture;
+        if (columns_mode) {
+            for (const int width_dip : {1000, 640}) for (const float initial_scale : {1.0f, 1.5f, 2.0f}) {
+                std::atomic<int> listings = 0;
+                FolderPickerSpec spec;
+                spec.mode = PickerMode::File;
+                spec.initial_path = fixture.root.wstring();
+                spec.filename = L"alpha.txt";
+                spec.on_directory_changed = [&](const std::wstring&) { ++listings; };
+                spec.on_ready = [&](HWND hwnd) {
+                    RECT rect{};
+                    GetWindowRect(hwnd, &rect);
+                    rect.right = rect.left + static_cast<LONG>(width_dip * initial_scale);
+                    rect.bottom = rect.top + static_cast<LONG>(640 * initial_scale);
+                    const auto dpi = static_cast<WORD>(96 * initial_scale);
+                    Send(hwnd, WM_DPICHANGED, MAKELONG(dpi, dpi), reinterpret_cast<LPARAM>(&rect));
+                };
+                const auto outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                    const auto verify = [](bool pass, const char* stage) {
+                        if (!pass) std::printf("[FAIL] column stage: %s\n", stage);
+                        return pass;
+                    };
+                    if (!Until([&] { return listings.load() == 1; }, done)) return false;
+                    // A separate compositor measures the same production font and columns.
+                    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                    if (FAILED(initialized)) return false;
+                    struct ComLifetime { ~ComLifetime() { CoUninitialize(); } } com_lifetime;
+                    const HWND probe_window = CreateWindowExW(0, L"STATIC", L"Picker column probe", WS_POPUP,
+                        0, 0, 1000, 640, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                    if (!probe_window) return false;
+                    struct WindowLifetime { HWND hwnd; ~WindowLifetime() { DestroyWindow(hwnd); } } window_lifetime{probe_window};
+                    Compositor compositor;
+                    if (!compositor.Init(probe_window)) return false;
+                    MainRenderer renderer;
+                    renderer.SetCompositor(&compositor);
+                    float scale = initial_scale;
+                    renderer.SetScale(scale);
+                    compositor.RecreateTextFormats(scale);
+                    renderer.SetEmbedded(kPickerTitleDip, PickerFooterDip(PickerMode::File));
+                    renderer.SetSidebarWidthDip(196.0f);
+                    DetailsColumnWidths widths{};
+                    const auto bounds = [&] {
+                        RECT rect{};
+                        GetClientRect(hwnd, &rect);
+                        return renderer.ContentRect(static_cast<float>(rect.right), static_cast<float>(rect.bottom));
+                    };
+                    const auto layout = [&] { return renderer.DetailsColumns(bounds(), widths); };
+                    const auto y = [&] { return static_cast<int>(std::lround(bounds().top +
+                        renderer.PaneHeaderHeight() + renderer.ColumnHeaderHeight() * 0.5f)); };
+                    const auto captured = [&] {
+                        GUITHREADINFO info{sizeof(info)};
+                        return GetGUIThreadInfo(GetWindowThreadProcessId(hwnd, nullptr), &info) && info.hwndCapture == hwnd;
+                    };
+                    const auto begin = [&](int divider = 0) {
+                        const int x = static_cast<int>(std::lround(layout().DividerX(divider)));
+                        return Send(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y())) && captured();
+                    };
+                    const auto confirm_edge = [&] {
+                        return begin() && Send(hwnd, WM_CANCELMODE) && !captured();
+                    };
+                    const auto move = [&](float target, bool release) {
+                        const auto before = layout();
+                        const int start = static_cast<int>(std::lround(before.DividerX(0)));
+                        DetailsColumnWidths frozen = widths;
+                        for (int i = 0; i < before.count; ++i) {
+                            const int slot = MainRenderer::ManualColumnSlot(before.kinds[static_cast<size_t>(i)], false);
+                            if (slot >= 0) frozen[static_cast<size_t>(slot)] = before.widths[static_cast<size_t>(i)] / scale;
+                        }
+                        const int target_x = static_cast<int>(std::lround(target));
+                        const auto moved = renderer.ResizeDetailsColumnDivider(bounds(), frozen, 0,
+                            target_x - (start - before.DividerX(0)));
+                        if (!Send(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(target_x, y()))) return false;
+                        if (release) {
+                            if (!Send(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(target_x, y())) || captured()) return false;
+                            widths = moved;
+                        }
+                        return true;
+                    };
+                    // Select alpha.txt; a divider press must preserve the chosen row and name.
+                    if (!Send(hwnd, WM_KEYDOWN, VK_HOME) || !Send(hwnd, WM_KEYDOWN, VK_DOWN) ||
+                        Text(GetDlgItem(hwnd, kFilenameId)) != L"alpha.txt") return false;
+                    if (!verify(begin(), "divider captures mouse")) return false;
+                    DWORD_PTR cursor = 0;
+                    if (!verify(SendMessageTimeoutW(hwnd, WM_SETCURSOR, reinterpret_cast<WPARAM>(hwnd),
+                            MAKELPARAM(HTCLIENT, WM_MOUSEMOVE), SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &cursor) && cursor,
+                            "horizontal resize cursor during capture")) return false;
+                    if (!verify(move(layout().DividerX(0) + 32 * scale, true) && confirm_edge(),
+                            "mouse-up commits moved divider hit geometry")) return false;
+                    if (!verify(begin() && move(layout().DividerX(0) - 24 * scale, false) &&
+                            Send(hwnd, WM_KEYDOWN, VK_ESCAPE) && IsWindow(hwnd) && !captured() && confirm_edge(),
+                            "Escape rolls back width and keeps dialog open")) return false;
+                    if (!verify(begin() && move(layout().DividerX(0) - 24 * scale, false) &&
+                            Send(hwnd, WM_CAPTURECHANGED, 0, reinterpret_cast<LPARAM>(probe_window)) &&
+                            !captured() && confirm_edge(), "capture loss rolls back width")) return false;
+                    if (!verify(begin() && move(layout().DividerX(0) - 24 * scale, false) &&
+                            Send(hwnd, WM_CANCELMODE) && !captured() && confirm_edge(),
+                            "cancel mode rolls back width")) return false;
+                    if (!verify(begin() && move(-2000 * scale, true) && layout().widths[0] > 0 && confirm_edge(),
+                            "extreme drag retains renderer minimum and divider hit target")) return false;
+                    const int edge = static_cast<int>(std::lround(layout().DividerX(0)));
+                    if (!Send(hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(edge, y()))) return false;
+                    std::array<float, 4> unused{};
+                    renderer.AutoFitColumnDivider(bounds(), widths, false, unused, 0);
+                    if (!verify(!captured() && confirm_edge(), "double click restores fitted adjacent columns")) return false;
+                    if (!begin() || !move(layout().DividerX(0) - 20 * scale, false)) return false;
+                    scale = initial_scale == 1.0f ? 1.5f : 1.0f;
+                    RECT rect{};
+                    GetWindowRect(hwnd, &rect);
+                    rect.right = rect.left + static_cast<LONG>(width_dip * scale);
+                    rect.bottom = rect.top + static_cast<LONG>(640 * scale);
+                    const auto dpi = static_cast<WORD>(96 * scale);
+                    if (!Send(hwnd, WM_DPICHANGED, MAKELONG(dpi, dpi), reinterpret_cast<LPARAM>(&rect))) return false;
+                    renderer.SetScale(scale);
+                    compositor.RecreateTextFormats(scale);
+                    renderer.InvalidateTypography();
+                    if (!verify(!captured() && confirm_edge(), "DPI switch cancels drag and preserves DIP width")) return false;
+                    if (!verify(listings.load() == 1 && Text(GetDlgItem(hwnd, kFilenameId)) == L"alpha.txt",
+                            "resizing neither sorts nor changes selection")) return false;
+                    wchar_t snapshot[32768]{};
+                    if (GetEnvironmentVariableW(L"PULSE_PICKER_TEST_SNAPSHOT", snapshot, 32768)) {
+                        SetPropW(hwnd, L"Pulse.PickerTestSnapshot", snapshot);
+                        Send(hwnd, WM_PAINT);
+                    }
+                    // A normal header press must still sort after the resize interaction.
+                    const int header_x = static_cast<int>(std::lround(layout().left + 16 * scale));
+                    return Send(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(header_x, y())) &&
+                        Send(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(header_x, y())) &&
+                        Until([&] { return listings.load() == 2; }, done) && Send(hwnd, WM_KEYDOWN, VK_RETURN);
+                });
+                const std::string name = "picker column drag, cancellation, sort, selection and DPI at " +
+                    std::to_string(width_dip) + " DIP / " + std::to_string(static_cast<int>(initial_scale * 100)) + "%";
+                check(name.c_str(), HasPaths(outcome, {(fixture.root / L"alpha.txt").wstring()}));
+            }
+            CoUninitialize();
+            return failures ? 1 : 0;
+        }
+        if (follow_mode) {
+            const auto root = fixture.root.wstring();
+            const auto nested = (fixture.root / L"nested").wstring();
+            std::atomic<int> requested = 0;
+            std::atomic<int> polls = 0;
+            std::atomic<int> listings = 0;
+            FolderPickerSpec spec;
+            spec.mode = PickerMode::File;
+            spec.initial_path = root;
+            spec.filename = L"two words.txt";
+            spec.listary_integration = false;
+            spec.on_directory_changed = [&](const std::wstring&) { ++listings; };
+            spec.poll_directory = [&] {
+                ++polls;
+                const int target = requested.load();
+                return target == 1 ? nested : target == 2 ? root : std::wstring();
+            };
+            bool followed = false;
+            bool same_path = false;
+            bool editing_deferred = false;
+            bool search_worked = false;
+            auto outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                if (GetPropW(hwnd, L"Pulse.Picker.Listary.v1") ||
+                    !Until([&] { return listings.load() == 1; }, done)) return false;
+                requested = 1;
+                followed = Until([&] {
+                    return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) &&
+                        IsWindowEnabled(filename) && listings.load() == 2;
+                }, done) && Text(filename) == L"two words.txt";
+                if (!followed) return false;
+                // The periodic source can repeat its current path without reloading.
+                if (!Send(hwnd, WM_TIMER, 4) || !Send(hwnd, WM_TIMER, 4)) return false;
+                same_path = listings.load() == 2 && IsWindowEnabled(filename);
+                if (!same_path || !Send(hwnd, WM_KEYDOWN, VK_F4)) return false;
+                const auto draft = root + L"\\unfinished-address";
+                if (!SetText(GetDlgItem(hwnd, kPathId), draft)) return false;
+                requested = 2;
+                const int before_poll = polls.load();
+                if (!Send(hwnd, WM_TIMER, 4)) return false;
+                editing_deferred = polls.load() == before_poll && listings.load() == 2 &&
+                    Text(GetDlgItem(hwnd, kPathId)) == draft && Text(filename) == L"two words.txt";
+                if (!editing_deferred || !Send(GetDlgItem(hwnd, kPathId), WM_KEYDOWN, VK_ESCAPE) ||
+                    !Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), root) &&
+                        IsWindowEnabled(filename) && listings.load() == 3; }, done)) return false;
+                if (Text(filename) != L"two words.txt") return false;
+                HWND search = GetDlgItem(hwnd, kSearchId);
+                if (!Send(hwnd, WM_KEYDOWN, VK_F3) || !SetText(search, L"alpha") ||
+                    !Send(search, WM_KEYDOWN, VK_RETURN) ||
+                    !Until([&] { return listings.load() == 4 && IsWindowEnabled(filename); }, done)) return false;
+                search_worked = Text(search) == L"alpha" && Text(filename) == L"two words.txt" &&
+                    Send(hwnd, WM_KEYDOWN, VK_DOWN) && Text(filename) == L"alpha.txt";
+                return search_worked && Send(hwnd, WM_KEYDOWN, VK_RETURN);
+            });
+            check("native directory follow works with Listary disabled and preserves filename", followed);
+            check("repeated native directory does not reload the current listing", same_path);
+            check("native follow defers while address editing and resumes afterward", editing_deferred);
+            check("current-directory search and file acceptance work without Listary", search_worked &&
+                HasPaths(outcome, {(fixture.root / L"alpha.txt").wstring()}));
+            requested = 1;
+            listings = 0;
+            outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>& done) {
+                return !GetPropW(hwnd, L"Pulse.Picker.Listary.v1") &&
+                    Until([&] { return SamePickerPath(Text(GetDlgItem(hwnd, kPathId)), nested) &&
+                        IsWindowEnabled(GetDlgItem(hwnd, kFilenameId)); }, done) &&
+                    Text(GetDlgItem(hwnd, kFilenameId)) == L"two words.txt" &&
+                    Send(GetDlgItem(hwnd, kFilenameId), WM_KEYDOWN, VK_ESCAPE);
+            });
+            check("native-follow dialog cancels without Listary or a selected result",
+                outcome.driven && !outcome.picked && outcome.result.paths.empty());
+            CoUninitialize();
+            return failures ? 1 : 0;
+        }
         if (history_mode) {
             namespace runtime = pulse::diagnostics::runtime;
             const bool logging = runtime::Initialize(fixture.root.wstring(), "picker-history-test");

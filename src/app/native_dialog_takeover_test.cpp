@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+namespace pulse::app { bool NativeDialogTakeoverIdentityRegression(HWND window); }
+
 namespace {
 using pulse::app::NativeDialogAppearance;
 using pulse::app::NativeDialogTakeover;
@@ -198,6 +200,7 @@ struct SourceWindow {
 
 bool FixtureOwnerMatches(HWND window, DWORD fixture_process) {
     const HWND owner = GetWindow(window, GW_OWNER);
+    if (!owner) return true;
     DWORD owner_process = 0;
     const auto owner_class = ClassName(owner);
     return owner && GetWindowThreadProcessId(owner, &owner_process) && owner_process == fixture_process &&
@@ -466,15 +469,24 @@ bool SelectThroughPicker(TestLog& log, const std::string& branch, const PickerWi
 
 void RunRound(TestLog& log, HDESK desktop, const std::wstring& desktop_name, const std::wstring& executable,
     const std::wstring& fixture, const std::filesystem::path& root, const std::wstring& mode,
-    const std::wstring& text, const std::vector<std::wstring>& expected, bool cancelled = false) {
-    const std::string branch = Utf8(mode) + (cancelled ? "-cancel" : "-confirm");
+    const std::wstring& text, const std::vector<std::wstring>& expected, bool cancelled = false,
+    const std::wstring& fixture_mode = {}) {
+    const std::string branch = Utf8(fixture_mode.empty() ? mode : fixture_mode) + (cancelled ? "-cancel" : "-confirm");
     ChildProcess child(log, branch);
     NativeDialogTakeover watcher(Appearance(), desktop, desktop_name);
-    if (!log.Check(child.Start(fixture, {mode, root.wstring()}, desktop_name), branch + ": launch only own fixture on private desktop")) return;
+    const ULONGLONG started = GetTickCount64();
+    if (!log.Check(child.Start(fixture, {fixture_mode.empty() ? mode : fixture_mode, root.wstring()}, desktop_name), branch + ": launch only own fixture on private desktop")) return;
     SourceWindow source;
     PickerWindow picker;
     const bool folder = mode == L"folder" || mode == L"legacy-folder";
     if (!AwaitPicker(log, desktop, child, executable, branch, !folder, source, picker)) return;
+    if (fixture_mode.starts_with(L"unowned-"))
+        log.Check(!GetWindow(source.window, GW_OWNER), branch + ": standard native source has no owner and Pulse owns its picker through the source");
+    if (fixture_mode == L"delayed-legacy-folder") {
+        log.Check(GetTickCount64() - started >= 2200, branch + ": writable controls become ready after the first 1500ms identification attempt expires");
+        log.Check(pulse::app::NativeDialogTakeoverIdentityRegression(source.window),
+            branch + ": identical HWND/PID rejects changed process creation, thread and destroyed generations; retries obey cooldown, limit and presented terminal state");
+    }
     Handle helper(OpenProcess(SYNCHRONIZE, FALSE, picker.process));
     const bool driven = cancelled ? SendPicker(picker, 0, WM_KEYDOWN, VK_ESCAPE) : SelectThroughPicker(log, branch, picker, text, folder);
     if (!log.Check(driven, branch + ": drive only verified Pulse controls")) return;
@@ -678,6 +690,11 @@ void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) 
     log.Check(!std::filesystem::exists(saved), "native save returns selected path without creating or writing candidate");
     RunRound(log, desktop, desktop_name, executable, fixture, root, L"folder", nested.wstring(), {nested.wstring()});
     RunRound(log, desktop, desktop_name, executable, fixture, root, L"legacy-folder", nested.wstring(), {nested.wstring()});
+    RunRound(log, desktop, desktop_name, executable, fixture, root, L"folder", nested.wstring(), {nested.wstring()}, false, L"unowned-folder");
+    RunRound(log, desktop, desktop_name, executable, fixture, root, L"legacy-folder", nested.wstring(), {nested.wstring()}, false, L"unowned-legacy-folder");
+    RunRound(log, desktop, desktop_name, executable, fixture, root, L"open", first.wstring(), {first.wstring()}, false, L"unowned-open");
+    RunRound(log, desktop, desktop_name, executable, fixture, root, L"open", first.wstring(), {first.wstring()}, false, L"unowned-classic-open");
+    RunRound(log, desktop, desktop_name, executable, fixture, root, L"legacy-folder", nested.wstring(), {nested.wstring()}, false, L"delayed-legacy-folder");
     RunRound(log, desktop, desktop_name, executable, fixture, root, L"open", L"", {}, true);
     RunOpaqueFallback(log, desktop, desktop_name, executable, fixture, root);
     RunStopRestart(log, desktop, desktop_name, executable, fixture, root);

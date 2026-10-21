@@ -1,6 +1,7 @@
 #include "native_dialog_takeover.h"
 #include "native_dialog_wire.h"
 #include "native_dialog_history.h"
+#include "native_folder_follow.h"
 #include "session.h"
 #include "../common/localization.h"
 #include "../common/windows_compat.h"
@@ -213,6 +214,8 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     spec.fallback_path = spec.initial_path;
     if (!remembered.empty()) spec.initial_path = remembered;
     DialogHistoryWriter history(history_directory, spec.mode);
+    NativeFolderFollower follow(parent.get(), request.parent);
+    if (follow.Start()) spec.poll_directory = [&] { return follow.Poll(); };
     spec.on_directory_changed = [&](const std::wstring& path) { history.Visit(path); };
     spec.listary_integration = true;
     spec.filename = request.source.filename;
@@ -227,6 +230,7 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     if (!lifetime.BeginPicker(owner_enabled)) return 1;
     spec.on_ready = [&](HWND picker) {
         if (!lifetime.Ready(picker)) return;
+        follow.SetPicker(picker);
         ipc::PayloadWriter ready;
         ready.PutU64(reinterpret_cast<uintptr_t>(picker));
         ready.PutU32(GetCurrentProcessId()); ready.PutU32(GetCurrentThreadId());

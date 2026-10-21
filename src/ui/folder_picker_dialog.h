@@ -32,6 +32,8 @@ struct FolderPickerSpec {
     std::wstring initial_path;  // empty: where the last pick of this mode was made
     std::wstring fallback_path;
     std::function<void(const std::wstring&)> on_directory_changed;
+    // Nonblocking, one-shot directory updates supplied by the caller.
+    std::function<std::wstring()> poll_directory;
     bool listary_integration = false;
     std::vector<PickerFilter> filters;
     size_t filter_index = 0;

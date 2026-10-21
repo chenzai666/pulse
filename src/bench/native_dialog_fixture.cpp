@@ -2,10 +2,12 @@
 
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <commdlg.h>
 #include <wrl/client.h>
 
 #include <cstdio>
 #include <atomic>
+#include <bit>
 #include <fcntl.h>
 #include <io.h>
 #include <iterator>
@@ -370,12 +372,34 @@ DialogResult ShowModern(HWND owner, FixtureMode mode, IShellItem* initial, const
     return result;
 }
 
+struct BrowseContext { const std::wstring& initial; bool delayed; };
+void CALLBACK RevealBrowseEdit(HWND hwnd, UINT, UINT_PTR timer, DWORD) {
+    KillTimer(hwnd, timer);
+    EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
+        wchar_t name[32]{};
+        if (GetClassNameW(child, name, static_cast<int>(std::size(name))) && std::wstring_view(name) == L"Edit")
+            ShowWindow(child, SW_SHOW);
+        return TRUE;
+    }, 0);
+}
 int CALLBACK BrowseCallback(HWND hwnd, UINT message, LPARAM, LPARAM data) {
-    if (message == BFFM_INITIALIZED) SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, data);
+    if (message == BFFM_INITIALIZED) {
+        const auto& context = *reinterpret_cast<BrowseContext*>(data);
+        SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, reinterpret_cast<LPARAM>(context.initial.c_str()));
+        if (context.delayed) {
+            EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
+                wchar_t name[32]{};
+                if (GetClassNameW(child, name, static_cast<int>(std::size(name))) && std::wstring_view(name) == L"Edit")
+                    ShowWindow(child, SW_HIDE);
+                return TRUE;
+            }, 0);
+            SetTimer(hwnd, 41, 2400, RevealBrowseEdit);
+        }
+    }
     return 0;
 }
 
-DialogResult ShowLegacy(HWND owner, const std::wstring& initial_path) {
+DialogResult ShowLegacy(HWND owner, const std::wstring& initial_path, bool delayed) {
     BROWSEINFOW browse{};
     browse.hwndOwner = owner;
     wchar_t display_name[MAX_PATH]{};
@@ -383,7 +407,8 @@ DialogResult ShowLegacy(HWND owner, const std::wstring& initial_path) {
     browse.lpszTitle = L"Pulse native dialog fixture: legacy-folder";
     browse.ulFlags = BIF_EDITBOX | BIF_NEWDIALOGSTYLE | BIF_RETURNONLYFSDIRS;
     browse.lpfn = BrowseCallback;
-    browse.lParam = reinterpret_cast<LPARAM>(initial_path.c_str());
+    BrowseContext context{initial_path, delayed};
+    browse.lParam = reinterpret_cast<LPARAM>(&context);
     PIDLIST_ABSOLUTE raw = SHBrowseForFolderW(&browse);
     std::unique_ptr<ITEMIDLIST, TaskFree> owned(reinterpret_cast<ITEMIDLIST*>(raw));
     DialogResult result;
@@ -396,12 +421,40 @@ DialogResult ShowLegacy(HWND owner, const std::wstring& initial_path) {
     if (SUCCEEDED(result.error)) result.paths.push_back(std::move(path));
     return result;
 }
+
+DialogResult ShowClassic(HWND owner, const std::wstring& initial_path) {
+    DialogResult result;
+    HMODULE library = LoadLibraryExW(L"comdlg32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!library) return result;
+    const auto show = std::bit_cast<decltype(&GetOpenFileNameW)>(GetProcAddress(library, "GetOpenFileNameW"));
+    wchar_t filename[32768]{};
+    OPENFILENAMEW spec{sizeof(spec)};
+    spec.hwndOwner = owner;
+    spec.lpstrFilter = L"All files (*.*)\0*.*\0Text documents (*.txt)\0*.txt\0\0";
+    spec.lpstrFile = filename; spec.nMaxFile = static_cast<DWORD>(std::size(filename));
+    spec.lpstrInitialDir = initial_path.c_str();
+    spec.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_DONTADDTORECENT;
+    if (show && show(&spec)) {
+        result.error = S_OK;
+        result.paths.emplace_back(filename);
+        result.filter_index = spec.nFilterIndex - 1;
+    } else result.error = HRESULT_FROM_WIN32(ERROR_CANCELLED);
+    FreeLibrary(library);
+    return result;
+}
 }
 
 int wmain(int argc, wchar_t** argv) {
     if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 3;
     FixtureMode mode = FixtureMode::Open;
-    if (argc < 3 || argc > 4 || !ParseMode(argv[1], mode) || !argv[2][0] ||
+    std::wstring_view mode_text = argc > 1 ? argv[1] : L"";
+    const bool unowned = mode_text.starts_with(L"unowned-");
+    if (unowned) mode_text.remove_prefix(8);
+    const bool delayed = mode_text == L"delayed-legacy-folder";
+    const bool classic = mode_text == L"classic-open";
+    if (delayed) mode_text = L"legacy-folder";
+    if (classic) mode_text = L"open";
+    if (argc < 3 || argc > 4 || !ParseMode(mode_text, mode) || !argv[2][0] ||
         (argc == 4 && (mode == FixtureMode::Folder || mode == FixtureMode::LegacyFolder))) {
         std::fputs("Usage: pulse_native_dialog_fixture.exe open|save|folder|legacy-folder|opaque-open <initial-directory> [filename]\n", stderr);
         DialogResult error;
@@ -432,7 +485,9 @@ int wmain(int argc, wchar_t** argv) {
         return EmitResult(ModeName(mode), std::move(result));
     }
     const std::wstring filename = argc == 4 ? argv[3] : mode == FixtureMode::Save ? L"fixture-new.txt" : L"";
-    result = mode == FixtureMode::LegacyFolder ? ShowLegacy(owner.window, argv[2])
-        : ShowModern(owner.window, mode, initial.Get(), filename);
+    const HWND dialog_owner = unowned ? nullptr : owner.window;
+    result = classic ? ShowClassic(dialog_owner, argv[2])
+        : mode == FixtureMode::LegacyFolder ? ShowLegacy(dialog_owner, argv[2], delayed)
+        : ShowModern(dialog_owner, mode, initial.Get(), filename);
     return EmitResult(ModeName(mode), std::move(result));
 }

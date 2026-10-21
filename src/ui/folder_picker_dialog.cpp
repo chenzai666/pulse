@@ -42,6 +42,7 @@ constexpr UINT kEndAddressMessage = WM_APP + 3;
 constexpr UINT_PTR kLoadTimer = 1;
 constexpr UINT_PTR kSearchTimer = 2;
 constexpr UINT_PTR kMotionTimer = 3;
+constexpr UINT_PTR kDirectoryPollTimer = 4;
 constexpr int kPathEditId = 101;
 constexpr int kFilenameEditId = 102;
 constexpr int kSearchEditId = 103;
@@ -387,6 +388,7 @@ public:
         else SetFocus(hwnd_);
         PresentEdits();
         if (spec_.on_ready) spec_.on_ready(hwnd_);
+        if (spec_.poll_directory) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
 
         MSG message{};
         while (!done_) {
@@ -427,6 +429,7 @@ private:
     // loads. Typed, remembered and history paths wait for their listing.
     void Navigate(std::wstring path, bool push_history, std::wstring select_after = {},
                   bool verified = false) {
+        EndColumnResize(true);
         const bool moved = !SamePickerPath(path, current_);
         if (push_history && moved) history_.Navigate(current_);
         if (moved && searching_) {
@@ -729,6 +732,7 @@ private:
         KillTimer(hwnd_, kLoadTimer);
         KillTimer(hwnd_, kSearchTimer);
         KillTimer(hwnd_, kMotionTimer);
+        KillTimer(hwnd_, kDirectoryPollTimer);
         // Stop the loader first: after this no listing can be posted, so the
         // ones already queued are all that must be freed.
         loader_.reset();
@@ -1242,11 +1246,13 @@ private:
         const int region = static_cast<int>(hit.main.region);
         const bool changed = chrome_.hover != hit.chrome || vm_.hover_region != region ||
                              vm_.hover_control_index != hit.main.index ||
-                             vm_.hover_sub_index != hit.main.sub_index;
+                             vm_.hover_sub_index != hit.main.sub_index ||
+                             vm_.hover_pane_index != hit.main.pane_index;
         chrome_.hover = hit.chrome;
         vm_.hover_region = region;
         vm_.hover_control_index = hit.main.index;
         vm_.hover_sub_index = hit.main.sub_index;
+        vm_.hover_pane_index = hit.main.pane_index;
         if (changed) Invalidate();
     }
 
@@ -1403,6 +1409,7 @@ private:
 
     void SetViewMode(ViewMode mode) {
         if (view_mode_ == mode) return;
+        EndColumnResize(true);
         view_mode_ = mode;
         g_last_view[mode_index_] = mode;
         ClampScroll();
@@ -1847,6 +1854,54 @@ private:
 
     // ---- mouse -------------------------------------------------------------
 
+    void EndColumnResize(bool cancel) {
+        if (column_resize_index_ < 0) return;
+        if (cancel) vm_.pane.details_column_dividers = column_resize_original_;
+        column_resize_index_ = -1;
+        vm_.column_resize_pressed = false;
+        UpdateHover({});
+        if (GetCapture() == hwnd_) ReleaseCapture();
+        Invalidate();
+    }
+
+    void BeginColumnResize(int index, float x, bool double_click) {
+        const auto bounds = PaneBounds();
+        const auto columns = renderer_.DetailsColumns(bounds, vm_.pane);
+        if (index < 0 || index >= columns.count - 1) return;
+        if (double_click) {
+            renderer_.AutoFitColumnDivider(bounds, vm_.pane.details_column_dividers,
+                                          false, vm_.pane.search_column_dividers, index);
+            Invalidate();
+            return;
+        }
+        column_resize_original_ = vm_.pane.details_column_dividers;
+        // Freeze the measured columns in DIP before dragging the shared edge.
+        for (int i = 0; i < columns.count; ++i) {
+            const int slot = MainRenderer::ManualColumnSlot(columns.kinds[static_cast<size_t>(i)], false);
+            if (slot >= 0) vm_.pane.details_column_dividers[static_cast<size_t>(slot)] =
+                columns.widths[static_cast<size_t>(i)] / scale_;
+        }
+        column_resize_start_ = vm_.pane.details_column_dividers;
+        column_resize_offset_ = x - columns.DividerX(index);
+        column_resize_index_ = index;
+        vm_.column_resize_pressed = true;
+        FocusList();
+        Hit hover;
+        hover.main.region = HitTestResult::ColumnDivider;
+        hover.main.index = index;
+        hover.main.pane_index = 0;
+        UpdateHover(hover);
+        SetCapture(hwnd_);
+        if (GetCapture() != hwnd_) EndColumnResize(true);
+        else SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+    }
+
+    void DragColumnResize(float x) {
+        vm_.pane.details_column_dividers = renderer_.ResizeDetailsColumnDivider(
+            PaneBounds(), column_resize_start_, column_resize_index_, x - column_resize_offset_);
+        Invalidate();
+    }
+
     void PressMain(const HitTestResult& hit, float x, float y, bool double_click) {
         using R = HitTestResult;
         switch (hit.region) {
@@ -1882,6 +1937,9 @@ private:
             SetFocus(hwnd_);
             Select(hit.index, KeyDown(VK_SHIFT), KeyDown(VK_CONTROL));
             if (double_click) OpenEntry(hit.index);
+            return;
+        case R::ColumnDivider:
+            BeginColumnResize(hit.index, x, double_click);
             return;
         case R::ColumnHeader: {
             const PickerSort sort = SortFromColumn(hit.column);
@@ -1995,6 +2053,7 @@ private:
             return 0;
         }
         case WM_SIZE:
+            EndColumnResize(true);
             if (compositor_.Dc()) compositor_.Resize(LOWORD(lparam), HIWORD(lparam));
             Relayout();
             Invalidate();
@@ -2004,6 +2063,7 @@ private:
             PlaceEdits();
             return 0;
         case WM_DPICHANGED: {
+            EndColumnResize(true);
             scale_ = HIWORD(wparam) / 96.0f;
             compositor_.RecreateTextFormats(scale_);
             painter_.SetScale(scale_);
@@ -2020,6 +2080,7 @@ private:
             return 0;
         }
         case WM_ACTIVATE:
+            if (LOWORD(wparam) == WA_INACTIVE) EndColumnResize(true);
             Invalidate();
             break;
         case WM_CTLCOLOREDIT: {
@@ -2038,6 +2099,14 @@ private:
             if (address_editing_ && GetFocus() != path_edit_) EndAddressEdit(false);
             return 0;
         case WM_TIMER:
+            if (wparam == kDirectoryPollTimer) {
+                if (!done_ && !validating_ && !operating_ && !waiting_ && !address_editing_ &&
+                    spec_.poll_directory) {
+                    std::wstring path = spec_.poll_directory();
+                    if (!path.empty() && !SamePickerPath(path, current_)) Navigate(std::move(path), true);
+                }
+                return 0;
+            }
             if (wparam == kSearchTimer) { ApplySearchNow(); return 0; }
             if (wparam == kMotionTimer) { Invalidate(); return 0; }
             if (wparam == kLoadTimer) {
@@ -2054,6 +2123,12 @@ private:
             OnValidation(PickerLoader::TakeValidation(lparam));
             return 0;
         case WM_MOUSEMOVE: {
+            if (column_resize_index_ >= 0) {
+                if ((wparam & MK_LBUTTON) && GetCapture() == hwnd_)
+                    DragColumnResize(static_cast<float>(GET_X_LPARAM(lparam)));
+                else EndColumnResize(false);
+                return 0;
+            }
             if (dragging_scrollbar_) {
                 DragScrollbar(static_cast<float>(GET_Y_LPARAM(lparam)));
                 return 0;
@@ -2064,8 +2139,20 @@ private:
             return 0;
         }
         case WM_MOUSELEAVE:
-            UpdateHover({});
+            if (column_resize_index_ < 0) UpdateHover({});
             return 0;
+        case WM_SETCURSOR: {
+            if (LOWORD(lparam) != HTCLIENT) break;
+            POINT point{};
+            if (column_resize_index_ >= 0 ||
+                (GetCursorPos(&point) && ScreenToClient(hwnd_, &point) &&
+                 HitAt(static_cast<float>(point.x), static_cast<float>(point.y)).main.region ==
+                     HitTestResult::ColumnDivider)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                return TRUE;
+            }
+            break;
+        }
         case WM_MOUSEWHEEL:
             Wheel(wparam, lparam);
             return 0;
@@ -2087,6 +2174,11 @@ private:
             return 0;
         }
         case WM_LBUTTONUP: {
+            if (column_resize_index_ >= 0) {
+                DragColumnResize(static_cast<float>(GET_X_LPARAM(lparam)));
+                EndColumnResize(false);
+                return 0;
+            }
             if (dragging_scrollbar_) {
                 dragging_scrollbar_ = false;
                 ReleaseCapture();
@@ -2119,13 +2211,21 @@ private:
             return 0;
         }
         case WM_CAPTURECHANGED:
+            EndColumnResize(true);
             dragging_scrollbar_ = false;
             return 0;
+        case WM_CANCELMODE:
+            EndColumnResize(true);
+            break;
         case WM_XBUTTONUP:
             if (GET_XBUTTON_WPARAM(wparam) == XBUTTON1) GoBack();
             else if (GET_XBUTTON_WPARAM(wparam) == XBUTTON2) GoForward();
             return TRUE;
         case WM_KEYDOWN:
+            if (column_resize_index_ >= 0) {
+                EndColumnResize(true);
+                if (wparam == VK_ESCAPE) return 0;
+            }
             if (HandleKey(wparam)) return 0;
             break;
         case WM_SYSKEYDOWN:
@@ -2159,6 +2259,7 @@ private:
         case WM_ERASEBKGND:
             return 1;
         case WM_DESTROY:
+            EndColumnResize(true);
             RemovePropW(hwnd_, L"Pulse.Picker.Listary.v1");
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);
@@ -2230,6 +2331,10 @@ private:
     bool validation_navigation_only_ = false;
     bool setting_edits_ = false;
     bool dragging_scrollbar_ = false;
+    int column_resize_index_ = -1;
+    DetailsColumnWidths column_resize_original_{};
+    DetailsColumnWidths column_resize_start_{};
+    float column_resize_offset_ = 0.0f;
     bool scrollbar_sidebar_ = false;
     float scrollbar_drag_y_ = 0.0f;
     float scrollbar_drag_scroll_ = 0.0f;

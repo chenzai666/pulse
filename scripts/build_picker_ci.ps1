@@ -15,7 +15,8 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 # 仅替换主程序；任何已有组件源码变化都必须走完整构建。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', 'scripts/build_picker_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1', 'scripts/package_custom.ps1',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h',
-    'src/app/folder_source.h', 'src/app/shell_window_sync.cpp',
+    'src/app/folder_source.h', 'src/app/native_folder_follow.h', 'src/app/shell_window_sync.cpp',
+    'src/bench/native_folder_follow_test.cpp', 'docs/custom-edition.md',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h',
     'src/bench/file_picker_dialog_test.cpp')
 if ($NativeHandoff -or $ExplorerReveal) {
@@ -77,8 +78,9 @@ $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'ON' } else { 'OFF' }
-$targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' }
-    elseif ($ExplorerReveal) { 'pulse pulse_explorer_takeover_guard_test pulse_explorer_takeover_connection_test' } else { 'pulse' }
+$targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test pulse_native_folder_follow_test' }
+    elseif ($ExplorerReveal) { 'pulse pulse_explorer_takeover_guard_test pulse_explorer_takeover_connection_test pulse_native_folder_follow_test' }
+    else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
@@ -127,6 +129,11 @@ if ($NativeHandoff -and -not $ReuseNativeVerification) {
 }
 & $buildBatch
 if ($LASTEXITCODE) { throw '文件窗口定向构建失败' }
+$follow = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_folder_follow_test.exe') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'native-folder-follow.log') -RedirectStandardError (Join-Path $galleryOutput 'native-folder-follow-error.log')
+if (-not $follow.WaitForExit(60000)) { $follow.Kill(); throw '内建目录跟随验证超时' }
+$follow.Refresh()
+Get-Content -LiteralPath (Join-Path $galleryOutput 'native-folder-follow.log')
+if ($follow.ExitCode) { throw '内建目录跟随验证失败' }
 if ($NativeHandoff -and -not $ReuseNativeVerification) {
     $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
     $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
@@ -145,7 +152,7 @@ if ($NativeHandoff -and -not $ReuseNativeVerification) {
     & $releaseBatch
     if ($LASTEXITCODE) { throw '关闭内置测试后构建正式程序失败' }
 }
-foreach ($case in @('history', 'save')) {
+foreach ($case in @('history', 'save', 'columns', 'follow')) {
     $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
     $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test',("--"+$case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case+'.log')) -RedirectStandardError (Join-Path $galleryOutput ($case+'-error.log'))
     if (-not $test.WaitForExit(60000)) { $test.Kill(); throw "文件窗口验证超时：$case" }

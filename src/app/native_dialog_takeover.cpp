@@ -35,6 +35,8 @@ struct Session {
     std::atomic<HWND> picker = nullptr;
     std::atomic<DWORD> picker_pid = 0;
     std::atomic<bool> done = false;
+    std::atomic<bool> invalidated = false, presented = false;
+    std::atomic<ULONGLONG> retry_after = 0;
     Handle cancelled, worker;
     std::mutex owner_mutex;
     std::mutex worker_mutex;
@@ -47,7 +49,7 @@ struct Session {
     bool SameWindow() const {
         DWORD pid = 0;
         FILETIME created{};
-        return IsWindow(source) && GetWindowThreadProcessId(source, &pid) == source_thread && pid == source_pid &&
+        return !invalidated && IsWindow(source) && GetWindowThreadProcessId(source, &pid) == source_thread && pid == source_pid &&
             ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0;
     }
     bool SameSource() const {
@@ -113,7 +115,12 @@ struct Session {
     }
 };
 constexpr UINT kCandidateMessage = WM_APP + 173;
+constexpr UINT kDestroyedMessage = WM_APP + 174;
 constexpr UINT_PTR kSweepTimer = 1;
+constexpr unsigned kMaximumAttempts = 3;
+bool RetryAllowed(const Session& prior, unsigned attempts, ULONGLONG now) {
+    return prior.done && !prior.presented && attempts < kMaximumAttempts && now >= prior.retry_after;
+}
 thread_local NativeDialogTakeover::Shared* watcher = nullptr;
 std::wstring Executable() {
     std::wstring path(32768, L'\0');
@@ -127,7 +134,9 @@ bool Candidate(HWND window, bool require_visible = true) {
     const HWND popup = window ? GetWindow(window, GW_ENABLEDPOPUP) : nullptr;
     if (popup && popup != window && GetWindow(popup, GW_OWNER) == window &&
         GetClassNameW(popup, klass, ARRAYSIZE(klass)) && wcscmp(klass, L"PulseFolderPickerWindow") == 0) return false;
-    return window && (!require_visible || IsWindowVisible(window)) && IsWindowEnabled(window) && GetWindow(window, GW_OWNER) &&
+    // Discovery also sees dialogs before their owner/controls are initialized.
+    // The adapter verifies identity, permission and file-dialog structure before concealment.
+    return window && GetAncestor(window, GA_ROOT) == window && (!require_visible || IsWindowVisible(window)) &&
         GetWindowThreadProcessId(window, &pid) && pid != GetCurrentProcessId() &&
         GetClassNameW(window, klass, ARRAYSIZE(klass)) && wcscmp(klass, L"#32770") == 0;
 }
@@ -199,7 +208,16 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(initialized)) { session->done = true; return; }
     struct ComGuard { ~ComGuard() { CoUninitialize(); } } com;
-    struct RestoreGuard { std::shared_ptr<Session> session; ~RestoreGuard() { session->Restore(); session->done = true; } } restore{session};
+    struct RestoreGuard {
+        std::shared_ptr<Session> session;
+        ~RestoreGuard() {
+            session->Restore();
+            session->retry_after = GetTickCount64() + 500;
+            diagnostics::runtime::Event("native_dialog_attempt_finished", {{"pid", session->source_pid},
+                {"presented", session->presented ? 1u : 0u}, {"invalidated", session->invalidated ? 1u : 0u}});
+            session->done = true;
+        }
+    } restore{session};
     NativeFileDialog source;
     std::wstring reason;
     bool identified = false;
@@ -207,9 +225,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     do {
         if (!session->SameSource() || Cancelled(shared, *session)) return;
         if (!Candidate(session->source, false)) {
-            // CREATE can precede the dialog becoming enabled. Keep waiting for
-            // that initialization instead of consuming its later SHOW event.
-            if (IsWindowVisible(session->source)) return;
+            // CREATE can precede the top-level window finishing initialization.
             WaitForSingleObject(session->cancelled.value, 10);
             continue;
         }
@@ -303,6 +319,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
                         if (Cancelled(shared, *session) || !session->SameSource()) break;
                         if (live) session->picker = window;
                         session->owns_disable = true;
+                        session->presented = true;
                         ready = true; consumed = true;
                     }
                 } else if (header.type == dialog_wire::Result && ready) {
@@ -375,9 +392,23 @@ DWORD WINAPI SessionThread(void* raw) {
     catch (...) { work->session->Cancel(); work->session->done = true; }
     return 0;
 }
-void CALLBACK OnWindow(HWINEVENTHOOK, DWORD, HWND window, LONG object, LONG child, DWORD, DWORD) {
-    if (watcher && watcher->active && object == OBJID_WINDOW && child == CHILDID_SELF && Candidate(window, false))
-        PostThreadMessageW(watcher->thread, kCandidateMessage, 0, reinterpret_cast<LPARAM>(window));
+void CALLBACK OnWindow(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD) {
+    if (!watcher || !watcher->active || object != OBJID_WINDOW || child != CHILDID_SELF) return;
+    if (event == EVENT_OBJECT_DESTROY) {
+        // Invalidate before another HWND with the same PID/thread can be restored or mutated.
+        std::lock_guard lock(watcher->mutex);
+        for (const auto& session : watcher->sessions) {
+            if (session->source == window) {
+                session->invalidated = true;
+                session->Cancel(false);
+            }
+        }
+        PostThreadMessageW(watcher->thread, kDestroyedMessage, 0, reinterpret_cast<LPARAM>(window));
+        return;
+    }
+    const HWND root = GetAncestor(window, GA_ROOT);
+    if (Candidate(root, false))
+        PostThreadMessageW(watcher->thread, kCandidateMessage, 0, reinterpret_cast<LPARAM>(root));
 }
 DWORD WINAPI WatchThread(void* raw) {
     std::unique_ptr<std::shared_ptr<NativeDialogTakeover::Shared>> holder(static_cast<std::shared_ptr<NativeDialogTakeover::Shared>*>(raw));
@@ -391,17 +422,20 @@ DWORD WINAPI WatchThread(void* raw) {
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     const HWINEVENTHOOK focused = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnWindow, 0, 0,
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    const HWINEVENTHOOK destroyed = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, OnWindow, 0, 0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     const UINT_PTR timer = SetTimer(nullptr, kSweepTimer, 500, nullptr);
     struct HookGuard {
-        HWINEVENTHOOK created, shown, focused; UINT_PTR timer;
+        HWINEVENTHOOK created, shown, focused, destroyed; UINT_PTR timer;
         ~HookGuard() {
             if (created) UnhookWinEvent(created);
             if (shown) UnhookWinEvent(shown);
             if (focused) UnhookWinEvent(focused);
+            if (destroyed) UnhookWinEvent(destroyed);
             if (timer) KillTimer(nullptr, timer);
             watcher = nullptr;
         }
-    } hook_guard{created, shown, focused, timer};
+    } hook_guard{created, shown, focused, destroyed, timer};
     const auto scan = [&] {
         EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), [](HWND window, LPARAM param) -> BOOL {
             auto* state = reinterpret_cast<NativeDialogTakeover::Shared*>(param);
@@ -410,12 +444,24 @@ DWORD WINAPI WatchThread(void* raw) {
         }, reinterpret_cast<LPARAM>(shared.get()));
     };
     try {
-    std::unordered_map<HWND, DWORD> seen;
+    struct Attempt { std::shared_ptr<Session> session; unsigned count = 0; };
+    std::unordered_map<HWND, Attempt> seen;
     scan();
     while (shared->active && GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (message.message == kCandidateMessage) {
             const HWND window = reinterpret_cast<HWND>(message.lParam); DWORD pid = 0;
-            if (!Candidate(window, false) || !GetWindowThreadProcessId(window, &pid) || seen.contains(window)) continue;
+            if (!Candidate(window, false) || !GetWindowThreadProcessId(window, &pid)) continue;
+            unsigned attempts = 0;
+            if (const auto previous = seen.find(window); previous != seen.end()) {
+                const auto& prior = previous->second.session;
+                if (prior->SameWindow()) {
+                    attempts = previous->second.count;
+                    if (!RetryAllowed(*prior, attempts, GetTickCount64())) continue;
+                } else {
+                    prior->invalidated = true;
+                    prior->Cancel(false);
+                }
+            }
             auto session = std::make_shared<Session>(); session->source = window; session->source_pid = pid;
             session->source_thread = GetWindowThreadProcessId(window, nullptr);
             if (!ProcessCreated(pid, session->source_created)) continue;
@@ -431,11 +477,16 @@ DWORD WINAPI WatchThread(void* raw) {
                 std::lock_guard worker_lock(session->worker_mutex);
                 session->worker.Reset(CreateThread(nullptr, 0, SessionThread, work, 0, nullptr));
                 if (!session->worker.value) { delete work; session->done = true; }
-                else seen[window] = pid;
+                else {
+                    seen[window] = {session, attempts + 1};
+                    diagnostics::runtime::Event("native_dialog_attempt", {{"pid", pid}, {"attempt", attempts + 1}});
+                }
             }
+        } else if (message.message == kDestroyedMessage) {
+            seen.erase(reinterpret_cast<HWND>(message.lParam));
         } else if (message.message == WM_TIMER) {
             scan();
-            std::erase_if(seen, [](const auto& entry) { DWORD pid = 0; return !GetWindowThreadProcessId(entry.first, &pid) || pid != entry.second; });
+            std::erase_if(seen, [](const auto& entry) { return !entry.second.session->SameWindow(); });
             std::lock_guard lock(shared->mutex);
             std::erase_if(shared->sessions, [](const auto& session) { return session->done.load(); });
         }
@@ -445,6 +496,27 @@ DWORD WINAPI WatchThread(void* raw) {
     catch (...) { shared->active = false; }
     return 0;
 }
+}
+
+bool NativeDialogTakeoverIdentityRegression(HWND window) {
+    Session session;
+    session.source = window;
+    session.source_thread = GetWindowThreadProcessId(window, &session.source_pid);
+    if (!ProcessCreated(session.source_pid, session.source_created) || !session.SameWindow()) return false;
+    const FILETIME created = session.source_created;
+    ++session.source_created.dwLowDateTime;
+    if (session.SameWindow()) return false;
+    session.source_created = created;
+    ++session.source_thread;
+    if (session.SameWindow()) return false;
+    --session.source_thread;
+    session.invalidated = true;
+    if (session.SameWindow()) return false;
+    session.done = true; session.retry_after = 100;
+    if (RetryAllowed(session, 1, 99) || RetryAllowed(session, kMaximumAttempts, 100) ||
+        !RetryAllowed(session, 1, 100)) return false;
+    session.presented = true;
+    return !RetryAllowed(session, 1, 100);
 }
 
 NativeDialogTakeover::NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop, std::wstring desktop_name) : shared_(std::make_shared<Shared>()) {
