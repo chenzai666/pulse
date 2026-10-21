@@ -19,7 +19,7 @@ inline void PublishFolderSource(HWND window, std::wstring_view folder, bool enab
     }
     if (!control) {
         control = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_READONLY,
-            0, 0, 0, 0, window, reinterpret_cast<HMENU>(control_id), GetModuleHandleW(nullptr), nullptr);
+            0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(control_id)), GetModuleHandleW(nullptr), nullptr);
         if (!control) return;
     }
     if (GetParent(control) != window) return;
