@@ -381,7 +381,9 @@ bool SelectFilter(const NativeFileDialog& dialog, const Controls& controls, size
     struct DropdownGuard {
         const NativeFileDialog& dialog;
         HWND combo;
+        bool active = true;
         ~DropdownGuard() {
+            if (!active) return;
             std::wstring reason;
             DWORD process = 0;
             if (IdentityBeforeMutation(dialog, reason) && IsChild(dialog.window, combo) &&
@@ -415,6 +417,37 @@ bool SelectFilter(const NativeFileDialog& dialog, const Controls& controls, size
     DWORD_PTR selected = 0;
     if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected) || selected != index)
         return Fail(reason, L"原生文件类型 SelectionItem 选择后，ComboBox 选中索引仍不一致。");
+    if (dialog.kind == NativeDialogKind::Save) {
+        const HWND parent = GetParent(controls.filter);
+        const int identifier = GetDlgCtrlID(controls.filter);
+        const auto command_target_matches = [&] {
+            DWORD parent_process = 0, combo_process = 0;
+            return parent && identifier > 0 && identifier <= 0xffff &&
+                (parent == dialog.window || IsChild(dialog.window, parent)) &&
+                GetParent(controls.filter) == parent && GetDlgCtrlID(controls.filter) == identifier &&
+                ClassName(controls.filter) == L"ComboBox" && IsChild(dialog.window, controls.filter) &&
+                GetWindowThreadProcessId(controls.filter, &combo_process) == dialog.window_thread_id && combo_process == dialog.process_id &&
+                GetWindowThreadProcessId(parent, &parent_process) == dialog.window_thread_id && parent_process == dialog.process_id;
+        };
+        if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) || !command_target_matches())
+            return Fail(reason, L"保存文件类型的命令接收窗口身份发生变化。");
+        // SelectionItem can update only the ComboBox selection. Close its list
+        // before synchronizing the save host's type model, which otherwise can
+        // restore the old type when the filename edit changes its extension.
+        if (!Send(controls.filter, CB_SHOWDROPDOWN, FALSE, 0, result))
+            return Fail(reason, L"保存文件类型下拉列表未完成关闭。");
+        dropdown.active = false;
+        if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected))
+            return Fail(reason, L"关闭后无法读取保存文件类型选中项。");
+        if (selected != index &&
+            (!Send(controls.filter, CB_SETCURSEL, index, 0, result) || result != index))
+            return Fail(reason, L"关闭下拉列表后无法保留请求的保存文件类型。");
+        if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) || !command_target_matches()) return false;
+        if (!Send(parent, WM_COMMAND, MAKEWPARAM(identifier, CBN_SELCHANGE), reinterpret_cast<LPARAM>(controls.filter), result))
+            return Fail(reason, L"原生保存宿主未完成文件类型变更通知。");
+        if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected) || selected != index)
+            return Fail(reason, L"保存文件类型通知后，ComboBox 选中索引仍不一致。");
+    }
     return true;
 }
 
