@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cwctype>
 #include <memory>
 #include <unordered_set>
@@ -1854,6 +1855,22 @@ private:
 
     // ---- mouse -------------------------------------------------------------
 
+    void TraceColumnLayout(const char* stage) {
+        if (GetPropW(hwnd_, L"Pulse.PickerTestColumns") != reinterpret_cast<HANDLE>(1)) return;
+        SyncVm();
+        const auto columns = renderer_.DetailsColumns(PaneBounds(), vm_.pane);
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        std::printf("[TRACE] picker columns %s scale=%.2f client=%ldx%ld compositor=%dx%d capture=%p resize=%d count=%d edges=",
+            stage, scale_, client.right, client.bottom, compositor_.Width(), compositor_.Height(),
+            static_cast<void*>(GetCapture()), column_resize_index_, columns.count);
+        for (int i = 0; i < columns.count - 1; ++i) std::printf(" %.3f", columns.DividerX(i));
+        std::printf(" widths_dip=");
+        for (const float width : vm_.pane.details_column_dividers) std::printf(" %.3f", width);
+        std::printf("\n");
+        std::fflush(stdout);
+    }
+
     void EndColumnResize(bool cancel) {
         if (column_resize_index_ < 0) return;
         if (cancel) vm_.pane.details_column_dividers = column_resize_original_;
@@ -2063,8 +2080,12 @@ private:
             PlaceEdits();
             return 0;
         case WM_DPICHANGED: {
+            TraceColumnLayout("before DPI");
             EndColumnResize(true);
             scale_ = HIWORD(wparam) / 96.0f;
+            // Header measurement caches in other translation units also key by
+            // typography generation; recycled format addresses must not hit old DPI widths.
+            typography::InvalidateCaches();
             compositor_.RecreateTextFormats(scale_);
             painter_.SetScale(scale_);
             renderer_.SetScale(scale_);
@@ -2077,6 +2098,7 @@ private:
                              SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
             }
             Relayout();
+            TraceColumnLayout("after DPI");
             return 0;
         }
         case WM_ACTIVATE:
@@ -2260,6 +2282,7 @@ private:
             return 1;
         case WM_DESTROY:
             EndColumnResize(true);
+            RemovePropW(hwnd_, L"Pulse.PickerTestColumns");
             RemovePropW(hwnd_, L"Pulse.Picker.Listary.v1");
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);

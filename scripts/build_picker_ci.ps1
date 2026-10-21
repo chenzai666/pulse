@@ -134,6 +134,17 @@ if (-not $follow.WaitForExit(60000)) { $follow.Kill(); throw '内建目录跟随
 $follow.Refresh()
 Get-Content -LiteralPath (Join-Path $galleryOutput 'native-folder-follow.log')
 if ($follow.ExitCode) { throw '内建目录跟随验证失败' }
+# 界面回归先于正式重编译，失败时立即返回具体交互问题。
+foreach ($case in @('history', 'save', 'columns', 'follow')) {
+    $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
+    $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test',("--"+$case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case+'.log')) -RedirectStandardError (Join-Path $galleryOutput ($case+'-error.log'))
+    if (-not $test.WaitForExit(60000)) { $test.Kill(); throw "文件窗口验证超时：$case" }
+    $test.Refresh()
+    Get-Content -LiteralPath (Join-Path $galleryOutput ($case+'.log'))
+    if ($test.ExitCode) { throw "文件窗口验证失败：$case" }
+}
+Remove-Item Env:PULSE_PICKER_TEST_SNAPSHOT -ErrorAction SilentlyContinue
+
 if ($NativeHandoff -and -not $ReuseNativeVerification) {
     $env:PULSE_SELFTEST_CASE = 'native-dialog-takeover'
     $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
@@ -152,15 +163,7 @@ if ($NativeHandoff -and -not $ReuseNativeVerification) {
     & $releaseBatch
     if ($LASTEXITCODE) { throw '关闭内置测试后构建正式程序失败' }
 }
-foreach ($case in @('history', 'save', 'columns', 'follow')) {
-    $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
-    $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test',("--"+$case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case+'.log')) -RedirectStandardError (Join-Path $galleryOutput ($case+'-error.log'))
-    if (-not $test.WaitForExit(60000)) { $test.Kill(); throw "文件窗口验证超时：$case" }
-    $test.Refresh()
-    Get-Content -LiteralPath (Join-Path $galleryOutput ($case+'.log'))
-    if ($test.ExitCode) { throw "文件窗口验证失败：$case" }
-}
-Remove-Item Env:PULSE_PICKER_TEST_SNAPSHOT -ErrorAction SilentlyContinue
+
 $pluginProject = 'integrations/Listary.Picker/Listary.FileAppPlugin.PulsePicker.csproj'
 dotnet restore $pluginProject --locked-mode --configfile 'integrations/Listary.Picker/NuGet.config' --nologo
 if ($LASTEXITCODE) { throw 'Listary 对话框适配依赖校验失败' }

@@ -178,6 +178,7 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                 spec.filename = L"alpha.txt";
                 spec.on_directory_changed = [&](const std::wstring&) { ++listings; };
                 spec.on_ready = [&](HWND hwnd) {
+                    SetPropW(hwnd, L"Pulse.PickerTestColumns", reinterpret_cast<HANDLE>(1));
                     RECT rect{};
                     GetWindowRect(hwnd, &rect);
                     rect.right = rect.left + static_cast<LONG>(width_dip * initial_scale);
@@ -292,7 +293,32 @@ int RunFilePickerDialogTest(int argc, wchar_t** argv) {
                     renderer.SetScale(scale);
                     compositor.RecreateTextFormats(scale);
                     renderer.InvalidateTypography();
-                    if (!verify(!captured() && confirm_edge(), "DPI switch cancels drag and preserves DIP width")) return false;
+                    const auto expected = layout();
+                    GUITHREADINFO after_dpi{sizeof(after_dpi)};
+                    GetGUIThreadInfo(GetWindowThreadProcessId(hwnd, nullptr), &after_dpi);
+                    RECT after_client{};
+                    GetClientRect(hwnd, &after_client);
+                    std::printf("[TRACE] column DPI probe initial=%.2f target=%.2f width_dip=%d client=%ldx%ld capture=%p expected_x=%.3f click_x=%d y=%d count=%d widths_dip=",
+                        initial_scale, scale, width_dip, after_client.right, after_client.bottom,
+                        static_cast<void*>(after_dpi.hwndCapture), expected.DividerX(0),
+                        static_cast<int>(std::lround(expected.DividerX(0))), y(), expected.count);
+                    for (const float width : widths) std::printf(" %.3f", width);
+                    std::printf("\n");
+                    std::fflush(stdout);
+                    if (!verify(!captured() && confirm_edge(), "DPI switch cancels drag and preserves DIP width")) {
+                        wchar_t snapshot[32768]{};
+                        if (GetEnvironmentVariableW(L"PULSE_PICKER_TEST_SNAPSHOT", snapshot, 32768)) {
+                            const std::filesystem::path requested(snapshot);
+                            const auto failure = requested.parent_path() / (requested.stem().wstring() +
+                                L"-failure-" + std::to_wstring(width_dip) + L"-" +
+                                std::to_wstring(static_cast<int>(initial_scale * 100)) + requested.extension().wstring());
+                            auto filename = failure.wstring();
+                            SetPropW(hwnd, L"Pulse.PickerTestSnapshot", filename.data());
+                            Send(hwnd, WM_PAINT);
+                            RemovePropW(hwnd, L"Pulse.PickerTestSnapshot");
+                        }
+                        return false;
+                    }
                     if (!verify(listings.load() == 1 && Text(GetDlgItem(hwnd, kFilenameId)) == L"alpha.txt",
                             "resizing neither sorts nor changes selection")) return false;
                     wchar_t snapshot[32768]{};
