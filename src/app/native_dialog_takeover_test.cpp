@@ -17,7 +17,10 @@
 #include <thread>
 #include <vector>
 
-namespace pulse::app { bool NativeDialogTakeoverIdentityRegression(HWND window); }
+namespace pulse::app {
+bool NativeDialogTakeoverIdentityRegression(HWND window);
+uint32_t NativeDialogTakeoverGenerationRegression();
+}
 
 namespace {
 using pulse::app::NativeDialogAppearance;
@@ -662,6 +665,13 @@ void RunIsolated(TestLog& log, HDESK desktop, const std::wstring& desktop_name) 
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
     if (!log.Check(SUCCEEDED(initialized), "test worker initializes COM for production native detector")) return;
     struct ComScope { ~ComScope() { CoUninitialize(); } } com;
+    const uint32_t generation = pulse::app::NativeDialogTakeoverGenerationRegression();
+    log.Check((generation & 1) != 0, "queued old DESTROY preserves a newer observed session and seen entry, including tick wrap");
+    log.Check((generation & 2) != 0, "an existing foreign nonce is neither overwritten nor removed and UI stays unchanged");
+    log.Check((generation & 4) != 0, "missing nonce blocks native commit and old-session style or enable changes");
+    log.Check((generation & 8) != 0, "replaced nonce blocks native commit and preserves foreign tag, style and enable state");
+    log.Check((generation & 16) != 0, "presented completion retains identity and terminal deduplication until Stop restores and removes its own nonce");
+    log.Check((generation & 32) != 0, "unpresented retry releases its own nonce while preserving the observed generation and attempt budget");
     const auto executable = ExecutablePath();
     const auto fixture = (std::filesystem::path(executable).parent_path() / L"pulse_native_dialog_fixture.exe").wstring();
     const DWORD attributes = GetFileAttributesW(fixture.c_str());

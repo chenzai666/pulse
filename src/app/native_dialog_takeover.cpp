@@ -15,6 +15,8 @@
 
 namespace pulse::app {
 namespace {
+constexpr wchar_t kSessionProperty[] = L"Pulse.NativeDialogTakeover.Session.v1";
+std::mutex property_mutex;
 struct Handle {
     HANDLE value = nullptr;
     ~Handle() { Reset(); }
@@ -31,6 +33,10 @@ struct Session {
     DWORD source_pid = 0;
     DWORD source_thread = 0;
     FILETIME source_created{};
+    ULONGLONG observed_time = GetTickCount64();
+    const std::unique_ptr<unsigned char> nonce = std::make_unique<unsigned char>();
+    std::atomic<bool> tag_claimed = false;
+    std::atomic<bool> tag_released = false;
     std::atomic<HWND> source_filename = nullptr, source_confirm = nullptr;
     std::atomic<HWND> picker = nullptr;
     std::atomic<DWORD> picker_pid = 0;
@@ -38,7 +44,7 @@ struct Session {
     std::atomic<bool> invalidated = false, presented = false;
     std::atomic<ULONGLONG> retry_after = 0;
     Handle cancelled, worker;
-    std::mutex owner_mutex;
+    mutable std::mutex owner_mutex;
     std::mutex worker_mutex;
     bool owns_disable = false;
     bool concealed = false;
@@ -46,11 +52,34 @@ struct Session {
     COLORREF original_color_key = 0;
     BYTE original_alpha = 255;
     DWORD original_layered_flags = LWA_ALPHA;
-    bool SameWindow() const {
+    bool SameWindowIdentity() const {
         DWORD pid = 0;
         FILETIME created{};
         return !invalidated && IsWindow(source) && GetWindowThreadProcessId(source, &pid) == source_thread && pid == source_pid &&
             ProcessCreated(pid, created) && CompareFileTime(&created, &source_created) == 0;
+    }
+    HANDLE TagValue() const { return reinterpret_cast<HANDLE>(nonce.get()); }
+    bool SameWindow() const {
+        return SameWindowIdentity() && (!tag_claimed || GetPropW(source, kSessionProperty) == TagValue());
+    }
+    bool SameTrackedWindow() const {
+        std::lock_guard lock(owner_mutex);
+        // Only an intentional release carries retry accounting; mutations always require SameWindow().
+        return SameWindow() || (!presented && tag_released && SameWindowIdentity());
+    }
+    bool BindIdentity() {
+        std::lock_guard owner_lock(owner_mutex);
+        if (tag_claimed) return SameWindow();
+        if (!SameSource()) return false;
+        std::lock_guard property_lock(property_mutex);
+        if (GetPropW(source, kSessionProperty) || !SetPropW(source, kSessionProperty, TagValue())) return false;
+        tag_claimed = true;
+        return SameSource();
+    }
+    void RemoveOwnTag() {
+        std::lock_guard property_lock(property_mutex);
+        if (tag_claimed && GetPropW(source, kSessionProperty) == TagValue() &&
+            RemovePropW(source, kSessionProperty) == TagValue()) tag_released = true;
     }
     bool SameSource() const {
         const HWND filename = source_filename.load(), confirm = source_confirm.load();
@@ -63,7 +92,7 @@ struct Session {
     }
     void Conceal(bool disable) {
         std::lock_guard lock(owner_mutex);
-        if (!SameSource()) return;
+        if (!tag_claimed || !SameSource()) return;
         if (!concealed) {
             const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
             if (style & WS_EX_LAYERED) {
@@ -88,11 +117,11 @@ struct Session {
         if (disable && IsWindowEnabled(source)) EnableWindow(source, FALSE);
         if (disable) owns_disable = true;
     }
-    void Restore() {
+    void Restore(bool release_tag = false) {
         std::lock_guard lock(owner_mutex);
-        if (!SameWindow()) { owns_disable = false; concealed = false; added_layered = false; return; }
-        if (owns_disable) EnableWindow(source, TRUE);
-        if (concealed) {
+        const bool same = SameWindow();
+        if (same && owns_disable) EnableWindow(source, TRUE);
+        if (same && concealed) {
             if (added_layered) {
                 const LONG_PTR style = GetWindowLongPtrW(source, GWL_EXSTYLE);
                 SetWindowLongPtrW(source, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
@@ -103,6 +132,7 @@ struct Session {
         owns_disable = false;
         concealed = false;
         added_layered = false;
+        if (release_tag || !presented) RemoveOwnTag();
     }
     void Cancel(bool restore = true) {
         if (cancelled.value) SetEvent(cancelled.value);
@@ -114,6 +144,22 @@ struct Session {
         if (worker.value) CancelSynchronousIo(worker.value);
     }
 };
+struct Attempt { std::shared_ptr<Session> session; unsigned count = 0; };
+using Attempts = std::unordered_map<HWND, Attempt>;
+ULONGLONG EventTime(DWORD tick, ULONGLONG now) {
+    constexpr ULONGLONG cycle = ULONGLONG{1} << 32;
+    const ULONGLONG expanded = (now & ~(cycle - 1)) | tick;
+    return expanded <= now ? expanded : expanded >= cycle ? expanded - cycle : 0;
+}
+bool DestroyApplies(const Session& session, HWND window, ULONGLONG event_time) {
+    // Equal ticks are ambiguous; nonce checks protect mutations until identity is observable.
+    return session.source == window && event_time > session.observed_time;
+}
+void EraseDestroyedAttempt(Attempts& seen, HWND window, ULONGLONG event_time) {
+    const auto found = seen.find(window);
+    if (found != seen.end() && DestroyApplies(*found->second.session, window, event_time)) seen.erase(found);
+}
+bool CanSubmit(const Session& session) { return session.tag_claimed && session.SameSource(); }
 constexpr UINT kCandidateMessage = WM_APP + 173;
 constexpr UINT kDestroyedMessage = WM_APP + 174;
 constexpr UINT_PTR kSweepTimer = 1;
@@ -232,6 +278,9 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
         if (!session->IsConcealed()) {
             NativeFileDialog early;
             if (CanConcealNativeFileDialog(session->source, early, reason)) {
+                session->source_filename = early.filename_window;
+                session->source_confirm = early.confirm_window;
+                if (!session->BindIdentity()) return;
                 session->Conceal(false);
             }
         }
@@ -245,7 +294,9 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     if (source.process_id != session->source_pid || source.window_thread_id != session->source_thread ||
         CompareFileTime(&source.process_created, &session->source_created) != 0 || !session->SameSource()) return;
     session->source_filename = source.filename_window; session->source_confirm = source.confirm_window;
+    if (!session->BindIdentity()) return;
     session->Conceal(false);
+    if (!session->IsConcealed()) return;
     dialog_wire::RequestData request;
     request.source = source; request.parent = GetCurrentProcessId();
     { std::lock_guard lock(shared->mutex); request.appearance = shared->appearance; }
@@ -363,7 +414,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
         // after the helper enabled it, so restore that state before validating the handoff.
         EnableWindow(session->source, TRUE);
         if (NativeDialogStillMatches(source)) {
-            const auto cancelled = [&] { return Cancelled(shared, *session); };
+            const auto cancelled = [&] { return Cancelled(shared, *session) || !CanSubmit(*session); };
             const bool submitted = picked ? CommitNativeDialogSelection(source, paths, filter_index, reason, cancelled)
                 : !cancelled() && CancelNativeDialog(source, reason, cancelled);
             // Posting the button notification precedes the native modal loop handling it.
@@ -392,18 +443,18 @@ DWORD WINAPI SessionThread(void* raw) {
     catch (...) { work->session->Cancel(); work->session->done = true; }
     return 0;
 }
-void CALLBACK OnWindow(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD) {
+void CALLBACK OnWindow(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD event_tick) {
     if (!watcher || !watcher->active || object != OBJID_WINDOW || child != CHILDID_SELF) return;
     if (event == EVENT_OBJECT_DESTROY) {
-        // Invalidate before another HWND with the same PID/thread can be restored or mutated.
+        const ULONGLONG event_time = EventTime(event_tick, GetTickCount64());
         std::lock_guard lock(watcher->mutex);
         for (const auto& session : watcher->sessions) {
-            if (session->source == window) {
+            if (DestroyApplies(*session, window, event_time)) {
                 session->invalidated = true;
                 session->Cancel(false);
             }
         }
-        PostThreadMessageW(watcher->thread, kDestroyedMessage, 0, reinterpret_cast<LPARAM>(window));
+        PostThreadMessageW(watcher->thread, kDestroyedMessage, event_tick, reinterpret_cast<LPARAM>(window));
         return;
     }
     const HWND root = GetAncestor(window, GA_ROOT);
@@ -444,8 +495,16 @@ DWORD WINAPI WatchThread(void* raw) {
         }, reinterpret_cast<LPARAM>(shared.get()));
     };
     try {
-    struct Attempt { std::shared_ptr<Session> session; unsigned count = 0; };
-    std::unordered_map<HWND, Attempt> seen;
+    Attempts seen;
+    struct SeenGuard {
+        Attempts& seen;
+        ~SeenGuard() {
+            for (const auto& entry : seen) {
+                entry.second.session->Cancel(false);
+                entry.second.session->Restore(true);
+            }
+        }
+    } seen_guard{seen};
     scan();
     while (shared->active && GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (message.message == kCandidateMessage) {
@@ -454,7 +513,7 @@ DWORD WINAPI WatchThread(void* raw) {
             unsigned attempts = 0;
             if (const auto previous = seen.find(window); previous != seen.end()) {
                 const auto& prior = previous->second.session;
-                if (prior->SameWindow()) {
+                if (prior->SameTrackedWindow()) {
                     attempts = previous->second.count;
                     if (!RetryAllowed(*prior, attempts, GetTickCount64())) continue;
                 } else {
@@ -483,10 +542,11 @@ DWORD WINAPI WatchThread(void* raw) {
                 }
             }
         } else if (message.message == kDestroyedMessage) {
-            seen.erase(reinterpret_cast<HWND>(message.lParam));
+            EraseDestroyedAttempt(seen, reinterpret_cast<HWND>(message.lParam),
+                EventTime(static_cast<DWORD>(message.wParam), GetTickCount64()));
         } else if (message.message == WM_TIMER) {
             scan();
-            std::erase_if(seen, [](const auto& entry) { return !entry.second.session->SameWindow(); });
+            std::erase_if(seen, [](const auto& entry) { return !entry.second.session->SameTrackedWindow(); });
             std::lock_guard lock(shared->mutex);
             std::erase_if(shared->sessions, [](const auto& session) { return session->done.load(); });
         }
@@ -517,6 +577,96 @@ bool NativeDialogTakeoverIdentityRegression(HWND window) {
         !RetryAllowed(session, 1, 100)) return false;
     session.presented = true;
     return !RetryAllowed(session, 1, 100);
+}
+
+uint32_t NativeDialogTakeoverGenerationRegression() {
+    const HWND window = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Pulse takeover identity fixture",
+        WS_POPUP, 0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!window) return 0;
+    struct WindowGuard {
+        HWND window;
+        ~WindowGuard() { RemovePropW(window, kSessionProperty); DestroyWindow(window); }
+    } window_guard{window};
+    uint32_t passed = 0;
+    const LONG_PTR original_style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    const auto make_session = [&] {
+        SetWindowLongPtrW(window, GWL_EXSTYLE, original_style);
+        EnableWindow(window, TRUE);
+        auto session = std::make_shared<Session>();
+        session->source = window;
+        session->source_thread = GetWindowThreadProcessId(window, &session->source_pid);
+        if (!ProcessCreated(session->source_pid, session->source_created)) session->invalidated = true;
+        return session;
+    };
+    const auto blocked_commit = [&](const Session& session) {
+        NativeFileDialog dialog; dialog.window = window;
+        std::wstring reason;
+        bool checked = false;
+        const bool submitted = CommitNativeDialogSelection(dialog, {}, 0, reason, [&] {
+            checked = true;
+            return !CanSubmit(session);
+        });
+        return checked && !submitted && !CanSubmit(session);
+    };
+    auto old = make_session(); old->observed_time = 100;
+    auto current = make_session(); current->observed_time = 200;
+    Attempts queued{{window, {current, 1}}};
+    EraseDestroyedAttempt(queued, window, 150);
+    const bool preserved = queued.contains(window) && !DestroyApplies(*current, window, 150) &&
+        !DestroyApplies(*current, window, 200);
+    queued[window] = {old, 1};
+    EraseDestroyedAttempt(queued, window, 150);
+    if (preserved && queued.empty() && EventTime(0xfffffffeu, 0x100000002ull) == 0xfffffffeull &&
+        EventTime(1, 0x100000002ull) == 0x100000001ull) passed |= 1;
+
+    unsigned char foreign = 0;
+    const HANDLE foreign_tag = reinterpret_cast<HANDLE>(&foreign);
+    auto occupied = make_session();
+    if (SetPropW(window, kSessionProperty, foreign_tag)) {
+        const bool rejected = !occupied->BindIdentity();
+        occupied->Conceal(true); occupied->Restore(true);
+        if (rejected && GetPropW(window, kSessionProperty) == foreign_tag &&
+            GetWindowLongPtrW(window, GWL_EXSTYLE) == original_style && IsWindowEnabled(window)) passed |= 2;
+        RemovePropW(window, kSessionProperty);
+    }
+    for (unsigned replaced = 0; replaced < 2; ++replaced) {
+        auto session = make_session();
+        if (!session->BindIdentity()) continue;
+        session->Conceal(true);
+        if (!session->IsConcealed()) { session->Restore(true); continue; }
+        const LONG_PTR concealed_style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        const bool changed = replaced ? SetPropW(window, kSessionProperty, foreign_tag) != FALSE
+            : RemovePropW(window, kSessionProperty) == session->TagValue();
+        const bool blocked = !session->SameWindow() && blocked_commit(*session);
+        session->Conceal(true); session->Restore(true);
+        BYTE alpha = 255; DWORD flags = 0;
+        if (changed && blocked && !session->SameTrackedWindow() &&
+            GetWindowLongPtrW(window, GWL_EXSTYLE) == concealed_style && !IsWindowEnabled(window) &&
+            GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 0 && (flags & LWA_ALPHA) &&
+            GetPropW(window, kSessionProperty) == (replaced ? foreign_tag : nullptr)) passed |= replaced ? 8u : 4u;
+        RemovePropW(window, kSessionProperty);
+    }
+    auto terminal = make_session();
+    if (terminal->BindIdentity()) {
+        terminal->presented = true;
+        terminal->Conceal(true); terminal->Restore(); terminal->done = true;
+        const bool retained = GetPropW(window, kSessionProperty) == terminal->TagValue() &&
+            terminal->SameTrackedWindow() && !RetryAllowed(*terminal, 1, GetTickCount64()) &&
+            GetWindowLongPtrW(window, GWL_EXSTYLE) == original_style && IsWindowEnabled(window);
+        terminal->Restore(true);
+        if (retained && !GetPropW(window, kSessionProperty) && !terminal->SameWindow() &&
+            GetWindowLongPtrW(window, GWL_EXSTYLE) == original_style && IsWindowEnabled(window)) passed |= 16;
+    }
+    auto retry = make_session();
+    if (retry->BindIdentity()) {
+        retry->Conceal(true); retry->Restore();
+        const bool finishing = retry->SameTrackedWindow() && !RetryAllowed(*retry, 1, GetTickCount64());
+        retry->done = true;
+        if (!GetPropW(window, kSessionProperty) && !retry->SameWindow() && retry->SameTrackedWindow() &&
+            finishing && RetryAllowed(*retry, 1, GetTickCount64()) &&
+            !RetryAllowed(*retry, kMaximumAttempts, GetTickCount64())) passed |= 32;
+    }
+    return passed;
 }
 
 NativeDialogTakeover::NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop, std::wstring desktop_name) : shared_(std::make_shared<Shared>()) {
