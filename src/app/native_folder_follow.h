@@ -83,8 +83,11 @@ private:
         if (!SendMessageTimeoutW(control, WM_GETTEXT, text.size(), reinterpret_cast<LPARAM>(text.data()),
                 SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 75, &copied) || copied >= text.size() - 1 ||
             !Matches(window) || GetDlgItem(window, kFolderSourceControl) != control ||
+            GetWindowThreadProcessId(window, &source_process) != source_thread || source_process != parent_id_ ||
             GetParent(control) != window || GetWindowThreadProcessId(control, &control_process) != source_thread ||
-            control_process != parent_id_ || Foreground() != window)
+            control_process != parent_id_ || !GetClassNameW(control, name, ARRAYSIZE(name)) ||
+            std::wstring_view(name) != L"Edit" || !(GetWindowLongPtrW(control, GWL_STYLE) & ES_READONLY) ||
+            Foreground() != window)
             return false;
         folder.assign(text.data(), static_cast<size_t>(copied));
         if (!IsFolderSourcePath(folder)) folder.clear();

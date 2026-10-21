@@ -62,7 +62,8 @@ struct StalledSource {
         const auto name = L"Local\\PulseFolderFollowTest." + std::to_wstring(GetCurrentProcessId()) +
             L"." + std::to_wstring(GetTickCount64());
         stopped = CreateEventW(nullptr, TRUE, FALSE, name.c_str());
-        if (!stopped || GetLastError() == ERROR_ALREADY_EXISTS) return false;
+        if (!stopped) return false;
+        if (GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(stopped); stopped = nullptr; return false; }
         std::wstring command = L"\"" + std::wstring(executable) + L"\" --stalled-source \"" + name + L"\"";
         STARTUPINFOW startup{sizeof(startup)};
         if (!CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
@@ -95,8 +96,10 @@ struct StalledSource {
                 TerminateProcess(process.hProcess, 1);
                 WaitForSingleObject(process.hProcess, 1000);
             }
-            Check(WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0,
-                "owned stalled-source process exits and is reaped");
+            DWORD code = 1;
+            Check(WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0 &&
+                GetExitCodeProcess(process.hProcess, &code) && code == 0,
+                "owned stalled-source process exits normally and is reaped");
             CloseHandle(process.hProcess);
         }
         if (process.hThread) CloseHandle(process.hThread);
