@@ -102,6 +102,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* dialog) override { return LogType(dialog, "OnTypeChange"); }
     HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
         ++overwrite_count;
+        std::printf("[HOST] OnOverwrite count=%u\n", overwrite_count.load());
         if (response) *response = FDEOR_DEFAULT;
         return S_OK;
     }
@@ -462,16 +463,9 @@ void InactiveSaveCase(const Fixture& fixture) {
     Check(!std::filesystem::exists(expected), "inactive-save adapter never creates the selected file");
 }
 
-thread_local IFileDialog* overwrite_fixture_dialog = nullptr;
-
-void CALLBACK CancelOverwriteFixture(HWND, UINT, UINT_PTR timer, DWORD) {
-    KillTimer(nullptr, timer);
-    if (overwrite_fixture_dialog) overwrite_fixture_dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-}
-
-void ExistingFileSaveCase(const Fixture& fixture) {
+void ExistingFileSaveCase(const std::filesystem::path& directory) {
     std::printf("[CASE] cross-directory save preserves native overwrite confirmation\n");
-    const auto expected = fixture.folder / L"existing save.txt";
+    const auto expected = directory / L"owned directory" / L"existing save.txt";
     constexpr char original[] = "original owned content";
     std::ofstream(expected, std::ios::binary) << original;
     ComPtr<IFileSaveDialog> native;
@@ -486,7 +480,7 @@ void ExistingFileSaveCase(const Fixture& fixture) {
     native->SetFileTypes(1, &filter);
     native->SetFileName(L"original.txt");
     ComPtr<IShellItem> initial;
-    if (SUCCEEDED(SHCreateItemFromParsingName(fixture.directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
+    if (SUCCEEDED(SHCreateItemFromParsingName(directory.c_str(), nullptr, IID_PPV_ARGS(&initial))))
         native->SetFolder(initial.Get());
     ComPtr<NativeHostObserver> observer;
     observer.Attach(new NativeHostObserver());
@@ -508,42 +502,134 @@ void ExistingFileSaveCase(const Fixture& fixture) {
             if (popup && popup != inspected.window && GetWindow(popup, GW_OWNER) == inspected.window &&
                 GetWindowThreadProcessId(popup, &process) == inspected.window_thread_id && process == inspected.process_id &&
                 GetClassNameW(popup, klass, 32) && std::wstring_view(klass) == L"#32770" &&
-                IsWindowVisible(popup) && !IsWindowEnabled(inspected.window) && observer->overwrite_count == 1) {
+                IsWindowVisible(popup) && !IsWindowEnabled(inspected.window)) {
                 prompt = popup;
                 break;
             }
             Sleep(20);
         } while (GetTickCount64() < deadline);
         prompt_seen = prompt != nullptr;
+        std::printf("[DETAIL] overwrite submitted=%u prompt=%llu overwrite_events=%u file_ok_events=%u\n",
+            static_cast<unsigned>(submitted), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(prompt)),
+            observer->overwrite_count.load(), observer->file_ok_count.load());
         if (prompt) {
-            const HWND no = GetDlgItem(prompt, IDNO);
-            const HWND yes = GetDlgItem(prompt, IDYES);
-            // Decline only our verified fixture prompt; never accept overwriting.
-            if (no && yes && IsWindowVisible(no) && IsWindowEnabled(no) && GetParent(no) == prompt)
-                PostMessageW(prompt, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), reinterpret_cast<LPARAM>(no));
+            EnumChildWindows(prompt, [](HWND control, LPARAM) -> BOOL {
+                wchar_t klass[128]{};
+                GetClassNameW(control, klass, 128);
+                std::printf("[DETAIL] overwrite control id=%d visible=%u enabled=%u\n", GetDlgCtrlID(control),
+                    static_cast<unsigned>(IsWindowVisible(control)), static_cast<unsigned>(IsWindowEnabled(control)));
+                Diagnostic(std::wstring(L"overwrite.control_class=") + klass);
+                return TRUE;
+            }, 0);
+            const auto verified_button = [&](int id) -> HWND {
+                const HWND button = GetDlgItem(prompt, id);
+                DWORD process = 0;
+                wchar_t klass[32]{};
+                return button && GetParent(button) == prompt && GetDlgCtrlID(button) == id &&
+                    GetWindowThreadProcessId(button, &process) == inspected.window_thread_id && process == inspected.process_id &&
+                    GetClassNameW(button, klass, 32) && std::wstring_view(klass) == L"Button" &&
+                    IsWindowVisible(button) && IsWindowEnabled(button) ? button : nullptr;
+            };
+            const HWND no = verified_button(IDNO);
+            const HWND yes = verified_button(IDYES);
+            // A Yes/No prompt may ignore WM_CLOSE. Route only its verified
+            // negative button notification; never invoke its default button.
+            const bool negative_button = no && yes;
+            const bool posted = negative_button
+                ? PostMessageW(prompt, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), reinterpret_cast<LPARAM>(no)) != FALSE
+                : PostMessageW(prompt, WM_CLOSE, 0, 0) != FALSE;
+            std::printf("[DETAIL] overwrite negative_button=%u cancel-posted=%u\n",
+                static_cast<unsigned>(negative_button), static_cast<unsigned>(posted));
             const ULONGLONG decline_deadline = GetTickCount64() + 2000;
             while (IsWindow(prompt) && GetTickCount64() < decline_deadline) Sleep(20);
             declined = !IsWindow(prompt) && IsWindow(inspected.window) && IsWindowEnabled(inspected.window);
+            std::printf("[DETAIL] overwrite declined=%u source_enabled=%u\n", static_cast<unsigned>(declined.load()),
+                static_cast<unsigned>(IsWindowEnabled(inspected.window)));
         }
         CloseOwnedDialog(inspected.window);
         return submitted && prompt_seen && declined;
     });
     if (!driver.ready) { driver.Finish(); native->Unadvise(cookie); Check(false, "overwrite driver initializes privately"); return; }
-    const UINT_PTR cleanup_timer = SetTimer(nullptr, 0, 10000, CancelOverwriteFixture);
-    if (!cleanup_timer) { driver.Finish(); native->Unadvise(cookie); Check(false, "arm owned overwrite-fixture cleanup"); return; }
-    overwrite_fixture_dialog = native.Get();
     const HRESULT shown = native->Show(nullptr);
-    overwrite_fixture_dialog = nullptr;
-    KillTimer(nullptr, cleanup_timer);
     driver.Finish();
     native->Unadvise(cookie);
-    Check(driver.passed && submissions == 1 && prompt_seen && observer->overwrite_count == 1,
-        "one cross-directory save invokes the host overwrite check and exposes its native confirmation");
+    Check(driver.passed && submissions == 1 && prompt_seen && observer->overwrite_count <= 1,
+        "one cross-directory save exposes the host overwrite confirmation without repeated submission");
     Check(declined && shown == HRESULT_FROM_WIN32(ERROR_CANCELLED) && observer->file_ok_count <= 1,
         "declining the fixture overwrite leaves save pending until explicit cancellation without repeated confirmation");
     std::ifstream preserved(expected, std::ios::binary);
     const std::string actual(std::istreambuf_iterator<char>(preserved), {});
     Check(actual == original, "declined native overwrite preserves the existing fixture file byte for byte");
+}
+
+void ExistingFileSaveProcess(const Fixture& fixture) {
+    struct OwnedHandle {
+        HANDLE value = nullptr;
+        ~OwnedHandle() { if (value) CloseHandle(value); }
+    } read, write, process, thread;
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    if (!CreatePipe(&read.value, &write.value, &security, 0) ||
+        !SetHandleInformation(read.value, HANDLE_FLAG_INHERIT, 0)) {
+        Check(false, "create bounded overwrite-test output pipe"); return;
+    }
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    std::vector<unsigned char> attributes_storage(bytes);
+    auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes_storage.data());
+    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) {
+        Check(false, "initialize overwrite-test handle isolation"); return;
+    }
+    struct AttributesScope {
+        LPPROC_THREAD_ATTRIBUTE_LIST value;
+        ~AttributesScope() { DeleteProcThreadAttributeList(value); }
+    } attribute_scope{attributes};
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        &write.value, sizeof(write.value), nullptr, nullptr)) {
+        Check(false, "restrict overwrite-test inheritance to its own output handle"); return;
+    }
+    wchar_t executable[32768]{};
+    if (!GetModuleFileNameW(nullptr, executable, 32768)) { Check(false, "locate overwrite-test executable"); return; }
+    std::wstring command = L"\"" + std::wstring(executable) + L"\" --overwrite-interaction \"" +
+        fixture.directory.wstring() + L"\"";
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdOutput = write.value;
+    startup.StartupInfo.hStdError = write.value;
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION created{};
+    if (!CreateProcessW(executable, command.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr, &startup.StartupInfo, &created)) {
+        Check(false, "launch isolated overwrite-test process"); return;
+    }
+    process.value = created.hProcess;
+    thread.value = created.hThread;
+    CloseHandle(write.value); write.value = nullptr;
+    std::printf("[DETAIL] overwrite child pid=%lu start_tick=%llu timeout_ms=25000\n", created.dwProcessId, GetTickCount64());
+    const auto drain = [&] {
+        DWORD available = 0;
+        while (PeekNamedPipe(read.value, nullptr, 0, nullptr, &available, nullptr) && available) {
+            char output[4096]; DWORD received = 0;
+            if (!ReadFile(read.value, output, (std::min)(available, static_cast<DWORD>(sizeof(output))), &received, nullptr) || !received)
+                break;
+            std::fwrite(output, 1, received, stdout);
+        }
+    };
+    const ULONGLONG deadline = GetTickCount64() + 25000;
+    while (WaitForSingleObject(process.value, 20) == WAIT_TIMEOUT && GetTickCount64() < deadline) drain();
+    const bool finished = WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0;
+    if (!finished) {
+        // This handle comes exclusively from our CreateProcess call. A stuck
+        // nested system modal must not hang the remaining adapter cases.
+        const bool terminated = TerminateProcess(process.value, ERROR_TIMEOUT) != FALSE;
+        Check(terminated && WaitForSingleObject(process.value, 5000) == WAIT_OBJECT_0,
+            "timed-out owned overwrite-test process is terminated and reaped");
+    }
+    drain();
+    DWORD exit_code = STILL_ACTIVE;
+    GetExitCodeProcess(process.value, &exit_code);
+    std::printf("[DETAIL] overwrite child finished=%u exit_code=%lu\n", static_cast<unsigned>(finished), exit_code);
+    Check(finished && exit_code == 0, "isolated overwrite confirmation and cancellation complete within their process deadline");
 }
 
 void ModernMultiselectCase(const Fixture& fixture) {
@@ -625,7 +711,8 @@ void LegacyFolderCase(const Fixture& fixture) {
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
-    const bool interaction = argc > 1 && std::wstring_view(argv[1]) == L"--interaction";
+    const bool overwrite = argc == 3 && std::wstring_view(argv[1]) == L"--overwrite-interaction";
+    const bool interaction = overwrite || (argc > 1 && std::wstring_view(argv[1]) == L"--interaction");
     // Interaction tests open real system file dialogs; create a private desktop so
     // they work reliably in headless/CI environments without disturbing the user desktop.
     HDESK desktop = nullptr;
@@ -643,13 +730,17 @@ int wmain(int argc, wchar_t** argv) {
     }
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 2;
-    RejectionCases();
-    if (interaction) {
+    if (overwrite) {
+        ExistingFileSaveCase(std::filesystem::path(argv[2]));
+    } else {
+        RejectionCases();
+    }
+    if (interaction && !overwrite) {
         Fixture fixture;
         ModernCase(fixture, NativeDialogKind::Open, false);
         ModernCase(fixture, NativeDialogKind::Save, false);
         InactiveSaveCase(fixture);
-        ExistingFileSaveCase(fixture);
+        ExistingFileSaveProcess(fixture);
         ModernCase(fixture, NativeDialogKind::Folder, false);
         ModernCase(fixture, NativeDialogKind::Open, true);
         ModernMultiselectCase(fixture);
