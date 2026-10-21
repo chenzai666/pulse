@@ -24,7 +24,7 @@ if ($NativeHandoff -or $ExplorerReveal) {
 }
 if ($ExplorerReveal) {
     $allowed += @('CMakeLists.txt', 'src/app/explorer_window_takeover.cpp', 'src/app/explorer_takeover_guard.h',
-        'src/bench/explorer_takeover_guard_test.cpp')
+        'src/bench/explorer_takeover_guard_test.cpp', 'src/bench/explorer_takeover_connection_test.cpp')
 }
 $changed = @(& git diff --name-only $baseCommit HEAD)
 if ($LASTEXITCODE) {
@@ -76,7 +76,7 @@ $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'ON' } else { 'OFF' }
 $targets = if ($NativeHandoff -and -not $ReuseNativeVerification) { 'pulse pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' }
-    elseif ($ExplorerReveal) { 'pulse pulse_explorer_takeover_guard_test' } else { 'pulse' }
+    elseif ($ExplorerReveal) { 'pulse pulse_explorer_takeover_guard_test pulse_explorer_takeover_connection_test' } else { 'pulse' }
 @"
 @echo off
 call "$vcvars"
@@ -91,12 +91,17 @@ $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
 if ($ExplorerReveal) {
     $guardBatch = Join-Path $taskBuild 'compile-explorer-guard-first.bat'
-    $guardBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_explorer_takeover_guard_test')
+    $guardBuild = [IO.File]::ReadAllText($buildBatch).Replace("--target $targets", '--target pulse_explorer_takeover_guard_test pulse_explorer_takeover_connection_test')
     [IO.File]::WriteAllText($guardBatch, $guardBuild, [Text.UTF8Encoding]::new($false))
     & $guardBatch
     if ($LASTEXITCODE) { throw '资源管理器接管保护构建失败' }
     & (Join-Path $taskBuild 'pulse_explorer_takeover_guard_test.exe') | Tee-Object -FilePath (Join-Path $galleryOutput 'explorer-guard.log')
     if ($LASTEXITCODE) { throw '资源管理器接管保护回归失败' }
+    $connection = Start-Process -FilePath (Join-Path $taskBuild 'pulse_explorer_takeover_connection_test.exe') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput 'explorer-connection.log') -RedirectStandardError (Join-Path $galleryOutput 'explorer-connection-error.log')
+    if (-not $connection.WaitForExit(30000)) { $connection.Kill(); throw '资源管理器断线重连回归超时' }
+    $connection.Refresh()
+    Get-Content -LiteralPath (Join-Path $galleryOutput 'explorer-connection.log')
+    if ($connection.ExitCode) { throw '资源管理器断线重连回归失败' }
 }
 if ($ReuseNativeVerification) { & "$PSScriptRoot/verify_native_handoff_evidence.ps1" -OutputDirectory $galleryOutput }
 if ($NativeHandoff -and -not $ReuseNativeVerification) {

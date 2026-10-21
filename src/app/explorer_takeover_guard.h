@@ -5,6 +5,19 @@
 
 namespace pulse::app {
 
+class ExplorerScanSchedule {
+public:
+    static constexpr uint64_t kIntervalMs = 500;
+    bool Due(uint64_t now, bool pending) const {
+        return pending && (!scanned_ || now - last_scan_ >= kIntervalMs);
+    }
+    void Scanned(uint64_t now) { last_scan_ = now; scanned_ = true; }
+
+private:
+    uint64_t last_scan_ = 0;
+    bool scanned_ = false;
+};
+
 struct ExplorerWindowIdentity {
     uintptr_t window = 0;
     uint32_t process_id = 0;

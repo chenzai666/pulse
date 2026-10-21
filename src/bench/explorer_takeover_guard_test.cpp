@@ -106,6 +106,22 @@ void RepeatedStyleChangesHaveFiniteBudget() {
         "SHOW after the retry-limit restoration cannot revive concealment");
 }
 
+void PendingWindowRecoversWithoutRegistrationEvents() {
+    pulse::app::ExplorerScanSchedule schedule;
+    Check(!schedule.Due(1000, false) && schedule.Due(1000, true),
+        "first pending source requests a scan while an idle watcher does not poll");
+    schedule.Scanned(1000);
+    Check(!schedule.Due(1499, true),
+        "a hidden source does not rescan before the 500ms recovery interval");
+    Check(schedule.Due(1500, true),
+        "a source missing registration events rescans at the 500ms boundary");
+    schedule.Scanned(1500);
+    Check(!schedule.Due(1999, true) && schedule.Due(2000, true),
+        "a completed scan resets the recovery interval for the still-pending source");
+    Check(!schedule.Due(5000, false) && schedule.Due(5000, true),
+        "a resolved source stops background scans and new pending work can resume them");
+}
+
 } // namespace
 
 int main() {
@@ -113,6 +129,7 @@ int main() {
     ReusedWindowRejectsOldCallbacks();
     DestroyThenIdenticalWindowGetsNewGeneration();
     RepeatedStyleChangesHaveFiniteBudget();
+    PendingWindowRecoversWithoutRegistrationEvents();
     pulse::app::SourceCloseProbe source;
     source.identity_kept = true;
     source.hidden = true;

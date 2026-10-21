@@ -25,6 +25,10 @@ namespace pulse::app {
 
 using Microsoft::WRL::ComPtr;
 
+#ifdef PULSE_EXPLORER_TAKEOVER_CONNECTION_TEST
+extern HRESULT CreateExplorerShellWindowsForTest(IShellWindows** windows);
+#endif
+
 struct ExplorerWindowTakeover::Shared {
     HWND window = nullptr;
     UINT message = 0;
@@ -41,6 +45,21 @@ constexpr UINT kScanMessage = WM_APP + 2;
 constexpr UINT kPollMs = 50;
 constexpr ULONGLONG kQuitTimeoutMs = 2000;   // a source still open after Quit is shown again
 enum class RestoreReason : uint64_t { Aborted, NoView, ReassertLimit, QuitFailed, QuitTimeout, Stopped };
+
+HRESULT CreateExplorerShellWindows(IShellWindows** windows) {
+#ifdef PULSE_EXPLORER_TAKEOVER_CONNECTION_TEST
+    return CreateExplorerShellWindowsForTest(windows);
+#else
+    return CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(windows));
+#endif
+}
+
+bool Disconnected(HRESULT result) {
+    return result == RPC_E_DISCONNECTED || result == CO_E_OBJNOTCONNECTED ||
+        result == RPC_E_SERVER_DIED || result == RPC_E_SERVER_DIED_DNE ||
+        result == HRESULT_FROM_WIN32(RPC_S_SERVER_UNAVAILABLE) ||
+        result == HRESULT_FROM_WIN32(RPC_S_CALL_FAILED) || result == HRESULT_FROM_WIN32(RPC_S_CALL_FAILED_DNE);
+}
 
 struct PidlDeleter {
     void operator()(std::remove_pointer_t<PIDLIST_ABSOLUTE>* pidl) const noexcept { CoTaskMemFree(pidl); }
@@ -188,23 +207,15 @@ public:
     Watcher& operator=(const Watcher&) = delete;
 
     bool Start() {
-        HRESULT hr = CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows_));
-        if (FAILED(hr)) {
-            TraceShellWindows(L"takeover: CoCreateInstance(ShellWindows) hr=0x%08x", static_cast<unsigned>(hr));
-            return false;
-        }
         // Windows open now are the user's; only later ones are candidates.
-        ForEachExplorerWindow([&](HWND hwnd, IWebBrowser2*) {
+        EnumWindows([](HWND hwnd, LPARAM context) -> BOOL {
+            auto& watcher = *reinterpret_cast<Watcher*>(context);
             ExplorerWindowIdentity identity;
-            if (WindowIdentity(hwnd, identity)) known_[hwnd] = guard_.Track(identity);
-        });
-        ComPtr<IConnectionPointContainer> container;
-        hr = windows_.As(&container);
-        if (SUCCEEDED(hr)) hr = container->FindConnectionPoint(DIID_DShellWindowsEvents, &point_);
-        if (SUCCEEDED(hr)) {
-            sink_.Attach(new WindowEvents(GetCurrentThreadId()));
-            hr = point_->Advise(sink_.Get(), &advise_cookie_);
-        }
+            if (HasClass(hwnd, L"CabinetWClass") && WindowIdentity(hwnd, identity))
+                watcher.known_[hwnd] = watcher.guard_.Track(identity);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(this));
+        const bool connected = EnsureConnection();
         // Out of context: delivered through this thread's message loop.
         t_watcher = this;
         // A new File Explorer window takes the foreground about 250 ms before
@@ -217,12 +228,15 @@ public:
                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
         hooks_[2] = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, &Watcher::OnShow, 0, 0,
                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-        TraceShellWindows(L"takeover: watching, %zu windows already open, advise hr=0x%08x hooks=%d/%d",
-                          known_.size(), static_cast<unsigned>(hr), hooks_[0] != nullptr, hooks_[1] != nullptr);
-        return SUCCEEDED(hr);
+        TraceShellWindows(L"takeover: watching, %zu windows already open, connected=%d hooks=%d/%d",
+                          known_.size(), connected, hooks_[0] != nullptr, hooks_[1] != nullptr);
+        return connected;
     }
 
     void Scan() {
+        if (shared_.stopping) return;
+        scan_schedule_.Scanned(GetTickCount64());
+        if (!EnsureConnection()) return;
         for (auto it = known_.begin(); it != known_.end();) {
             ExplorerWindowIdentity identity;
             it = WindowIdentity(it->first, identity) && guard_.IsCurrent(identity, it->second)
@@ -260,6 +274,8 @@ public:
     }
 
     void Poll() {
+        // 先扫描再遍历候选，避免 COM 重连时追加候选使遍历失效。
+        if (scan_schedule_.Due(GetTickCount64(), !hidden_.empty() || !candidates_.empty())) Scan();
         SweepHidden();
         for (auto it = candidates_.begin(); it != candidates_.end();) {
             if (!Current(it->identity, it->token) || guard_.IsReleased(it->identity, it->token)) {
@@ -336,17 +352,59 @@ public:
     }
 
 private:
+    bool EnsureConnection() {
+        if (windows_ && !connection_lost_) return true;
+        if (point_ && advise_cookie_) point_->Unadvise(advise_cookie_);
+        advise_cookie_ = 0;
+        point_.Reset();
+        sink_.Reset();
+        windows_.Reset();
+        connection_lost_ = false;
+        HRESULT result = CreateExplorerShellWindows(windows_.ReleaseAndGetAddressOf());
+        if (SUCCEEDED(result)) {
+            ComPtr<IConnectionPointContainer> container;
+            result = windows_.As(&container);
+            if (SUCCEEDED(result)) result = container->FindConnectionPoint(DIID_DShellWindowsEvents, &point_);
+            if (SUCCEEDED(result)) {
+                sink_.Attach(new WindowEvents(GetCurrentThreadId()));
+                result = point_->Advise(sink_.Get(), &advise_cookie_);
+            }
+        }
+        diagnostics::runtime::Event("explorer_takeover_reconnect", {{"hresult", static_cast<uint32_t>(result)},
+            {"enumerator", windows_ ? 1u : 0u}, {"advised", advise_cookie_ ? 1u : 0u}},
+            FAILED(result) ? diagnostics::runtime::Level::Warning : diagnostics::runtime::Level::Info);
+        if (FAILED(result)) {
+            connection_lost_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    HRESULT EnumerationResult(HRESULT result) {
+        if (Disconnected(result)) {
+            if (!connection_lost_)
+                diagnostics::runtime::Event("explorer_takeover_disconnected", {{"hresult", static_cast<uint32_t>(result)}},
+                    diagnostics::runtime::Level::Warning);
+            connection_lost_ = true;
+        }
+        return result;
+    }
+
     template <class Fn>
-    void ForEachExplorerWindow(Fn&& fn) {
+    HRESULT ForEachExplorerWindow(Fn&& fn) {
         long count = 0;
-        if (!windows_ || FAILED(windows_->get_Count(&count))) return;
+        if (!windows_) return E_NOINTERFACE;
+        const HRESULT counted = windows_->get_Count(&count);
+        if (FAILED(counted)) return EnumerationResult(counted);
         for (long i = 0; i < count; ++i) {
             VARIANT index;
             VariantInit(&index);
             index.vt = VT_I4;
             index.lVal = i;
             ComPtr<IDispatch> item;
-            if (windows_->Item(index, &item) != S_OK || !item) continue;
+            const HRESULT fetched = windows_->Item(index, &item);
+            if (Disconnected(fetched)) return EnumerationResult(fetched);
+            if (fetched != S_OK || !item) continue;
             // Pulse's own panes (shell_window_registry) are IWebBrowserApp only.
             ComPtr<IWebBrowser2> browser;
             if (FAILED(item.As(&browser))) continue;
@@ -355,6 +413,7 @@ private:
             const HWND root = GetAncestor(reinterpret_cast<HWND>(handle), GA_ROOT);
             if (root) fn(root, browser.Get());
         }
+        return S_OK;
     }
 
     static void Read(const Candidate& candidate, ExplorerWindowProbe& probe, ExplorerTakeoverRequest& request) {
@@ -420,9 +479,10 @@ private:
         if (!same_window) return probe;
         const HWND root = GetAncestor(candidate.hwnd, GA_ROOT);
         size_t views = 0;
-        ForEachExplorerWindow([&](HWND hwnd, IWebBrowser2*) {
+        const HRESULT enumerated = ForEachExplorerWindow([&](HWND hwnd, IWebBrowser2*) {
             if (GetAncestor(hwnd, GA_ROOT) == root) ++views;
         });
+        if (FAILED(enumerated)) return probe;
         // IShellWindows lists only active views on Windows 11; the tab
         // windows show whether anything else would close with this one.
         const int tabs = CountTabs(root);
@@ -562,6 +622,7 @@ private:
         TraceShellWindows(L"takeover: hwnd=%p hidden (%s, %s, hiding took %llu ms)", hwnd, reason,
                           visible ? L"visible" : L"not shown yet", GetTickCount64() - set_from);
         UpdateTimer();
+        PostThreadMessageW(GetCurrentThreadId(), kScanMessage, 0, 0);
         return true;
     }
 
@@ -678,6 +739,8 @@ private:
     ComPtr<IConnectionPoint> point_;
     ComPtr<WindowEvents> sink_;
     DWORD advise_cookie_ = 0;
+    bool connection_lost_ = false;
+    ExplorerScanSchedule scan_schedule_;
     ExplorerTakeoverGuard guard_;
     std::map<HWND, uint64_t> known_;
     std::vector<Candidate> candidates_;

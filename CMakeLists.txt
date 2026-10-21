@@ -385,6 +385,10 @@ add_executable(pulse_native_dialog_fixture src/bench/native_dialog_fixture.cpp)
 add_executable(pulse_explorer_takeover_guard_test
     src/bench/explorer_takeover_guard_test.cpp src/app/shell_window_plan.cpp)
 target_link_libraries(pulse_explorer_takeover_guard_test PRIVATE user32)
+add_executable(pulse_explorer_takeover_connection_test
+    src/bench/explorer_takeover_connection_test.cpp src/app/shell_window_plan.cpp)
+target_link_libraries(pulse_explorer_takeover_connection_test PRIVATE
+    user32 shell32 shlwapi ole32 oleaut32 uuid)
 target_link_libraries(pulse_native_dialog_fixture PRIVATE shell32 ole32 uuid shcore user32)
 add_executable(pulse_native_file_dialog_adapter_test
     src/bench/native_file_dialog_adapter_test.cpp src/app/native_file_dialog_adapter.cpp)
