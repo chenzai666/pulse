@@ -1,6 +1,7 @@
 #include "../app/native_file_dialog_adapter.h"
 
 #include <commdlg.h>
+#include <UIAutomation.h>
 #include <shlobj.h>
 #include <wrl/client.h>
 
@@ -364,8 +365,24 @@ void ClassicCase(const Fixture& fixture, bool save = false) {
         (save ? OFN_ENABLEHOOK | OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
     if (save) { spec.lpfnHook = ClassicSaveHook; spec.lCustData = reinterpret_cast<LPARAM>(&confirmations); }
     Driver driver([&](const NativeFileDialog& inspected, std::wstring& reason) {
-        return inspected.kind == (save ? NativeDialogKind::Save : NativeDialogKind::Open) &&
-            CommitNativeDialogSelection(inspected, {expected}, 0, reason);
+        if (inspected.kind != (save ? NativeDialogKind::Save : NativeDialogKind::Open)) return false;
+        const bool submitted = CommitNativeDialogSelection(inspected, {expected}, 0, reason);
+        if (!submitted) {
+            NativeFileDialog prepared;
+            std::wstring prepared_reason;
+            const bool read = InspectNativeFileDialog(inspected.window, prepared, prepared_reason);
+            std::printf("[DETAIL] classic prepared read=%u kind_before=%u kind_after=%u filter_before=%zu filter_after=%zu requested_filter=0\n",
+                static_cast<unsigned>(read), static_cast<unsigned>(inspected.kind), static_cast<unsigned>(prepared.kind),
+                inspected.filter_index, prepared.filter_index);
+            std::printf("[DETAIL] classic prepared hwnd_same=%u edit_same=%u confirm_same=%u enabled=%u filters_before=%zu filters_after=%zu\n",
+                static_cast<unsigned>(inspected.window == prepared.window), static_cast<unsigned>(inspected.filename_window == prepared.filename_window),
+                static_cast<unsigned>(inspected.confirm_window == prepared.confirm_window),
+                static_cast<unsigned>(IsWindowEnabled(inspected.confirm_window)), inspected.filters.size(), prepared.filters.size());
+            PathDiagnostic(L"classic.requested_filename", expected);
+            PathDiagnostic(L"classic.prepared_filename", prepared.filename);
+            Diagnostic(prepared_reason);
+        }
+        return submitted;
     });
     if (!driver.ready) { driver.Finish(); Check(false, "classic driver initializes on fixture desktop"); return; }
     const bool shown = (save ? GetSaveFileNameW(&spec) : GetOpenFileNameW(&spec)) != FALSE;
@@ -463,6 +480,78 @@ void InactiveSaveCase(const Fixture& fixture) {
     Check(!std::filesystem::exists(expected), "inactive-save adapter never creates the selected file");
 }
 
+bool DeclineOwnedOverwritePrompt(const NativeFileDialog& source, HWND prompt) {
+    const auto matches = [&] {
+        DWORD process = 0;
+        return IsWindow(prompt) && GetWindow(prompt, GW_OWNER) == source.window &&
+            GetWindowThreadProcessId(prompt, &process) == source.window_thread_id && process == source.process_id &&
+            process == GetCurrentProcessId() && IsWindowVisible(prompt) && !IsWindowEnabled(source.window);
+    };
+    if (!matches()) return false;
+    ComPtr<IUIAutomation2> timed;
+    ComPtr<IUIAutomation> automation;
+    if (FAILED(CoCreateInstance(CLSID_CUIAutomation8, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&timed))) ||
+        FAILED(timed->put_ConnectionTimeout(500)) || FAILED(timed->put_TransactionTimeout(500)) ||
+        FAILED(timed.As(&automation))) return false;
+    ComPtr<IUIAutomationElement> root;
+    ComPtr<IUIAutomationCondition> condition;
+    ComPtr<IUIAutomationElementArray> buttons;
+    VARIANT type{}; type.vt = VT_I4; type.lVal = UIA_ButtonControlTypeId;
+    if (FAILED(automation->ElementFromHandle(prompt, &root)) ||
+        FAILED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, &condition)) ||
+        FAILED(root->FindAll(TreeScope_Subtree, condition.Get(), &buttons))) return false;
+    int count = 0;
+    if (!buttons || FAILED(buttons->get_Length(&count)) || count > 32) return false;
+    ComPtr<IUIAutomationElement> negative;
+    for (int index = 0; index < count; ++index) {
+        ComPtr<IUIAutomationElement> button;
+        if (FAILED(buttons->GetElement(index, &button)) || !button) continue;
+        BSTR raw_name = nullptr, raw_id = nullptr;
+        button->get_CurrentName(&raw_name);
+        button->get_CurrentAutomationId(&raw_id);
+        const std::wstring name = raw_name ? std::wstring(raw_name, SysStringLen(raw_name)) : std::wstring();
+        const std::wstring id = raw_id ? std::wstring(raw_id, SysStringLen(raw_id)) : std::wstring();
+        SysFreeString(raw_name); SysFreeString(raw_id);
+        Diagnostic(L"overwrite.uia_name=" + name + L" automation_id=" + id);
+        int process = 0, control = 0;
+        BOOL enabled = FALSE, offscreen = TRUE;
+        if (FAILED(button->get_CurrentProcessId(&process)) || process != static_cast<int>(source.process_id) ||
+            FAILED(button->get_CurrentControlType(&control)) || control != UIA_ButtonControlTypeId ||
+            FAILED(button->get_CurrentIsEnabled(&enabled)) || !enabled ||
+            FAILED(button->get_CurrentIsOffscreen(&offscreen)) || offscreen) continue;
+        if (name != L"No" && name != L"&No" && name != L"否" && name != L"否(&N)") continue;
+        if (negative) return false;
+        negative = button;
+    }
+    if (!negative) return false;
+    ComPtr<IUIAutomationTreeWalker> walker;
+    if (FAILED(automation->get_RawViewWalker(&walker))) return false;
+    auto ancestor = negative;
+    bool below_prompt = false;
+    for (unsigned depth = 0; ancestor && depth < 32; ++depth) {
+        BOOL same = FALSE;
+        if (FAILED(automation->CompareElements(ancestor.Get(), root.Get(), &same))) return false;
+        if (same) { below_prompt = true; break; }
+        ComPtr<IUIAutomationElement> parent;
+        if (FAILED(walker->GetParentElement(ancestor.Get(), &parent))) return false;
+        ancestor = parent;
+    }
+    UIA_HWND native = nullptr;
+    if (FAILED(negative->get_CurrentNativeWindowHandle(&native))) return false;
+    if (native) {
+        DWORD process = 0;
+        const HWND window = reinterpret_cast<HWND>(native);
+        if (GetAncestor(window, GA_ROOT) != prompt ||
+            GetWindowThreadProcessId(window, &process) != source.window_thread_id || process != source.process_id) return false;
+    }
+    ComPtr<IUIAutomationInvokePattern> invoke;
+    if (!below_prompt || !matches() ||
+        FAILED(negative->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke)))) return false;
+    const HRESULT invoked = invoke->Invoke();
+    std::printf("[DETAIL] overwrite explicit-No UIA invoke=0x%08lX\n", static_cast<unsigned long>(invoked));
+    return SUCCEEDED(invoked);
+}
+
 void ExistingFileSaveCase(const std::filesystem::path& directory) {
     std::printf("[CASE] cross-directory save preserves native overwrite confirmation\n");
     const auto expected = directory / L"owned directory" / L"existing save.txt";
@@ -537,7 +626,7 @@ void ExistingFileSaveCase(const std::filesystem::path& directory) {
             const bool negative_button = no && yes;
             const bool posted = negative_button
                 ? PostMessageW(prompt, WM_COMMAND, MAKEWPARAM(IDNO, BN_CLICKED), reinterpret_cast<LPARAM>(no)) != FALSE
-                : PostMessageW(prompt, WM_CLOSE, 0, 0) != FALSE;
+                : DeclineOwnedOverwritePrompt(inspected, prompt);
             std::printf("[DETAIL] overwrite negative_button=%u cancel-posted=%u\n",
                 static_cast<unsigned>(negative_button), static_cast<unsigned>(posted));
             const ULONGLONG decline_deadline = GetTickCount64() + 2000;

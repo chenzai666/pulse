@@ -643,10 +643,12 @@ bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
         return false;
     if (Cancelled(cancelled, reason)) return false;
     NativeFileDialog prepared;
-    if (!InspectNativeFileDialog(current.window, prepared, reason) || !SameIdentity(current, prepared) ||
-        !SameFilters(current.filters, prepared.filters) || prepared.filename != text ||
-        prepared.filter_index != filter_index || !IsWindowEnabled(current.confirm_window))
-        return Fail(reason, L"回填后窗口身份、文件名、类型或确认状态发生变化。");
+    if (!InspectNativeFileDialog(current.window, prepared, reason)) return false;
+    if (!SameIdentity(current, prepared)) return Fail(reason, L"回填后窗口或控件身份发生变化。");
+    if (!SameFilters(current.filters, prepared.filters)) return Fail(reason, L"回填后文件类型列表发生变化。");
+    if (prepared.filename != text) return Fail(reason, L"回填后原生文件名发生变化。");
+    if (prepared.filter_index != filter_index) return Fail(reason, L"回填后原生文件类型选中项发生变化。");
+    if (!IsWindowEnabled(current.confirm_window)) return Fail(reason, L"回填后原生确认按钮不可用。");
     if (Cancelled(cancelled, reason)) return false;
     return InvokeButton(current, current.confirm_window, IDOK, reason, cancelled);
 }
