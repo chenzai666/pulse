@@ -1,6 +1,7 @@
 #include "../app/native_file_dialog_adapter.h"
 
 #include <commdlg.h>
+#include <objbase.h>
 #include <UIAutomation.h>
 #include <shlobj.h>
 #include <wrl/client.h>
