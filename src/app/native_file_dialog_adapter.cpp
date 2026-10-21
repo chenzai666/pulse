@@ -417,7 +417,7 @@ bool SelectFilter(const NativeFileDialog& dialog, const Controls& controls, size
     DWORD_PTR selected = 0;
     if (!Send(controls.filter, CB_GETCURSEL, 0, 0, selected) || selected != index)
         return Fail(reason, L"原生文件类型 SelectionItem 选择后，ComboBox 选中索引仍不一致。");
-    if (dialog.kind == NativeDialogKind::Save) {
+    if (dialog.kind == NativeDialogKind::Save && controls.standard_filter) {
         const HWND parent = GetParent(controls.filter);
         const int identifier = GetDlgCtrlID(controls.filter);
         const auto command_target_matches = [&] {
