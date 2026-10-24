@@ -18,6 +18,10 @@ on:
         description: '验证微信等软件显示文件位置时的接管保护'
         type: boolean
         default: false
+      reuse_removal_verification:
+        description: '设置源码未变时复用已通过的弹窗移除回归'
+        type: boolean
+        default: false
       home_widgets_only:
         description: 'file-ui 范围中仅验证主页和侧边栏设置'
         type: boolean
@@ -175,6 +179,8 @@ jobs:
   picker:
     if: inputs.validation_scope == 'picker'
     uses: ./.github/workflows/picker.yml
+    with:
+      reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'
     uses: ./.github/workflows/status-center.yml
