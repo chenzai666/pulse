@@ -1,7 +1,16 @@
 name: 验证原版弹窗与系统集成设置
 on:
   workflow_dispatch:
+    inputs:
+      reuse_removal_verification:
+        description: '设置及选择器源码未变时复用已通过的移除回归'
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      reuse_removal_verification:
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -18,7 +27,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_picker_ci.ps1
+        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true')
       - uses: actions/upload-artifact@v4
         if: success()
         with:

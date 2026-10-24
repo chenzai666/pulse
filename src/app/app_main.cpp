@@ -2822,7 +2822,6 @@ bool SkipSingletonFromArgv() {
     for (int i = 1; i < __argc; ++i) {
         if (wcscmp(__wargv[i], L"--selftest") == 0 ||
             wcscmp(__wargv[i], L"--picker-live") == 0 ||
-            wcscmp(__wargv[i], L"--native-dialog-picker") == 0 ||
             wcscmp(__wargv[i], L"--material-selftest") == 0 ||
             wcscmp(__wargv[i], L"--seed-shell-verbs") == 0 ||
             wcscmp(__wargv[i], L"--shot") == 0 ||

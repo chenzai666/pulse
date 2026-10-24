@@ -1,4 +1,5 @@
 #requires -Version 7.2
+param([switch]$ReuseRemovalVerification)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -13,7 +14,7 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 # 仅允许主程序与撤回功能的源码变化，完整组件使用固定清单逐文件核验。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml',
     'scripts/build_picker_ci.ps1', 'scripts/build_tab_drag_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1',
-    'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'docs/custom-edition.md',
+    'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'scripts/verify_dialog_removal_evidence.py', 'docs/custom-edition.md',
     'CMakeLists.txt', 'integrations/NativeDialogs/README.md',
     'src/app/app_commands.cpp', 'src/app/app_core.h', 'src/app/app_main.cpp', 'src/app/app_runtime.cpp',
     'src/app/app_prefs.cpp', 'src/app/app_prefs.h', 'src/app/settings_controller.cpp', 'src/app/settings_controller.h',
@@ -69,24 +70,30 @@ if ($LASTEXITCODE) { throw '完整组件逐文件验证失败' }
 $payload = Join-Path $baseRoot ('Pulse-Custom-' + $baseCommit.Substring(0, 9))
 $galleryOutput = Join-Path $taskBuild 'picker-verification'
 New-Item -ItemType Directory -Path $galleryOutput -Force | Out-Null
+if ($ReuseRemovalVerification) {
+    python scripts/verify_dialog_removal_evidence.py $galleryOutput
+    if ($LASTEXITCODE) { throw '已通过的设置回归证据核对失败' }
+}
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 $vsRoot = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $vsRoot) { throw '需要 Visual Studio 2022 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
+$selftestMode = if ($ReuseRemovalVerification) { 'OFF' } else { 'ON' }
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
-cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=ON -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
+cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target pulse
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
+if (-not $ReuseRemovalVerification) {
 $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $galleryOutput 'settings-integration.log'
 $env:PULSE_TEST_SETTINGS_INTEGRATION = '1'
 $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-dialog-removal'
@@ -98,6 +105,7 @@ try {
 } finally {
     Remove-Item Env:PULSE_TEST_SETTINGS_FLOW, Env:PULSE_TEST_SETTINGS_INTEGRATION, Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
 }
+}
 foreach ($case in @('save', 'columns')) {
     $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
     $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test', ('--' + $case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case + '.log')) -RedirectStandardError (Join-Path $galleryOutput ($case + '-error.log'))
@@ -106,10 +114,12 @@ foreach ($case in @('save', 'columns')) {
     if ($test.ExitCode) { throw "内部选择器回归失败：$case" }
 }
 Remove-Item Env:PULSE_PICKER_TEST_SNAPSHOT -ErrorAction SilentlyContinue
+if (-not $ReuseRemovalVerification) {
 $releaseBatch = Join-Path $taskBuild 'compile-picker-release.bat'
 [IO.File]::WriteAllText($releaseBatch, [IO.File]::ReadAllText($buildBatch).Replace('-DPULSE_WITH_SELFTEST=ON', '-DPULSE_WITH_SELFTEST=OFF'), [Text.UTF8Encoding]::new($false))
 & $releaseBatch
 if ($LASTEXITCODE) { throw '关闭自检后生成正式程序失败' }
+}
 & "$PSScriptRoot/check_release_payload.ps1" -BuildDir $taskBuild
 Copy-Item -LiteralPath (Join-Path $taskBuild 'pulse.exe') -Destination (Join-Path $payload 'pulse.exe')
 Copy-Item -LiteralPath (Join-Path $taskBuild 'lumatext.dll') -Destination (Join-Path $payload 'lumatext.dll')
