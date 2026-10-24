@@ -3,7 +3,7 @@
 struct IntegrationBadgeInfo { std::wstring text; fluent::BadgeKind kind = fluent::BadgeKind::Neutral; };
 inline int IntegrationSelectedCount(const WindowViewModel& vm) {
     return int(vm.settings_integration_folders)+int(vm.settings_integration_this_pc)+
-        int(vm.settings_integration_recycle_bin)+int(vm.settings_integration_file_dialogs)+
+        int(vm.settings_integration_recycle_bin)+
         int(vm.settings_integration_win_e)+int(vm.settings_integration_experimental);
 }
 inline IntegrationBadgeInfo MakeIntegrationBadge(const WindowViewModel& vm) {
@@ -31,7 +31,7 @@ inline std::wstring IntegrationHint(const WindowViewModel& vm) {
     using I=l10n::StringId;
     if(!vm.settings_integration_enabled) return l10n::Get(I::IntegrationInactiveHint);
     if(IntegrationSelectedCount(vm)==0) return l10n::Get(I::IntegrationNoneHint);
-    if(!vm.settings_integration_experimental && !vm.settings_integration_file_dialogs) return {};
+    if(!vm.settings_integration_experimental) return {};
     // Taking over keeps Pulse in the tray on close by itself
     // (AppPrefs::KeepsRunningInBackground); only sign-in is left to ask for.
     if(!vm.settings_launch_on_startup) return l10n::Get(I::IntegrationHintLaunch);
@@ -39,14 +39,6 @@ inline std::wstring IntegrationHint(const WindowViewModel& vm) {
 }
 inline constexpr l10n::StringId kIntegrationChips[]={l10n::StringId::IntegrationExperimentalTag,
     l10n::StringId::IntegrationFactRunning,l10n::StringId::IntegrationFactShift,l10n::StringId::IntegrationFactWin11};
-inline std::wstring IntegrationFileDialogsTitle() {
-    return l10n::HantText(l10n::Pick(L"文件选择窗口", L"File selection windows"));
-}
-inline std::wstring IntegrationFileDialogsDescription() {
-    return l10n::HantText(l10n::Pick(
-        L"使用 Pulse 打开文件、保存文件和选择文件夹（Windows 标准窗口）。不支持的软件自动保留系统原版。",
-        L"Use Pulse to open files, save files, and choose folders in standard Windows dialogs. Unsupported apps automatically keep the original system dialog."));
-}
 
 float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float scale,
                             float y, const fluent::Painter* painter) {
@@ -147,8 +139,6 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.this_pc_row=item_row(l10n::StringId::SettingsThisPcDesc,0);
     l.recycle_bin_row=item_row(l10n::StringId::SettingsRecycleBinDesc,0);
     l.win_e_row=item_row(l10n::StringId::SettingsWinEDesc,0);
-    const float file_dialogs_h=caption_height(IntegrationFileDialogsDescription(),item_text_right-item_text_left);
-    l.file_dialogs_row=row((std::max)(52.0f,(31*scale+file_dialogs_h+12*scale)/scale));
     {
         // Experimental caveats as compact chips that wrap with the window width.
         float x=item_text_left, chip_y=0.0f;

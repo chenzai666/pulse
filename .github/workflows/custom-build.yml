@@ -8,22 +8,14 @@ on:
       validation_scope:
         description: '验证范围：完整集成、属性界面或标签／回收站／原生预览／搜索修复'
         type: choice
-        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, search, installer, status-center, picker, picker-plugin]
+        options: [full, properties, native-fixes, tab-drag, tab-drag-diagnostics, file-ui, search, installer, status-center, picker]
         default: full
       verify_settings_regression:
         description: '先验证设置页相邻场景在旧实现失败，再验证修复版本'
         type: boolean
         default: false
-      native_handoff:
-        description: '验证文件窗口提前隐藏及一次保存提交'
-        type: boolean
-        default: false
       explorer_reveal:
         description: '验证微信等软件显示文件位置时的接管保护'
-        type: boolean
-        default: false
-      reuse_native_verification:
-        description: '原生源码未变时校验复用已通过证据，构建正式程序'
         type: boolean
         default: false
       home_widgets_only:
@@ -36,10 +28,6 @@ on:
         default: false
       home_path_display_only:
         description: 'file-ui 范围中仅验证主页最近访问路径显示'
-        type: boolean
-        default: false
-      native_dialogs_only:
-        description: 'file-ui 范围中仅验证第三方文件选择窗口、保存模式和关闭接管恢复'
         type: boolean
         default: false
       source_run_id:
@@ -136,7 +124,7 @@ jobs:
           if ('${{ inputs.validation_scope }}' -eq 'tab-drag-diagnostics') {
             ./scripts/build_tab_drag_ci.ps1 -DiagnosticsOnly
           } elseif ('${{ inputs.validation_scope }}' -eq 'file-ui') {
-            ./scripts/build_tab_drag_ci.ps1 -FileUi -HomeWidgetsOnly:('${{ inputs.home_widgets_only }}' -eq 'true') -HomeMenuOnly:('${{ inputs.home_menu_only }}' -eq 'true') -HomePathDisplayOnly:('${{ inputs.home_path_display_only }}' -eq 'true') -NativeDialogsOnly:('${{ inputs.native_dialogs_only }}' -eq 'true')
+            ./scripts/build_tab_drag_ci.ps1 -FileUi -HomeWidgetsOnly:('${{ inputs.home_widgets_only }}' -eq 'true') -HomeMenuOnly:('${{ inputs.home_menu_only }}' -eq 'true') -HomePathDisplayOnly:('${{ inputs.home_path_display_only }}' -eq 'true')
           } else {
             ./scripts/build_tab_drag_ci.ps1 -VerifySettingsRegression:('${{ inputs.verify_settings_regression }}' -eq 'true')
           }
@@ -184,16 +172,9 @@ jobs:
             build-custom/native-image-ui.png
             bench_data/listary-search-entry/*.log
           if-no-files-found: ignore
-  picker-plugin:
-    if: inputs.validation_scope == 'picker-plugin'
-    uses: ./.github/workflows/picker-plugin.yml
   picker:
     if: inputs.validation_scope == 'picker'
     uses: ./.github/workflows/picker.yml
-    with:
-      native_handoff: ${{ inputs.native_handoff == true }}
-      reuse_native_verification: ${{ inputs.reuse_native_verification == true }}
-      explorer_reveal: ${{ inputs.explorer_reveal == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'
     uses: ./.github/workflows/status-center.yml

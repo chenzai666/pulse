@@ -12,8 +12,6 @@ bool RunRecyclePlaceMenuTest();
 int RunHomeWidgetsTest(const wchar_t* output);
 int RunHomeMenuTest(const wchar_t* output);
 int RunHomePathDisplayTest(const wchar_t* output);
-int RunNativeDialogWireTest(const wchar_t* output);
-int RunNativeDialogTakeoverTest(const wchar_t* output);
 #include "scroll_hover_taskbar_test.h"
 #include "change_tracking_ui_test.h"
 #include "change_tracking_app_test.h"
@@ -7311,18 +7309,6 @@ int RunSelfTest1B2() {
     g_skip_visual = GetEnvironmentVariableW(L"PULSE_SELFTEST_NO_SCREENSHOTS", skip_visual, ARRAYSIZE(skip_visual)) > 0;
     if (g_skip_visual) LogLine(L"[SKIP] Screenshot capture disabled\n");
     wchar_t test_case[64]{};
-    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
-        wcscmp(test_case, L"native-dialog-takeover") == 0) {
-        const int result = ::RunNativeDialogTakeoverTest(L"bench_data/native-dialogs-takeover.log");
-        if (g_log) { fclose(g_log); g_log = nullptr; }
-        return result;
-    }
-    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
-        wcscmp(test_case, L"native-dialog-wire") == 0) {
-        const int result = ::RunNativeDialogWireTest(L"bench_data/native-dialogs-wire.log");
-        if (g_log) { fclose(g_log); g_log = nullptr; }
-        return result;
-    }
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"home-path-display") == 0) {
         const int result = ::RunHomePathDisplayTest(L"bench_data/home-widgets-path-display.log");

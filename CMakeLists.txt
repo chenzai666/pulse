@@ -381,9 +381,6 @@ target_link_libraries(pulse_file_picker_model_test PRIVATE shell32 ole32 uuid pu
 # The loader enumerates with the main window's fs::EnumerateDirectory.
 target_link_libraries(pulse_file_picker_model_test PRIVATE pulse_fs_watch)
 
-add_executable(pulse_native_dialog_fixture src/bench/native_dialog_fixture.cpp)
-add_executable(pulse_native_folder_follow_test src/bench/native_folder_follow_test.cpp)
-target_link_libraries(pulse_native_folder_follow_test PRIVATE user32)
 add_executable(pulse_explorer_takeover_guard_test
     src/bench/explorer_takeover_guard_test.cpp src/app/shell_window_plan.cpp)
 target_link_libraries(pulse_explorer_takeover_guard_test PRIVATE user32)
@@ -391,11 +388,6 @@ add_executable(pulse_explorer_takeover_connection_test
     src/bench/explorer_takeover_connection_test.cpp src/app/shell_window_plan.cpp)
 target_link_libraries(pulse_explorer_takeover_connection_test PRIVATE
     user32 shell32 shlwapi ole32 oleaut32 uuid)
-target_link_libraries(pulse_native_dialog_fixture PRIVATE shell32 ole32 uuid shcore user32)
-add_executable(pulse_native_file_dialog_adapter_test
-    src/bench/native_file_dialog_adapter_test.cpp src/app/native_file_dialog_adapter.cpp)
-target_link_libraries(pulse_native_file_dialog_adapter_test PRIVATE
-    user32 advapi32 ole32 oleaut32 uuid uiautomationcore shell32 comdlg32)
 
 add_executable(pulse_dialogs_test
     src/bench/dialogs_test.cpp

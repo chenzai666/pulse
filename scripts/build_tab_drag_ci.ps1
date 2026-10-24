@@ -1,10 +1,9 @@
 #requires -Version 7.2
-param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi, [switch]$HomeWidgetsOnly, [switch]$HomeMenuOnly, [switch]$HomePathDisplayOnly, [switch]$NativeDialogsOnly)
+param([switch]$DiagnosticsOnly, [switch]$VerifySettingsRegression, [switch]$FileUi, [switch]$HomeWidgetsOnly, [switch]$HomeMenuOnly, [switch]$HomePathDisplayOnly)
 $ErrorActionPreference = 'Stop'
 if ($HomeWidgetsOnly -and -not $FileUi) { throw '主页设置定向验证需要 FileUi 构建范围' }
 if ($HomeMenuOnly -and -not $FileUi) { throw '最近访问菜单定向验证需要 FileUi 构建范围' }
 if ($HomePathDisplayOnly -and -not $FileUi) { throw '主页路径显示定向验证需要 FileUi 构建范围' }
-if ($NativeDialogsOnly -and -not $FileUi) { throw '第三方文件选择窗口验证需要 FileUi 构建范围' }
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $taskRepo = Split-Path -Parent $PSScriptRoot
@@ -20,29 +19,6 @@ $allowed = @('.github/workflows/custom-build.yml', 'scripts/build_tab_drag_ci.ps
     'src/app/tab_transfer_test.cpp', 'src/app/selftest_1b2.cpp',
     'src/app/app_input.cpp', 'src/app/app_main.cpp', 'src/app/tab_detach.cpp', 'src/app/tab_detach.h')
 if ($FileUi) {
-    if ($NativeDialogsOnly) {
-        $allowed += @('CMakeLists.txt', 'integrations/NativeDialogs/README.md',
-            'src/app/about_info.h', 'docs/custom-edition.md', 'scripts/check_release_payload.ps1',
-            'src/common/settings_pages.h', 'src/ui/ui_settings_view.cpp',
-            'src/app/address_search.cpp', 'src/app/duplicate_scan_ui.cpp',
-            'src/app/global_search_controller.cpp', 'src/app/global_search_controller.h', 'src/app/global_search_window.cpp',
-            'src/app/search_options.cpp', 'src/app/search_routing_test.cpp',
-            'installer/PulseCustomSetup.iss', 'integrations/Installer/README.md',
-            'scripts/build_custom_installer_ci.ps1', 'scripts/package_custom_installer.ps1', 'scripts/test_custom_installer.ps1',
-            'scripts/publish_custom_release.ps1',
-            'src/app/native_file_dialog_adapter.h', 'src/app/native_file_dialog_adapter.cpp',
-            'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover.cpp',
-            'src/app/native_dialog_wire.h', 'src/app/native_dialog_wire_test.cpp',
-            'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_takeover_test.cpp',
-            'src/app/app_core.h', 'src/app/shell_window_sync.cpp',
-            'src/app/settings_controller.h', 'src/app/settings_controller.cpp', 'src/app/settings_flow_test.cpp',
-            'src/bench/file_picker_dialog_test.cpp', 'src/bench/file_picker_model_test.cpp',
-            'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp',
-            'src/ui/folder_picker_dialog.h', 'src/ui/folder_picker_dialog.cpp',
-            'src/ui/folder_picker_model.h', 'src/ui/folder_picker_model.cpp',
-            'src/ui/folder_picker_loader.h', 'src/ui/folder_picker_loader.cpp',
-            'src/ui/folder_picker_view.h', 'src/ui/folder_picker_view.cpp')
-    }
     # 这些模块只链接进主程序；辅助进程和转换/预览组件仍复用校验后的完整包。
     $allowed += @('src/app/app_hover.cpp', 'src/app/app_model.cpp', 'src/app/app_model.h',
         'src/app/app_commands.cpp', 'src/app/context_menu.cpp', 'src/app/context_menu.h',
@@ -114,7 +90,6 @@ $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $selftestMode = if ($DiagnosticsOnly) { 'OFF' } else { 'ON' }
 $buildBatch = Join-Path $taskBuild 'compile-native-fixes.bat'
-$nativeTargets = if ($NativeDialogsOnly) { 'pulse pulse_file_picker_model_test pulse_native_dialog_fixture pulse_native_file_dialog_adapter_test' } else { 'pulse' }
 @"
 @echo off
 call "$vcvars"
@@ -122,7 +97,7 @@ if errorlevel 1 exit /b 1
 chcp 65001 >nul
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target $nativeTargets
+cmake --build "$taskBuild" --parallel 4 --target pulse
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 if ($VerifySettingsRegression) {
@@ -159,30 +134,12 @@ if ($VerifySettingsRegression) {
         Remove-Item Env:PULSE_SELFTEST_CASE -ErrorAction SilentlyContinue
     }
 }
-if ($NativeDialogsOnly -and -not $DiagnosticsOnly) {
-    # 先验证独立适配器；失败时无需等待整个主程序编译，测试内容不变。
-    $adapterBatch = Join-Path $taskBuild 'compile-native-adapter-first.bat'
-    $adapterBuild = [IO.File]::ReadAllText($buildBatch).Replace(
-        "--target $nativeTargets", '--target pulse_native_file_dialog_adapter_test')
-    [IO.File]::WriteAllText($adapterBatch, $adapterBuild, [Text.UTF8Encoding]::new($false))
-    & $adapterBatch
-    if ($LASTEXITCODE) { throw '原生窗口适配器定向构建失败' }
-    New-Item -ItemType Directory -Path 'bench_data' -Force | Out-Null
-    $adapter = Start-Process -FilePath (Join-Path $taskBuild 'pulse_native_file_dialog_adapter_test.exe') -ArgumentList '--interaction' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'bench_data/native-dialogs-adapter.log' -RedirectStandardError 'bench_data/native-dialogs-adapter-errors.log'
-    if (-not $adapter.WaitForExit(180000)) {
-        $adapter.Kill(); $adapter.WaitForExit()
-        throw '原生窗口适配器验证超时，停止主程序构建'
-    }
-    $adapter.Refresh()
-    if ($adapter.ExitCode) { throw '原生窗口适配器验证失败，停止主程序构建' }
-}
 & $buildBatch
 if ($LASTEXITCODE) { throw '原生修复定向构建失败' }
 if (-not $DiagnosticsOnly) {
 $testFailures = [System.Collections.Generic.List[string]]::new()
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
-$testCases = if ($NativeDialogsOnly) { @('native-dialog-wire', 'native-dialog-takeover', 'search-routing', 'listary-search-entry', 'filter-controls', 'home-menu') }
-    elseif ($HomePathDisplayOnly) { @('home-path-display') }
+$testCases = if ($HomePathDisplayOnly) { @('home-path-display') }
     elseif ($HomeMenuOnly) { @('home-menu') }
     elseif ($HomeWidgetsOnly) { @('home-widgets') }
     elseif ($FileUi) { @('list-checkbox', 'recycle-place-menu', 'home-widgets') }
@@ -190,37 +147,12 @@ $testCases = if ($NativeDialogsOnly) { @('native-dialog-wire', 'native-dialog-ta
 foreach ($testCase in $testCases) {
     $env:PULSE_SELFTEST_CASE = $testCase
     $process = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--selftest' -WindowStyle Hidden -PassThru
-    $testTimeout = if ($testCase -eq 'native-dialog-takeover') { 300000 } else { 60000 }
-    if (-not $process.WaitForExit($testTimeout)) { $process.Kill(); $process.WaitForExit(); $testFailures.Add("timeout: $testCase") }
+    if (-not $process.WaitForExit(60000)) { $process.Kill(); $process.WaitForExit(); $testFailures.Add("timeout: $testCase") }
     Copy-Item -LiteralPath 'bench_data/selftest_1b2_last.log' -Destination (Join-Path $taskBuild "selftest-$testCase.log") -ErrorAction SilentlyContinue
     $process.Refresh()
     if ($process.ExitCode) { $testFailures.Add($testCase) }
 }
 Remove-Item Env:PULSE_SELFTEST_CASE
-if ($NativeDialogsOnly) {
-    & (Join-Path $taskBuild 'pulse_file_picker_model_test.exe') --save 2>&1 | Tee-Object -FilePath 'bench_data/native-dialogs-save-model.log'
-    if ($LASTEXITCODE) { $testFailures.Add('save-picker-model') }
-    $save = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test --save' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'bench_data/native-dialogs-save-picker.log' -RedirectStandardError 'bench_data/native-dialogs-save-picker-errors.log'
-    if (-not $save.WaitForExit(60000)) { $save.Kill(); $save.WaitForExit(); $testFailures.Add('timeout: save-picker-dialog') }
-    $save.Refresh()
-    if ($save.ExitCode) { $testFailures.Add('save-picker-dialog') }
-    foreach ($settingsCase in @('integration', 'navigation')) {
-        $settingsOutput = Join-Path $taskRepo ('bench_data/native-dialogs-settings-' + $settingsCase)
-        New-Item -ItemType Directory -Path $settingsOutput -Force | Out-Null
-        $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $settingsOutput 'results.log'
-        $env:PULSE_TEST_SETTINGS_INTEGRATION = if ($settingsCase -eq 'integration') { '1' } else { $null }
-        $env:PULSE_TEST_SETTINGS_NAVIGATION = if ($settingsCase -eq 'navigation') { '1' } else { $null }
-        $env:PULSE_TEST_DATA_DIR = Join-Path $taskRepo ('bench_data/native-dialogs-settings-data-' + $settingsCase)
-        try {
-            $settings = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--test-instance' -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $settingsOutput 'stdout.log') -RedirectStandardError (Join-Path $settingsOutput 'stderr.log')
-            if (-not $settings.WaitForExit(60000)) { $settings.Kill(); $settings.WaitForExit(); $testFailures.Add("timeout: native-dialogs-settings-$settingsCase") }
-            $settings.Refresh()
-            if ($settings.ExitCode) { $testFailures.Add("native-dialogs-settings-$settingsCase") }
-        } finally {
-            Remove-Item Env:PULSE_TEST_SETTINGS_FLOW,Env:PULSE_TEST_SETTINGS_INTEGRATION,Env:PULSE_TEST_SETTINGS_NAVIGATION,Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
-        }
-    }
-}
 if ($testFailures.Count) { throw ('定向验证未通过，停止打包：' + ($testFailures -join ', ')) }
 # 测试入口移除后再生成用户使用的主程序。
 $productionBatch = Join-Path $taskBuild 'compile-native-production.bat'

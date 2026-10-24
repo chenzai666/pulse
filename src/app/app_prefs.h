@@ -29,7 +29,6 @@ struct AppPrefs {
     // New installs take the Recycle Bin over with the rest; preferences saved
     // before it existed keep it unselected (no false "changed" warning).
     bool integration_recycle_bin = true;
-    bool integration_file_dialogs = false;
     bool integration_configured = false; // runtime: new-format preferences were loaded
     bool integration_residual = false; // runtime: some association still belongs to Pulse
     bool integration_incomplete = false;
@@ -157,7 +156,7 @@ struct AppPrefs {
     // program (explorer /select) never goes through a folder association.
     bool KeepsRunningInBackground() const {
         return keep_running_on_close || global_search_enabled ||
-               (integration_enabled && (take_over_explorer_windows || integration_file_dialogs));
+               (integration_enabled && take_over_explorer_windows);
     }
 };
 

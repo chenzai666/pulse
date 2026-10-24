@@ -1,6 +1,0 @@
-<Project>
-  <PropertyGroup>
-    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../out/listary-plugin/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
-    <BaseOutputPath>$(MSBuildThisFileDirectory)../../out/listary-plugin/bin/$(MSBuildProjectName)/</BaseOutputPath>
-  </PropertyGroup>
-</Project>

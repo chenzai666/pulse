@@ -259,7 +259,6 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             item(lay.this_pc_row,l10n::Get(I::SettingsThisPc),l10n::Get(I::SettingsThisPcDesc),L"\xE7F4",vm.settings_integration_this_pc,3);
             item(lay.recycle_bin_row,l10n::Get(I::SettingsRecycleBin),l10n::Get(I::SettingsRecycleBinDesc),L"\xE74D",vm.settings_integration_recycle_bin,7);
             item(lay.win_e_row,l10n::Get(I::SettingsWinE),l10n::Get(I::SettingsWinEDesc),L"\xE765",vm.settings_integration_win_e,2);
-            item(lay.file_dialogs_row,IntegrationFileDialogsTitle(),IntegrationFileDialogsDescription(),L"\xE8A5",vm.settings_integration_file_dialogs,8);
             item(lay.explorer_windows_row,l10n::Get(I::IntegrationExperimental),l10n::Get(I::IntegrationExperimentalDesc),L"\xE8A7",vm.settings_integration_experimental,4);
             for(int i=0;i<4;++i) {
                 fluent::BadgeSpec chip{};

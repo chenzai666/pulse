@@ -58,7 +58,6 @@ void AppPrefs::ResetToDefaults() {
     take_over_recycle_bin = false;
     integration_enabled = false;
     integration_folders = integration_win_e = integration_this_pc = integration_recycle_bin = true;
-    integration_file_dialogs = false;
     integration_configured = false;
     integration_residual = false;
     integration_incomplete = false;
@@ -146,8 +145,6 @@ std::wstring AppPrefs::ToJson() const {
     out += integration_this_pc ? L"true" : L"false";
     out += L",\n  \"integration_recycle_bin\":";
     out += integration_recycle_bin ? L"true" : L"false";
-    out += L",\n  \"integration_file_dialogs\":";
-    out += integration_file_dialogs ? L"true" : L"false";
     out += L",\n  \"take_over_explorer_windows\":";
     out += take_over_explorer_windows ? L"true" : L"false";
     out += L",\n  \"shell_tag_menu\":";
@@ -314,7 +311,6 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     integration_win_e = pulse::json::ExtractBool(json, L"integration_win_e", true);
     integration_this_pc = pulse::json::ExtractBool(json, L"integration_this_pc", true);
     integration_recycle_bin = pulse::json::ExtractBool(json, L"integration_recycle_bin", !integration_configured);
-    integration_file_dialogs = pulse::json::ExtractBool(json, L"integration_file_dialogs", false);
     shell_tag_menu = pulse::json::ExtractBool(json, L"shell_tag_menu", false);
     verify_copies = pulse::json::ExtractBool(json, L"verify_copies", false);
     show_status_performance = pulse::json::ExtractBool(json, L"show_status_performance", false);

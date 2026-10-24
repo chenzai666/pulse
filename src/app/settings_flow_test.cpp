@@ -421,8 +421,6 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
     {
         app::AppPrefs prefs;
         prefs.persist = false;
-        check(!prefs.integration_file_dialogs, "file dialogs default to opt-in");
-        prefs.integration_file_dialogs = true;
         prefs.integration_enabled = true;
         prefs.integration_folders = false;
         prefs.integration_win_e = false;
@@ -430,21 +428,20 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
         prefs.integration_recycle_bin = false;
         prefs.take_over_explorer_windows = true;
         app::AppPrefs loaded;
-        check(loaded.FromJson(prefs.ToJson()) && loaded.integration_file_dialogs &&
+        check(loaded.FromJson(prefs.ToJson()) &&
             loaded.integration_enabled && !loaded.integration_folders && !loaded.integration_win_e &&
             !loaded.integration_this_pc && !loaded.integration_recycle_bin && loaded.take_over_explorer_windows,
-            "copied preferences round-trip file dialogs and retain existing selections");
-        check(loaded.FromJson(L"{\"integration_enabled\":true,\"integration_folders\":true}") &&
-            !loaded.integration_file_dialogs && loaded.integration_enabled && loaded.integration_folders,
-            "older integration preferences leave file dialogs disabled");
-        loaded.integration_file_dialogs = true;
-        check(loaded.FromJson(L"{\"open_folders_in_pulse\":true}") && !loaded.integration_file_dialogs,
-            "legacy preferences never silently enable file dialogs");
-        loaded.integration_file_dialogs = true;
+            "copied preferences retain Explorer integration selections");
+        check(loaded.FromJson(L"{\"integration_enabled\":true,\"integration_folders\":false,"
+            L"\"integration_win_e\":false,\"integration_this_pc\":false,\"integration_recycle_bin\":false,"
+            L"\"integration_file_dialogs\":true}") && loaded.integration_enabled &&
+            !loaded.integration_folders && !loaded.KeepsRunningInBackground() &&
+            loaded.ToJson().find(L"\"integration_file_dialogs\"") == std::wstring::npos,
+            "removed file dialog preference is ignored and omitted when saved");
         loaded.ResetToDefaults();
-        check(!loaded.integration_file_dialogs && !loaded.integration_enabled && loaded.integration_folders &&
+        check(!loaded.integration_enabled && loaded.integration_folders &&
             loaded.integration_win_e && loaded.integration_this_pc && loaded.integration_recycle_bin,
-            "reset clears file dialogs and preserves original integration defaults");
+            "reset preserves original integration defaults");
         prefs.integration_enabled = false;
         prefs.take_over_explorer_windows = false;
         app::SettingsController controller;
@@ -455,29 +452,28 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
         callbacks.apply_effects = [&](app::SettingsEffect value) { effect = value; };
         callbacks.integration_changed = [&] { ++changed; };
         controller.BindUi(prefs, context, s.index, s.networkIndex, std::move(callbacks));
-        controller.IntegrationAction(8);
-        check(!prefs.integration_file_dialogs && !prefs.integration_enabled && changed == 1 &&
-            app::HasEffect(effect, app::SettingsEffect::FileDialogs) &&
+        controller.IntegrationAction(4);
+        check(prefs.take_over_explorer_windows && !prefs.integration_enabled && changed == 1 &&
             app::HasEffect(effect, app::SettingsEffect::TrayVisibility),
-            "file dialog action 8 cancels independently and requests runtime synchronization");
-        controller.IntegrationAction(8);
-        check(prefs.integration_file_dialogs && !prefs.KeepsRunningInBackground() && changed == 2,
-            "master off saves the selected file dialog option without keeping Pulse running");
+            "Explorer takeover selection preserves tray synchronization while the master is off");
+        check(!prefs.KeepsRunningInBackground(),
+            "master off saves Explorer takeover without keeping Pulse running");
         controller.IntegrationAction(0);
-        check(prefs.integration_enabled && prefs.integration_file_dialogs && prefs.KeepsRunningInBackground() &&
-            controller.IntegrationState() == 1 && changed == 3,
-            "master on activates a file-dialog-only selection and background lifetime");
+        check(prefs.integration_enabled && prefs.take_over_explorer_windows && prefs.KeepsRunningInBackground() &&
+            controller.IntegrationState() == 1 && changed == 2,
+            "master on activates Explorer-only takeover and background lifetime");
         controller.IntegrationAction(0);
-        check(!prefs.integration_enabled && prefs.integration_file_dialogs && !prefs.KeepsRunningInBackground() &&
-            app::HasEffect(effect, app::SettingsEffect::FileDialogs) && changed == 4,
-            "master off requests watcher shutdown while retaining the selected option");
+        check(!prefs.integration_enabled && prefs.take_over_explorer_windows && !prefs.KeepsRunningInBackground() &&
+            app::HasEffect(effect, app::SettingsEffect::TrayVisibility) && changed == 3,
+            "master off retains Explorer takeover selection and ends its background lifetime");
         controller.IntegrationAction(0);
         controller.IntegrationAction(6);
-        check(!prefs.integration_enabled && prefs.integration_file_dialogs && !prefs.KeepsRunningInBackground() &&
-            app::HasEffect(effect, app::SettingsEffect::FileDialogs) && changed == 6,
-            "restore original requests watcher shutdown and retains the optional selection");
+        check(!prefs.integration_enabled && prefs.take_over_explorer_windows && !prefs.KeepsRunningInBackground() &&
+            app::HasEffect(effect, app::SettingsEffect::TrayVisibility) && changed == 5,
+            "restore original retains the optional Explorer takeover selection");
+        controller.IntegrationAction(8);
         controller.IntegrationAction(9);
-        check(changed == 6, "unused integration action indexes have no effect");
+        check(changed == 5, "removed and unused integration action indexes have no effect");
     }
     const auto language = l10n::preference();
     const float original_scale = s.scale;
@@ -493,7 +489,6 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
     for (const auto* locale : {L"zh-CN", L"zh-TW", L"en-US"}) {
         l10n::SetLanguage(locale);
         painter.InvalidateTypography();
-        labels &= !ui::IntegrationFileDialogsTitle().empty() && !ui::IntegrationFileDialogsDescription().empty();
         for (int id = IDS_SETTINGS_INTEGRATION; id <= IDS_INTEGRATION_REAPPLY; ++id) {
             const bool found = !l10n::Get(static_cast<I>(id)).empty();
             if (!found) log << "Missing integration resource: locale=" <<
@@ -525,7 +520,6 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
                     vm.settings_integration_folders = vm.settings_integration_win_e = state != 4;
                     vm.settings_integration_this_pc = vm.settings_integration_experimental = state != 4;
                     vm.settings_integration_recycle_bin = state != 4;
-                    vm.settings_integration_file_dialogs = state != 4;
                     vm.settings_integration_can_retry = state == 2 || state == 3;
                     vm.settings_integration_can_restore = state != 0 && state != 4;
                     vm.settings_launch_on_startup = vm.settings_keep_running = false;
@@ -543,16 +537,15 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
                     };
                     const auto l = ui::MakeSettingsLayout(vm, window, scale, s.renderer.TitleBarHeight(), 28*scale, &painter);
                     const D2D1_RECT_F rows[] = {l.startup_row[2], l.win_e_row, l.this_pc_row, l.recycle_bin_row,
-                        l.file_dialogs_row, l.explorer_windows_row};
+                        l.explorer_windows_row};
                     const std::wstring descriptions[] = {l10n::Get(I::IntegrationFoldersDesc), l10n::Get(I::SettingsWinEDesc),
                         l10n::Get(I::SettingsThisPcDesc), l10n::Get(I::SettingsRecycleBinDesc),
-                        ui::IntegrationFileDialogsDescription(), l10n::Get(I::IntegrationExperimentalDesc)};
-                    const int row_actions[] = {1, 2, 3, 7, 8, 4};
+                        l10n::Get(I::IntegrationExperimentalDesc)};
+                    const int row_actions[] = {1, 2, 3, 7, 4};
                     separate &= l.integration_section.bottom <= l.integration_card.top &&
                         l.integration_card.bottom <= l.section[1].top &&
                         l.group[1].top == l.startup_row[0].top && l.default_manager_row.top == l.integration_card.top;
-                    separate &= l.file_dialogs_row.top >= l.win_e_row.bottom &&
-                        l.file_dialogs_row.bottom <= l.explorer_windows_row.top;
+                    separate &= l.explorer_windows_row.top == l.win_e_row.bottom;
                     action_hits &= is_action(l.default_manager_row, 0) && !nonempty(l.disclosure[3]);
                     // Master row: the pill never collides with the switch and the description fits.
                     const auto m = l.default_manager_row;
@@ -563,13 +556,13 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
                     pill_fits &= nonempty(badge) && inside(badge, m) && badge.right <= m.right-60*scale+0.5f &&
                         (stacked || badge.left >= l.integration_text_right) &&
                         m.top+35*scale+master_h <= (stacked ? badge.top : m.bottom-12*scale)+0.5f;
-                    for (int i = 0; i < 6; ++i) {
+                    for (int i = 0; i < 5; ++i) {
                         visible &= nonempty(rows[i]) && inside(rows[i], l.integration_card);
                         scope_hits &= is_action(rows[i], row_actions[i]);
                         const float text_left = rows[i].left+112*scale;
                         const float height = painter.MeasureWrappedCaptionHeight(descriptions[i],
                             rows[i].right-16*scale-text_left);
-                        const float limit = i == 5 ? l.integration_chip[0].top-8*scale : rows[i].bottom-12*scale;
+                        const float limit = i == 4 ? l.integration_chip[0].top-8*scale : rows[i].bottom-12*scale;
                         captions &= rows[i].top+31*scale+height <= limit+0.5f;
                     }
                     const auto& experimental = l.explorer_windows_row;
@@ -610,8 +603,8 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
     check(labels, "integration resources exist in all three languages");
     check(search, "nonempty localized integration queries find their search destinations");
     check(separate, "integration owns a titled card before startup settings");
-    check(visible, "all six choices stay visible without expanding");
-    check(scope_hits, "all six choices remain editable with the master off at every width and DPI");
+    check(visible, "all five choices stay visible without expanding");
+    check(scope_hits, "all five choices remain editable with the master off at every width and DPI");
     check(action_hits, "master hits always; retry and restore hit only for drift or failure");
     check(pill_fits, "status pill fits beside or below the master text without touching the switch");
     check(captions && chips, "wrapped descriptions and experimental chips fit narrow and high-DPI layouts");
@@ -636,7 +629,6 @@ int RunSettingsIntegrationUiTest(AppState& s, const wchar_t* output) {
             vm.settings_integration_enabled = state == 1 || state == 2 || state == 4;
             vm.settings_integration_folders = vm.settings_integration_win_e = state != 4;
             vm.settings_integration_this_pc = vm.settings_integration_recycle_bin = state != 4;
-            vm.settings_integration_file_dialogs = state != 4;
             vm.settings_integration_experimental = state == 1 || state == 3;
             vm.settings_launch_on_startup = state == 1; vm.settings_keep_running = false;
             vm.settings_integration_can_restore = state != 0 && state != 4;

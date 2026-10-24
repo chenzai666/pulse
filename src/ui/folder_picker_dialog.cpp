@@ -43,7 +43,6 @@ constexpr UINT kEndAddressMessage = WM_APP + 3;
 constexpr UINT_PTR kLoadTimer = 1;
 constexpr UINT_PTR kSearchTimer = 2;
 constexpr UINT_PTR kMotionTimer = 3;
-constexpr UINT_PTR kDirectoryPollTimer = 4;
 constexpr int kPathEditId = 101;
 constexpr int kFilenameEditId = 102;
 constexpr int kSearchEditId = 103;
@@ -389,7 +388,6 @@ public:
         else SetFocus(hwnd_);
         PresentEdits();
         if (spec_.on_ready) spec_.on_ready(hwnd_);
-        if (spec_.poll_directory) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
 
         MSG message{};
         while (!done_) {
@@ -733,7 +731,6 @@ private:
         KillTimer(hwnd_, kLoadTimer);
         KillTimer(hwnd_, kSearchTimer);
         KillTimer(hwnd_, kMotionTimer);
-        KillTimer(hwnd_, kDirectoryPollTimer);
         // Stop the loader first: after this no listing can be posted, so the
         // ones already queued are all that must be freed.
         loader_.reset();
@@ -2010,38 +2007,7 @@ private:
 
     LRESULT Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         switch (message) {
-        case WM_COPYDATA: {
-            if (!spec_.listary_integration || waiting_ || validating_ || operating_) return FALSE;
-            const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
-            if (!data || data->dwData != 0x504C5354 || !data->lpData || data->cbData < 4 ||
-                data->cbData > 65536 || data->cbData % sizeof(wchar_t) || (wparam != 1 && wparam != 2)) return FALSE;
-            const auto* text = static_cast<const wchar_t*>(data->lpData);
-            const size_t count = data->cbData / sizeof(wchar_t);
-            if (text[count - 1] != L'\0') return FALSE;
-            const std::wstring path(text, count - 1);
-            if (path.find(L'\0') != std::wstring::npos || path.find_first_of(L"\r\n\"") != std::wstring::npos ||
-                !((path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
-                  (path.starts_with(L"\\\\") && !path.starts_with(L"\\\\.\\")))) return FALSE;
-            if (wparam == 2 && mode_ != PickerMode::Save) {
-                SetFilename(path);
-                SubmitSelection();
-            } else {
-                // A Listary result in Save chooses a name; only the Save button submits it.
-                // Otherwise selecting an existing file unexpectedly opens native overwrite UI.
-                if (wparam == 2) SetFilename(path);
-                // Validate on the existing loader; Listary never blocks the UI on a share.
-                validation_navigation_only_ = true;
-                validating_ = true;
-                PickerOptions all = options_;
-                all.filters.clear();
-                loader_->Validate(++generation_, current_, {path}, PickerMode::File, all);
-                UpdateChosen();
-                Invalidate();
-            }
-            return TRUE;
-        }
         case WM_CREATE:
-            if (spec_.listary_integration) SetPropW(hwnd_, L"Pulse.Picker.Listary.v1", reinterpret_cast<HANDLE>(1));
             scale_ = static_cast<float>(pulse::compat::WindowDpi(hwnd_)) / 96.0f;
             backdrop_enabled_ = ApplyBackdrop(hwnd_, dark_);
             if (!compositor_.Init(hwnd_)) return -1;
@@ -2121,14 +2087,6 @@ private:
             if (address_editing_ && GetFocus() != path_edit_) EndAddressEdit(false);
             return 0;
         case WM_TIMER:
-            if (wparam == kDirectoryPollTimer) {
-                if (!done_ && !validating_ && !operating_ && !waiting_ && !address_editing_ &&
-                    spec_.poll_directory) {
-                    std::wstring path = spec_.poll_directory();
-                    if (!path.empty() && !SamePickerPath(path, current_)) Navigate(std::move(path), true);
-                }
-                return 0;
-            }
             if (wparam == kSearchTimer) { ApplySearchNow(); return 0; }
             if (wparam == kMotionTimer) { Invalidate(); return 0; }
             if (wparam == kLoadTimer) {
@@ -2283,7 +2241,6 @@ private:
         case WM_DESTROY:
             EndColumnResize(true);
             RemovePropW(hwnd_, L"Pulse.PickerTestColumns");
-            RemovePropW(hwnd_, L"Pulse.Picker.Listary.v1");
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);
             renderer_.SetIconNotifyWindow(nullptr);
