@@ -29,7 +29,12 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h', 'src/ui/ui_renderer_internal.h', 'src/ui/ui_hit_test.cpp',
     'src/ui/ui_settings_core.cpp', 'src/ui/settings_layout_sections.h')
 $changed = @(& git diff --name-only $baseCommit HEAD)
-if ($LASTEXITCODE) { throw '无法比较固定组件源码版本' }
+if ($LASTEXITCODE) {
+    & git fetch --no-tags --depth=1 origin $baseCommit
+    if ($LASTEXITCODE) { throw '无法读取固定组件源码版本' }
+    $changed = @(& git diff --name-only $baseCommit HEAD)
+    if ($LASTEXITCODE) { throw '无法比较固定组件源码版本' }
+}
 foreach ($file in $changed) {
     if ($file -notin $allowed -and -not $file.StartsWith('integrations/Listary.Picker/') -and
         -not $file.StartsWith('integrations/Listary.Picker.Source/')) { throw "定向构建不支持此改动：$file" }
