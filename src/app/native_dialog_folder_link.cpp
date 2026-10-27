@@ -196,11 +196,12 @@ bool BlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
     if (!automation || FAILED(automation->ElementFromHandle(toolbar, &element)) || !element) return false;
     RECT bounds{};
     CONTROLTYPEID type = 0;
-    int handle = 0, pid = 0;
+    UIA_HWND handle = 0;
+    int pid = 0;
     if (FAILED(element->get_CurrentBoundingRectangle(&bounds)) ||
         FAILED(element->get_CurrentControlType(&type)) || type != UIA_ToolBarControlTypeId ||
         FAILED(element->get_CurrentNativeWindowHandle(&handle)) ||
-        reinterpret_cast<HWND>(static_cast<INT_PTR>(handle)) != toolbar ||
+        reinterpret_cast<HWND>(handle) != toolbar ||
         FAILED(element->get_CurrentProcessId(&pid)) || pid <= 0) return false;
     DWORD native_pid = 0;
     GetWindowThreadProcessId(toolbar, &native_pid);
@@ -524,6 +525,7 @@ bool NativeDialogFolderLinkNavigateForTest(HWND dialog, const std::wstring& fold
     return shared->test_issued;
 }
 #endif
+
 
 NativeDialogFolderLink::NativeDialogFolderLink() : shared_(std::make_shared<Shared>()) {
     auto* context = new std::shared_ptr<Shared>(shared_);
