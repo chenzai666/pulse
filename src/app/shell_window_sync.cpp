@@ -52,6 +52,24 @@ void SyncExplorerTakeover(AppState& s) {
     }
 }
 
+void SyncNativeDialogs(AppState& s, bool enabled) {
+    if (!enabled) { s.core.native_dialog_takeover.reset(); return; }
+    app::NativeDialogAppearance appearance;
+    appearance.dark = s.darkMode;
+    appearance.accent = (static_cast<uint32_t>(s.accentColor.r * 255) << 16) |
+        (static_cast<uint32_t>(s.accentColor.g * 255) << 8) | static_cast<uint32_t>(s.accentColor.b * 255);
+    appearance.language = s.appPrefs.language;
+    auto& style = appearance.style;
+    style.selection_outline = s.appPrefs.list_selection_outline;
+    style.row_height_dip = static_cast<float>(app::EffectiveRowHeightDip(s.appPrefs.row_height, s.appPrefs.ui_font_scale));
+    style.show_hidden = s.appPrefs.show_hidden_files;
+    style.list_smart_date = s.appPrefs.list_smart_date; style.list_zebra_rows = s.appPrefs.list_zebra_rows;
+    style.list_size_bar = s.appPrefs.list_size_bar; style.thumbnail_badges = s.appPrefs.list_thumbnail_badges;
+    style.details_columns = s.appPrefs.details_columns;
+    if (s.core.native_dialog_takeover) s.core.native_dialog_takeover->UpdateAppearance(std::move(appearance));
+    else s.core.native_dialog_takeover = std::make_unique<app::NativeDialogTakeover>(std::move(appearance));
+}
+
 // Explorer held the foreground; the takeover request arrives while it still
 // does, so share its input state long enough to take the foreground over.
 void BringToFront(HWND hwnd) {
@@ -98,8 +116,7 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 } // namespace
 
 void SyncShellWindows(AppState& s) {
-    // Expose only the active physical folder to local folder integrations.
-    // Windows file dialogs continue to be handled by the operating system.
+    // Publish the active physical folder for both custom and native dialogs.
     const app::Tab* active = ActiveTab(s);
     std::wstring source = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
     if (!app::IsShellWindowPath(source)) source.clear();
@@ -114,8 +131,18 @@ void SyncShellWindows(AppState& s) {
     if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0)
         enable_folder_link = true;
 #endif
+    const bool custom_dialogs = !s.isolatedTest && ShellIntegrationAllowed(s, nullptr) &&
+        s.appPrefs.integration_enabled && s.appPrefs.integration_file_dialogs;
+    enable_folder_link = enable_folder_link && !custom_dialogs;
+    auto& watcher = s.core.native_dialog_folder_link;
+    if (!enable_folder_link && watcher) {
+        if (watcher->Stop()) watcher.reset();
+        else InvalidateRect(s.hwnd, nullptr, FALSE);
+    }
+    // Let the native helper finish restoring any active navigation before
+    // custom takeover starts observing those same dialogs.
+    SyncNativeDialogs(s, custom_dialogs && !watcher);
     if (enable_folder_link) {
-        auto& watcher = s.core.native_dialog_folder_link;
         if (watcher && watcher->IsStopping() && watcher->Stop()) watcher.reset();
         if (!watcher) watcher = std::make_unique<app::NativeDialogFolderLink>();
     }
@@ -157,6 +184,7 @@ void SyncShellWindows(AppState& s) {
 }
 
 void StopShellWindows(AppState& s) {
+    s.core.native_dialog_takeover.reset();
     if (s.core.native_dialog_folder_link && s.core.native_dialog_folder_link->Stop())
         s.core.native_dialog_folder_link.reset();
     if (s.explorer_takeover) s.explorer_takeover->Stop();

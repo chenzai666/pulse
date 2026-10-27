@@ -1,9 +1,13 @@
-name: 验证原版弹窗与系统集成设置
+name: 构建文件选择窗口与系统集成
 on:
   workflow_dispatch:
     inputs:
       build_only:
         description: '仅构建正式程序，界面验收由用户完成'
+        type: boolean
+        default: false
+      publish_release:
+        description: '发布最新 v1.0.53 弹窗修复安装包'
         type: boolean
         default: false
       reuse_removal_verification:
@@ -15,11 +19,14 @@ on:
       build_only:
         type: boolean
         default: false
+      publish_release:
+        type: boolean
+        default: false
       reuse_removal_verification:
         type: boolean
         default: false
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   picker:
@@ -30,11 +37,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: 移除弹窗接管并验证设置及内部选择器
+      - name: 构建文件选择窗口及内部选择器
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true')
+      - name: 制作并发布最新弹窗修复安装包
+        if: inputs.publish_release == true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PICKER_USER_VALIDATION: ${{ inputs.build_only }}
+        run: ./scripts/publish_picker_release.ps1
+      - uses: actions/upload-artifact@v4
+        if: inputs.publish_release == true && success()
+        with:
+          name: Pulse-Custom-installer
+          path: dist-installer/**
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: success()
         with:

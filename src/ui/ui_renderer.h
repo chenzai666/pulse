@@ -823,6 +823,7 @@ struct WindowViewModel {
     bool settings_integration_win_e = false;
     bool settings_integration_this_pc = false;
     bool settings_integration_recycle_bin = false;
+    bool settings_integration_file_dialogs = false;
     bool settings_integration_experimental = false;
     int settings_integration_state = 0; // 0 off, 1 on, 2 partial, 3 failed
     std::wstring settings_integration_summary;

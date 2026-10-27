@@ -2436,6 +2436,7 @@ static void RefreshEditFonts(AppState& s) {
 }
 
 void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
+    if (app::HasEffect(effects, app::SettingsEffect::FileDialogs)) SyncShellWindows(s);
     if (app::HasEffect(effects, app::SettingsEffect::FileVisibility)) {
         ForEachPane(s, [&](app::Pane& pane) {
             if (auto* tab = pane.ActiveTab()) {

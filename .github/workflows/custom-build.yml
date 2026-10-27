@@ -26,6 +26,10 @@ on:
         description: '仅构建弹窗修复正式版，界面验收由用户完成'
         type: boolean
         default: false
+      picker_publish_release:
+        description: '构建完成后发布 v1.0.53 最新弹窗修复安装包'
+        type: boolean
+        default: false
       home_widgets_only:
         description: 'file-ui 范围中仅验证主页和侧边栏设置'
         type: boolean
@@ -182,10 +186,14 @@ jobs:
           if-no-files-found: ignore
   picker:
     if: inputs.validation_scope == 'picker'
+    permissions:
+      contents: write
+      actions: read
     uses: ./.github/workflows/picker.yml
     with:
       reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
       build_only: ${{ inputs.picker_build_only == true }}
+      publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'
     uses: ./.github/workflows/status-center.yml

@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 # 仅允许主程序与撤回功能的源码变化，完整组件使用固定清单逐文件核验。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml',
     'scripts/build_picker_ci.ps1', 'scripts/build_tab_drag_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1',
-    'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'scripts/verify_dialog_removal_evidence.py', 'docs/custom-edition.md',
+    'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'scripts/verify_dialog_removal_evidence.py', 'scripts/publish_picker_release.ps1', 'docs/custom-edition.md',
     'CMakeLists.txt', 'integrations/NativeDialogs/README.md',
     'src/app/app_commands.cpp', 'src/app/app_core.h', 'src/app/app_main.cpp', 'src/app/app_runtime.cpp',
     'src/app/app_prefs.cpp', 'src/app/app_prefs.h', 'src/app/settings_controller.cpp', 'src/app/settings_controller.h',

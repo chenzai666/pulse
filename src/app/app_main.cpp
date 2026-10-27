@@ -1,5 +1,6 @@
 #include "app_diagnostics.h"
 #include <cstdlib>
+#include <cerrno>
 #include "../common/windows_compat.h"
 #include "../ui/FluentTokens.h"
 #include "quick_access.h"
@@ -2822,6 +2823,7 @@ bool SkipSingletonFromArgv() {
     for (int i = 1; i < __argc; ++i) {
         if (wcscmp(__wargv[i], L"--selftest") == 0 ||
             wcscmp(__wargv[i], L"--picker-live") == 0 ||
+            wcscmp(__wargv[i], L"--native-dialog-picker") == 0 ||
             wcscmp(__wargv[i], L"--material-selftest") == 0 ||
             wcscmp(__wargv[i], L"--seed-shell-verbs") == 0 ||
             wcscmp(__wargv[i], L"--shot") == 0 ||
@@ -2842,6 +2844,26 @@ int RunQuickPreviewAuditTest();
 #endif
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+    if (__argc > 1 && wcscmp(__wargv[1], L"--native-dialog-picker") == 0) {
+        HANDLE handles[3]{};
+        bool valid = __argc == 5;
+        for (int i = 0; valid && i < 3; ++i) {
+            const wchar_t* text = __wargv[i + 2];
+            if (!*text || wcsspn(text, L"0123456789") != wcslen(text)) { valid = false; break; }
+            wchar_t* end = nullptr;
+            errno = 0;
+            const uint64_t raw = _wcstoui64(text, &end, 10);
+            valid = errno != ERANGE && raw && end && !*end && raw <= UINTPTR_MAX;
+            handles[i] = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(raw));
+        }
+        if (!valid) return ERROR_INVALID_PARAMETER;
+        pulse::compat::EnableDpiAwareness();
+        const HRESULT initialized = OleInitialize(nullptr);
+        if (FAILED(initialized)) return static_cast<int>(initialized);
+        const int result = app::RunNativeDialogPicker(handles[0], handles[1], handles[2]);
+        OleUninitialize();
+        return result;
+    }
     if ((__argc == 7 && wcscmp(__wargv[1], L"--native-folder-link-helper") == 0) ||
         (__argc == 8 && wcscmp(__wargv[1], L"--native-folder-link-supervisor") == 0)) {
         auto handle_arg = [](const wchar_t* text) -> HANDLE {

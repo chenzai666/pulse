@@ -962,7 +962,7 @@ int SettingsController::IntegrationState() const noexcept {
         p.take_over_win_e != p.integration_win_e || p.take_over_this_pc != p.integration_this_pc ||
         p.take_over_recycle_bin != p.integration_recycle_bin)
         return 2;
-    return active || p.take_over_explorer_windows ? 1 : 0;
+    return active || p.take_over_explorer_windows || p.integration_file_dialogs ? 1 : 0;
 }
 
 std::wstring SettingsController::IntegrationSummary() const {
@@ -986,7 +986,7 @@ std::wstring SettingsController::IntegrationSummary() const {
 }
 
 void SettingsController::IntegrationAction(int index) {
-    if (!prefs_ || index < 0 || index > 7) return;
+    if (!prefs_ || index < 0 || index > 8) return;
     if (ui_.integration_changing) ui_.integration_changing();
     auto& p = *prefs_;
     p.integration_configured = true;
@@ -997,6 +997,7 @@ void SettingsController::IntegrationAction(int index) {
     else if (index == 4) p.take_over_explorer_windows = !p.take_over_explorer_windows;
     else if (index == 6) p.integration_enabled = false;
     else if (index == 7) p.integration_recycle_bin = !p.integration_recycle_bin;
+    else if (index == 8) p.integration_file_dialogs = !p.integration_file_dialogs;
     // Editing a disabled integration only changes the saved selection.
     if (p.integration_enabled || index == 0 || index == 5 || index == 6) {
         integration_error_.clear();
@@ -1027,7 +1028,7 @@ void SettingsController::IntegrationAction(int index) {
     integration_save_failed_ = !p.Save();
     if (ui_.integration_changed) ui_.integration_changed();
     // Explorer window takeover keeps Pulse in the tray on close (KeepsRunningInBackground).
-    Apply(SettingsEffect::TrayVisibility);
+    Apply(SettingsEffect::TrayVisibility | SettingsEffect::FileDialogs);
 }
 
 void SettingsController::ToggleUi(int index) {

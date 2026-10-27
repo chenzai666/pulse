@@ -1958,6 +1958,7 @@ struct SettingsLayout {
     D2D1_RECT_F performance_row{}, disclosure[4]{}, filename_status{};
     D2D1_RECT_F integration_card{}, integration_status{}, integration_summary{}, integration_hint{};
     D2D1_RECT_F integration_retry{}, integration_restore{};
+    D2D1_RECT_F file_dialogs_row{};
     D2D1_RECT_F integration_section{}, integration_badge{}, integration_bar{}, integration_list_head{};
     D2D1_RECT_F integration_chip[4]{};
     float integration_text_right = 0.0f;

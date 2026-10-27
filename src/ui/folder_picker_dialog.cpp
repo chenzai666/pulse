@@ -43,6 +43,7 @@ constexpr UINT kEndAddressMessage = WM_APP + 3;
 constexpr UINT_PTR kLoadTimer = 1;
 constexpr UINT_PTR kSearchTimer = 2;
 constexpr UINT_PTR kMotionTimer = 3;
+constexpr UINT_PTR kDirectoryPollTimer = 4;
 constexpr int kPathEditId = 101;
 constexpr int kFilenameEditId = 102;
 constexpr int kSearchEditId = 103;
@@ -234,7 +235,8 @@ std::wstring ErrorText(DWORD error, const std::wstring& path) {
     case ERROR_BAD_NETPATH:
     case ERROR_BAD_NET_NAME:
     case ERROR_DIRECTORY: {
-        std::wstring text = l10n::Get(l10n::StringId::PickerNotFound);
+        std::wstring text = PickerText(l10n::StringId::PickerNotFound,
+                                       L"找不到「{path}」", L"Can't find “{path}”");
         const size_t at = text.find(L"{path}");
         // The full path is already in the address row; the one-line message
         // names the missing folder itself.
@@ -328,13 +330,14 @@ public:
         chrome_.title = !spec.title.empty() ? spec.title
             : mode_ == PickerMode::Save ? l10n::Pick(L"保存", L"Save")
             : mode_ == PickerMode::File ? l10n::Pick(L"打开", L"Open")
-            : l10n::Get(mode_ == PickerMode::Image ? l10n::StringId::TooltipChooseBackground
-                                                   : l10n::StringId::PickerTitleFolder);
+            : mode_ == PickerMode::Image
+                ? PickerText(l10n::StringId::TooltipChooseBackground, L"选择背景图", L"Choose background image")
+                : PickerText(l10n::StringId::PickerTitleFolder, L"选择文件夹", L"Choose a folder");
         chrome_.filename_label = l10n::Pick(L"文件名(N):", L"File name:");
         chrome_.primary_text = mode_ == PickerMode::Save ? l10n::Pick(L"保存", L"Save")
-            : l10n::Get(mode_ != PickerMode::Folder
-                                             ? l10n::StringId::PickerSelect
-                                             : l10n::StringId::PickerSelectFolder);
+            : mode_ != PickerMode::Folder
+                ? PickerText(l10n::StringId::PickerSelect, L"选择", L"Select")
+                : PickerText(l10n::StringId::PickerSelectFolder, L"选择此文件夹", L"Select folder");
         chrome_.cancel_text = PickerText(l10n::StringId::Cancel, L"取消", L"Cancel");
         chrome_.hosted_edit = true;
         UpdateFilterText();
@@ -388,6 +391,7 @@ public:
         else SetFocus(hwnd_);
         PresentEdits();
         if (spec_.on_ready) spec_.on_ready(hwnd_);
+        if (spec_.poll_directory) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
 
         MSG message{};
         while (!done_) {
@@ -509,7 +513,8 @@ private:
                 return;
             }
             error_ = ErrorText(listing->error, listing->path);
-            if (error_.empty()) error_ = l10n::Get(l10n::StringId::PickerOpenFailed);
+            if (error_.empty()) error_ = PickerText(l10n::StringId::PickerOpenFailed,
+                                                   L"无法打开此位置", L"Can't open this location");
         }
         if (listing->error == ERROR_SUCCESS && !current_.empty()) {
             g_last_folder[mode_index_] = current_;
@@ -693,7 +698,8 @@ private:
             chrome_.notice = validation->error == ERROR_UNSUPPORTED_TYPE
                 ? l10n::Pick(L"所选文件不符合当前文件类型。", L"The selected file does not match the file type.")
                 : ErrorText(validation->error, validation->failed_path);
-            if (chrome_.notice.empty()) chrome_.notice = l10n::Get(l10n::StringId::PickerOpenFailed);
+            if (chrome_.notice.empty()) chrome_.notice = PickerText(l10n::StringId::PickerOpenFailed,
+                                                                   L"无法打开此位置", L"Can't open this location");
             if (waiting_ && loader_) loader_->Load(++generation_, current_, mode_, options_);
             UpdateChosen();
             Invalidate();
@@ -731,6 +737,7 @@ private:
         KillTimer(hwnd_, kLoadTimer);
         KillTimer(hwnd_, kSearchTimer);
         KillTimer(hwnd_, kMotionTimer);
+        KillTimer(hwnd_, kDirectoryPollTimer);
         // Stop the loader first: after this no listing can be posted, so the
         // ones already queued are all that must be freed.
         loader_.reset();
@@ -747,7 +754,8 @@ private:
     }
 
     std::wstring DisplayPath(const std::wstring& path) const {
-        return path.empty() ? l10n::Get(l10n::StringId::ThisPc) : path::FriendlyPathText(path);
+        return path.empty() ? PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC")
+                            : path::FriendlyPathText(path);
     }
 
     // ---- view model --------------------------------------------------------
@@ -759,7 +767,8 @@ private:
 
     SidebarItem PlaceItem(const PickerPlace& place) const {
         SidebarItem item;
-        item.label = place.label;
+        item.label = place.label.empty() ? PickerLeafName(place.path) : place.label;
+        if (item.label.empty()) item.label = PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC");
         item.path = place.path;
         item.icon_glyph = place.glyph.empty() ? L"\xE8B7" : place.glyph;
         return item;
@@ -769,14 +778,14 @@ private:
         vm_.sidebar.clear();
         SidebarGroup quick;
         quick.id = kGroupQuick;
-        quick.header = l10n::Get(l10n::StringId::PickerQuickAccess);
+        quick.header = PickerText(l10n::StringId::PickerQuickAccess, L"快速访问", L"Quick access");
         quick.collapsed = collapsed_[0];
         for (const PickerPlace& place : places_) quick.items.push_back(PlaceItem(place));
         vm_.sidebar.push_back(std::move(quick));
 
         SidebarGroup drives;
         drives.id = kGroupDrives;
-        drives.header = l10n::Get(l10n::StringId::ThisPc);
+        drives.header = PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC");
         drives.collapsed = collapsed_[1];
         drives.navigable = true;
         drives.navigation_path = L"";
@@ -860,7 +869,7 @@ private:
         chrome_.summary.clear();
         if (!chosen_.empty()) {
             // Long choices keep the drive and the chosen folder's name visible.
-            const std::wstring prefix = l10n::Get(l10n::StringId::PickerWillSelect);
+            const std::wstring prefix = PickerText(l10n::StringId::PickerWillSelect, L"将选择：", L"Will select: ");
             const auto measure = [&](std::wstring_view s) {
                 return typography::MeasureLine(&compositor_, compositor_.TextFormat(), s);
             };
@@ -871,7 +880,7 @@ private:
         } else if (mode_ == PickerMode::Folder && current_.empty() && !waiting_) {
             chrome_.summary = l10n::Pick(L"请选择一个文件夹或磁盘。", L"Choose a folder or a drive.");
         } else if (mode_ == PickerMode::Image) {
-            chrome_.summary = l10n::Get(l10n::StringId::PickerPickImageHint);
+            chrome_.summary = PickerText(l10n::StringId::PickerPickImageHint, L"请选择一张图片", L"Select a picture");
         }
     }
 
@@ -1004,7 +1013,7 @@ private:
     void SubmitPath() {
         const auto text = ReadEdit(path_edit_);
         EndAddressEdit(true);
-        if (text == l10n::Get(l10n::StringId::ThisPc) || text.empty()) {
+        if (text == PickerText(l10n::StringId::ThisPc, L"此电脑", L"This PC") || text.empty()) {
             Navigate(L"", true);
             return;
         }
@@ -2087,6 +2096,14 @@ private:
             if (address_editing_ && GetFocus() != path_edit_) EndAddressEdit(false);
             return 0;
         case WM_TIMER:
+            if (wparam == kDirectoryPollTimer) {
+                if (!done_ && !validating_ && !operating_ && !waiting_ && !address_editing_ &&
+                    spec_.poll_directory) {
+                    std::wstring path = spec_.poll_directory();
+                    if (!path.empty() && !SamePickerPath(path, current_)) Navigate(std::move(path), true);
+                }
+                return 0;
+            }
             if (wparam == kSearchTimer) { ApplySearchNow(); return 0; }
             if (wparam == kMotionTimer) { Invalidate(); return 0; }
             if (wparam == kLoadTimer) {
