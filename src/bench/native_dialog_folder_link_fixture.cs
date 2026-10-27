@@ -194,17 +194,18 @@ static class Probe {
       Thread.Sleep(50);
     }
     bool recovered=ok&&RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"start")+"\" recover");
-    bool recoveryPreserved=false; string[] targetState=targetSnapshot.Split('\n'); DateTime recoveryUntil=DateTime.UtcNow.AddSeconds(2);
+    bool recoveryPreserved=true, recoveryObserved=false; string[] targetState=targetSnapshot.Split('\n'); DateTime recoveryUntil=DateTime.UtcNow.AddMilliseconds(750);
     while(DateTime.UtcNow<recoveryUntil) {
      string[] afterRecovery=Read(status).Split('\n');
      if(afterRecovery.Length>=5&&!String.IsNullOrEmpty(afterRecovery[4])) {
-      recoveryPreserved=String.Equals(afterRecovery[0],target,StringComparison.OrdinalIgnoreCase)&&
+      recoveryObserved=true;
+      recoveryPreserved &= String.Equals(afterRecovery[0],target,StringComparison.OrdinalIgnoreCase)&&
        (mode=="folder"||afterRecovery[1]==previous[1])&&afterRecovery[2]==previous[2]&&afterRecovery[3]=="0"&&
        targetState.Length>=5&&afterRecovery[4]==targetState[4];
-      break;
      }
      Thread.Sleep(50);
     }
+    recoveryPreserved &= recoveryObserved;
     ok &= recovered&&recoveryPreserved;
     bool unwritten=!File.Exists(Path.Combine(root,"start","verification-only.txt")) &&
       !File.Exists(Path.Combine(target,"verification-only.txt"));
@@ -213,7 +214,14 @@ static class Probe {
    }
    Console.WriteLine("final="+Read(status).Replace(root,"<root>").Replace("\n","|")); if(IsWindow(dialog))PostMessage(dialog,0x111,(IntPtr)2,IntPtr.Zero);
   }
-  if(!proc.WaitForExit(5000)){proc.Kill();proc.WaitForExit(3000);} Console.WriteLine("child_exit="+proc.ExitCode+" dialog_found="+(dialog!=IntPtr.Zero)+" child_out="+proc.StandardOutput.ReadToEnd()+" child_err="+proc.StandardError.ReadToEnd()); proc.Dispose();
+  bool normalExit=proc.WaitForExit(5000); if(!normalExit){proc.Kill();proc.WaitForExit(3000);}
+  string finalState=Read(Path.Combine(root,"status-"+mode+".txt")); string[] finalLines=finalState.Split('\n');
+  bool noAccept=finalLines.Length>=5 && finalLines[3]=="0";
+  string staleDriver=Path.Combine(Path.GetDirectoryName(exe),"native-dialog-folder-link-driver.exe");
+  bool stale=normalExit&&dialog!=IntPtr.Zero&&RunDriver(staleDriver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"target")+"\" stale");
+  ok &= normalExit&&noAccept&&stale;
+  Console.WriteLine("post_recovery_on_file_ok_zero="+noAccept+" destroyed_dialog_rejected="+stale);
+  Console.WriteLine("child_exit="+proc.ExitCode+" dialog_found="+(dialog!=IntPtr.Zero)+" child_out="+proc.StandardOutput.ReadToEnd()+" child_err="+proc.StandardError.ReadToEnd()); proc.Dispose();
   Console.WriteLine(mode+": "+(ok?"PASS":"FAIL or unsupported address navigation"));return ok;
  }
  [STAThread] static int Main(string[] args){

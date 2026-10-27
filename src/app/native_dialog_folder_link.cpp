@@ -54,6 +54,15 @@ namespace {
 constexpr DWORD kMessageTimeoutMs = 200;
 constexpr int kAddressId = 41477;
 constexpr int kToolbarId = 1001;
+// The SDK hides PROC_THREAD_ATTRIBUTE_JOB_LIST when _WIN32_WINNT is below
+// Windows 10. Its documented value is attribute 13 with the input flag; use
+// the same encoding so CreateProcess assigns the job atomically. On older
+// Windows UpdateProcThreadAttribute fails and the helper remains disabled.
+#ifdef PROC_THREAD_ATTRIBUTE_JOB_LIST
+constexpr DWORD_PTR kJobListAttribute = PROC_THREAD_ATTRIBUTE_JOB_LIST;
+#else
+constexpr DWORD_PTR kJobListAttribute = ProcThreadAttributeValue(13, FALSE, TRUE, FALSE);
+#endif
 
 // Fixed event names and numeric OS status only: never emit user paths or file
 // names. DebugView/ETW consumers can observe early child startup failures.
@@ -1047,7 +1056,7 @@ NativeDialogFolderLink::NativeDialogFolderLink() {
     HANDLE inherited[] = {parent, stop_event_, heartbeat_mapping_, ready_event_};
     const bool configured = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                                        inherited, sizeof(inherited), nullptr, nullptr) &&
-        UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_, sizeof(job_), nullptr, nullptr);
+        UpdateProcThreadAttribute(attributes, 0, kJobListAttribute, &job_, sizeof(job_), nullptr, nullptr);
     PROCESS_INFORMATION process{};
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);

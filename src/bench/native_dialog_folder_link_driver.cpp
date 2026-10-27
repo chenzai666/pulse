@@ -83,18 +83,28 @@ bool RunRecovery(HWND dialog, DWORD thread, HDESK desktop, const std::wstring& t
         GetGUIThreadInfo(thread, &info) && info.hwndFocus == controls.address;
     std::wstring original, actual;
     if (ok) ok = Read(controls.address, original) && !original.empty();
-    for (LONG stage : {3L, 4L, 5L}) {
+    for (LONG stage : {3L, 4L, 5L, 6L}) {
         if (!ok) break;
         if (!Send(controls.address, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(target.c_str()), result) || !result) { ok = false; break; }
         const bool invoked = pulse::app::NativeDialogFolderLinkRecoverForTest(dialog, controls.band, controls.toolbar,
             controls.address, stage, original, target, desktop);
         const bool read = Read(controls.address, actual);
-        const bool restored = read && actual == (stage == 5 ? target : original);
+        const bool restored = read && actual == (stage >= 5 ? target : original);
         std::printf("recovery_stage=%ld invoked=%d read=%d expected_text=%d\n", stage, invoked ? 1 : 0, read ? 1 : 0, restored ? 1 : 0);
         ok = invoked && restored;
+        // A user may edit the address after the helper stops. The recovery
+        // record contains the old attempted text and must never overwrite it.
+        const std::wstring user_edit = L"fixture-user-edited-address";
+        if (ok) ok = Send(controls.address, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(user_edit.c_str()), result) && result;
+        const bool user_invoked = ok && pulse::app::NativeDialogFolderLinkRecoverForTest(dialog, controls.band, controls.toolbar,
+            controls.address, stage, original, target, desktop);
+        const bool user_preserved = user_invoked && Read(controls.address, actual) && actual == user_edit;
+        std::printf("recovery_stage=%ld user_input_preserved=%d\n", stage, user_preserved ? 1 : 0);
+        ok = ok && user_preserved;
     }
-    // Put the address text back after the stage-5 non-restoration assertion.
-    if (controls.address && Read(controls.address, actual) && actual == target)
+    // Restore only this fixture's text; never commit it.
+    if (controls.address && Read(controls.address, actual) &&
+        (actual == target || actual == L"fixture-user-edited-address"))
         Send(controls.address, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(original.c_str()), result);
     child.Reset(); walker.Reset(); element.Reset(); automation.Reset(); CoUninitialize();
     return ok;
@@ -111,16 +121,27 @@ int wmain(int argc, wchar_t** argv) {
     const HWND dialog = reinterpret_cast<HWND>(static_cast<uintptr_t>(raw));
     const auto expected_pid = wcstoul(argv[3], &end, 10);
     if (!expected_pid || !end || *end) return 2;
+    const bool stale = std::wstring_view(argv[5]) == L"stale";
     const bool recover = std::wstring_view(argv[5]) == L"recover";
     const bool twice = std::wstring_view(argv[5]) == L"twice";
     const bool expect_accept = std::wstring_view(argv[5]) == L"accept";
-    if (!recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
+    if (!stale && !recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
     if ((twice && argc != 7) || (!twice && argc != 6)) return 2;
     constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
         DESKTOP_ENUMERATE | DESKTOP_HOOKCONTROL;
     HDESK desktop = OpenDesktopW(argv[1], 0, FALSE, access);
     if (!desktop) return 3;
     if (!SetThreadDesktop(desktop)) { CloseDesktop(desktop); return 3; }
+    if (stale) {
+        // The parent closed its owned fixture and waited for its process to
+        // exit before this invocation. Refuse a recycled HWND outright.
+        const bool destroyed = !IsWindow(dialog);
+        const bool invoked = destroyed && pulse::app::NativeDialogFolderLinkRecoverForTest(
+            dialog, nullptr, nullptr, nullptr, 5, L"fixture-original", L"fixture-attempted", desktop);
+        std::printf("destroyed=%d stale_recovery_rejected=%d\n", destroyed ? 1 : 0, !invoked ? 1 : 0);
+        CloseDesktop(desktop);
+        return destroyed && !invoked ? 0 : 1;
+    }
     DWORD pid = 0;
     wchar_t name[64]{};
     const DWORD target_thread = GetWindowThreadProcessId(dialog, &pid);
