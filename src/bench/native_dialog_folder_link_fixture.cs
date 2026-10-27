@@ -49,9 +49,9 @@ using System.Runtime.InteropServices;
  [PreserveSig] int OnOverwrite(IFileDialog d, IShellItem s, out uint response);
 }
 [ComVisible(true), ClassInterface(ClassInterfaceType.None)] sealed class Events : IFileDialogEvents {
- readonly string status; readonly bool seedName; bool seeded=false; int count=0;
- public Events(string s, bool useName) { status=s; seedName=useName; }
- void Write(IFileDialog d) {
+ readonly string status; int count=0;
+ public Events(string s) { status=s; }
+ public void Write(IFileDialog d) {
   IShellItem item; string folder="", file=""; uint index=0;
   if(d.GetFolder(out item)>=0 && item!=null) { IntPtr p; if(item.GetDisplayName(0x80058000,out p)>=0 && p!=IntPtr.Zero) {folder=Marshal.PtrToStringUni(p);Marshal.FreeCoTaskMem(p);} Marshal.ReleaseComObject(item); }
   d.GetFileName(out file); d.GetFileTypeIndex(out index);
@@ -59,7 +59,7 @@ using System.Runtime.InteropServices;
  }
  public int OnFileOk(IFileDialog d) {count++;Write(d);return 1;}
  public int OnFolderChanging(IFileDialog d,IShellItem s){return 0;}
- public int OnFolderChange(IFileDialog d){if(seedName&&!seeded){seeded=true;d.SetFileName("verification-only.txt");}Write(d);return 0;}
+ public int OnFolderChange(IFileDialog d){Write(d);return 0;}
  public int OnSelectionChange(IFileDialog d){Write(d);return 0;}
  public int OnShareViolation(IFileDialog d,IShellItem s,out uint r){r=0;return 0;}
  public int OnTypeChange(IFileDialog d){Write(d);return 0;}
@@ -90,6 +90,9 @@ static class Probe {
  [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr w,uint m,IntPtr a,StringBuilder b,uint flags,uint timeout,out IntPtr result);
  [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr w,uint m,IntPtr a,IntPtr b,uint flags,uint timeout,out IntPtr result);
  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr w,uint m,IntPtr a,IntPtr b);
+ delegate void TimerProc(IntPtr window,uint message,UIntPtr id,uint time);
+ [DllImport("user32.dll",SetLastError=true)] static extern UIntPtr SetTimer(IntPtr window,UIntPtr id,uint interval,TimerProc callback);
+ [DllImport("user32.dll")] static extern bool KillTimer(IntPtr window,UIntPtr id);
  [DllImport("shell32.dll",CharSet=CharSet.Unicode,PreserveSig=true)] static extern int SHCreateItemFromParsingName(string path,IntPtr bind,ref Guid iid,[MarshalAs(UnmanagedType.Interface)] out IShellItem item);
  static string Class(IntPtr w){var b=new StringBuilder(128);GetClassName(w,b,b.Capacity);return b.ToString();}
  static string Title(IntPtr w){var b=new StringBuilder(1024);GetWindowText(w,b,b.Capacity);return b.ToString();}
@@ -112,9 +115,17 @@ static class Probe {
   else {d.SetFileTypes(2,new Filter[]{new Filter{name="Text",spec="*.txt"},new Filter{name="All",spec="*.*"}});d.SetFileTypeIndex(2);d.SetFileName("verification-only.txt");}
   Guid iid=new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");IShellItem item;
   if(SHCreateItemFromParsingName(Path.Combine(root,"start"),IntPtr.Zero,ref iid,out item)>=0){d.SetFolder(item);Marshal.ReleaseComObject(item);}
-  if(mode!="folder")d.SetFileName("verification-only.txt"); d.SetTitle(title); var events=new Events(Path.Combine(root,"status-"+mode+".txt"),mode!="folder");uint cookie;
+  if(mode!="folder")d.SetFileName("verification-only.txt"); d.SetTitle(title); var events=new Events(Path.Combine(root,"status-"+mode+".txt"));uint cookie;
   int hr=d.Advise(events,out cookie);if(hr<0)return 11;
-  d.Show(IntPtr.Zero);d.Unadvise(cookie);Marshal.ReleaseComObject(d);GC.KeepAlive(events);CloseDesktop(desktop);return 0;
+  // Thread timer runs on the same STA as Show's modal message loop. Reading
+  // only in early OnFolderChange captures initialization before the filename
+  // edit is populated. Seed once after Show starts, then sample actual COM state.
+  bool seeded=false; TimerProc timer=delegate(IntPtr w,uint msg,UIntPtr id,uint tick) {
+   try { if(!seeded){seeded=true;if(mode!="folder")Console.WriteLine("set_filename_hr="+d.SetFileName("verification-only.txt"));} events.Write(d); }
+   catch(Exception ex){Console.WriteLine("timer_error="+ex.GetType().Name+":"+ex.Message);}
+  };
+  UIntPtr timerId=SetTimer(IntPtr.Zero,UIntPtr.Zero,200,timer); if(timerId==UIntPtr.Zero){d.Unadvise(cookie);Marshal.ReleaseComObject(d);return 12;}
+  try {d.Show(IntPtr.Zero);} finally {KillTimer(IntPtr.Zero,timerId);d.Unadvise(cookie);GC.KeepAlive(timer);GC.KeepAlive(events);Marshal.ReleaseComObject(d);CloseDesktop(desktop);} return 0;
  }
  static string Read(string p){try{return File.ReadAllText(p,Encoding.UTF8);}catch(IOException){return "";}catch(UnauthorizedAccessException){return "";}}
  static bool Run(IntPtr desktop,string desktopName,string exe,string root,string mode){
@@ -132,17 +143,22 @@ static class Probe {
    string initial=""; DateTime initialDeadline=DateTime.UtcNow.AddSeconds(5);
    while(DateTime.UtcNow<initialDeadline) { initial=Read(status); string[] ready=initial.Split('\n'); if(ready.Length>=4&&String.Equals(ready[0],Path.Combine(root,"start"),StringComparison.OrdinalIgnoreCase)&&(mode=="folder"||ready[1]=="verification-only.txt")) break; Thread.Sleep(50); }
    string[] previous=initial.Split('\n'); string target=Path.Combine(root,"target");
+   Console.WriteLine("initial="+initial.Replace(root,"<root>").Replace("\n","|"));
    // The driver links the production code and accepts only this fixture PID.
    string driver=Path.Combine(Path.GetDirectoryName(exe),"native-dialog-folder-link-driver.exe");
-   if(previous.Length>=4 && (mode=="folder"||previous[1]=="verification-only.txt") && File.Exists(driver)) {
+   if(previous.Length>=4 && (mode=="folder"||previous[1]=="verification-only.txt") &&
+      (mode=="folder"||previous[2]=="2") && previous[3]=="0" && File.Exists(driver)) {
     bool rejected=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"missing")+"\" reject");
     string unchanged=Read(status); rejected &= unchanged==initial;
     bool issued=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
     DateTime until=DateTime.UtcNow.AddSeconds(5);
     while(DateTime.UtcNow<until) { string[] lines=Read(status).Split('\n');
       if(lines.Length>=4 && String.Equals(lines[0],target,StringComparison.OrdinalIgnoreCase) &&
-         lines[1]==previous[1] && lines[2]==previous[2] && lines[3]=="0") {ok=rejected&&issued;break;} Thread.Sleep(50); }
-    Console.WriteLine("invalid_rejected="+rejected+" navigation_issued="+issued);
+         (mode=="folder" || lines[1]==previous[1]) && lines[2]==previous[2] && lines[3]=="0") {ok=rejected&&issued;break;} Thread.Sleep(50); }
+    bool unwritten=!File.Exists(Path.Combine(root,"start","verification-only.txt")) &&
+      !File.Exists(Path.Combine(target,"verification-only.txt"));
+    ok &= unwritten;
+    Console.WriteLine("invalid_rejected="+rejected+" navigation_issued="+issued+" fixture_file_absent="+unwritten);
    }
    Console.WriteLine("final="+Read(status).Replace(root,"<root>").Replace("\n","|")); if(IsWindow(dialog))PostMessage(dialog,0x111,(IntPtr)2,IntPtr.Zero);
   }
