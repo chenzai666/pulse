@@ -203,8 +203,10 @@ static class Probe {
         (String.Equals(fields[0],before[0],StringComparison.OrdinalIgnoreCase)||String.Equals(fields[0],target,StringComparison.OrdinalIgnoreCase));}
       Thread.Sleep(50);
      }
-     uint pid;uint thread=GetWindowThreadProcessId(dialog,out pid);var gui=new GUIThreadInfo{cbSize=Marshal.SizeOf(typeof(GUIThreadInfo))};
-     bool guiOk=GetGUIThreadInfo(thread,ref gui)&&gui.capture==IntPtr.Zero&&gui.focus!=IntPtr.Zero&&IsChild(dialog,gui.focus);
+     // The controller is on the normal desktop, while GUIThreadInfo belongs
+     // to a private desktop. Ask a fresh driver attached to that desktop to
+     // observe focus/capture, without changing either.
+     bool guiOk=RunDriver(driver,common+"inspect");
      IntPtr edit=IntPtr.Zero;EnumChildWindows(dialog,delegate(IntPtr w,IntPtr x){if(Class(w)=="Edit"&&GetDlgCtrlID(w)==41477&&IsWindowVisible(w))edit=w;return true;},IntPtr.Zero);
      var address=new StringBuilder(32768);IntPtr result;bool addressRead=edit!=IntPtr.Zero&&SendMessageTimeout(edit,13,(IntPtr)address.Capacity,address,3,500,out result)!=IntPtr.Zero;
      bool textSafe=kind!="settext"||(addressRead&&address.ToString()!=target);

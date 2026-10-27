@@ -124,12 +124,13 @@ int wmain(int argc, wchar_t** argv) {
     const auto expected_pid = wcstoul(argv[3], &end, 10);
     if (!expected_pid || !end || *end) return 2;
     const bool stale = std::wstring_view(argv[5]) == L"stale";
+    const bool inspect = std::wstring_view(argv[5]) == L"inspect";
     const bool fault = std::wstring_view(argv[5]) == L"fault";
     const bool fault_recover = std::wstring_view(argv[5]) == L"fault-recover";
     const bool recover = std::wstring_view(argv[5]) == L"recover";
     const bool twice = std::wstring_view(argv[5]) == L"twice";
     const bool expect_accept = std::wstring_view(argv[5]) == L"accept";
-    if (!fault && !fault_recover && !stale && !recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
+    if (!inspect && !fault && !fault_recover && !stale && !recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
     if ((twice && argc != 7) || ((fault || fault_recover) && argc != 8) ||
         (!twice && !fault && !fault_recover && argc != 6)) return 2;
     constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
@@ -160,6 +161,17 @@ int wmain(int argc, wchar_t** argv) {
         valid ? 1 : 0, controls.shell_views, controls.bands, controls.toolbars, before ? 1 : 0,
         static_cast<void*>(info.hwndFocus), static_cast<void*>(info.hwndCapture), info.flags,
         static_cast<void*>(controls.focus_candidate));
+    if (inspect) {
+        // Query from a thread attached to the same private desktop; never
+        // activate or change focus as part of this observation.
+        const bool focus_owned = before && info.hwndFocus && IsChild(dialog, info.hwndFocus);
+        const bool capture_released = before && !info.hwndCapture;
+        std::printf("inspect_gui=%d focus_in_dialog=%d capture_released=%d active=%p focus=%p capture=%p\n",
+            before ? 1 : 0, focus_owned ? 1 : 0, capture_released ? 1 : 0,
+            static_cast<void*>(info.hwndActive), static_cast<void*>(info.hwndFocus), static_cast<void*>(info.hwndCapture));
+        CloseDesktop(desktop);
+        return focus_owned && capture_released ? 0 : 1;
+    }
     // A previous navigation may leave focus in the address band even after
     // its directory has changed. Each accept/recovery invocation represents
     // the user returning to this owned dialog: focus its known filename edit.
