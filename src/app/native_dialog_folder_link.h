@@ -23,16 +23,21 @@ public:
 private:
     HANDLE job_ = nullptr;
     HANDLE process_ = nullptr;
+    HANDLE supervisor_ = nullptr;
     HANDLE stop_event_ = nullptr;
+    HANDLE ready_event_ = nullptr;
     HANDLE heartbeat_mapping_ = nullptr;
     HANDLE cleanup_event_ = nullptr;
     volatile LONG64* deadline_ = nullptr;
     void* recovery_view_ = nullptr;
     ULONGLONG stop_started_ = 0;
+    bool unexpected_exit_reported_ = false;
     std::wstring marker_;
 };
 
-int NativeDialogFolderLinkHelper(HANDLE parent, HANDLE stop_event, HANDLE heartbeat, const wchar_t* marker);
+int NativeDialogFolderLinkHelper(HANDLE parent, HANDLE stop_event, HANDLE heartbeat, HANDLE ready, const wchar_t* marker);
+int NativeDialogFolderLinkSupervisor(HANDLE parent, HANDLE helper, HANDLE heartbeat, HANDLE ready,
+                                     HANDLE done, const wchar_t* marker);
 
 #ifdef PULSE_WITH_SELFTEST
 // Only for a caller-owned native dialog on an isolated test desktop. The

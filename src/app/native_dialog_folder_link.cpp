@@ -24,6 +24,8 @@ struct RecoveryRecord {
     volatile LONG64 deadline = 0;
     volatile LONG stage = 0;
     volatile LONG cleanup_claim = 0;
+    DWORD supervisor_pid = 0;
+    uint64_t supervisor_created = 0;
     DWORD pid = 0, thread = 0, input_tick = 0;
     uint64_t created = 0;
     uintptr_t dialog = 0, band = 0, toolbar = 0, edit = 0, original_focus = 0;
@@ -35,7 +37,9 @@ struct NativeDialogFolderLink::Shared {
     std::atomic<bool> stopping{false};
     std::atomic<DWORD> thread_id{0};
     DWORD owner_pid = 0;
+    HANDLE owner = nullptr;
     HANDLE stop_event = nullptr;
+    HANDLE supervisor = nullptr;
     volatile LONG64* deadline = nullptr;
     RecoveryRecord* recovery = nullptr;
     std::wstring marker;
@@ -50,6 +54,15 @@ namespace {
 constexpr DWORD kMessageTimeoutMs = 200;
 constexpr int kAddressId = 41477;
 constexpr int kToolbarId = 1001;
+
+// Fixed event names and numeric OS status only: never emit user paths or file
+// names. DebugView/ETW consumers can observe early child startup failures.
+void TraceFolderLink(const wchar_t* event, DWORD status = 0) {
+    wchar_t line[256]{};
+    swprintf_s(line, L"Pulse.NativeFolderLink event=%s pid=%lu status=%lu\n",
+               event, GetCurrentProcessId(), status);
+    OutputDebugStringW(line);
+}
 
 bool ClassIs(HWND window, const wchar_t* expected) {
     wchar_t name[96]{};
@@ -207,6 +220,8 @@ bool Current(const WindowIdentity& dialog, const std::shared_ptr<NativeDialogFol
 #endif
     return !shared->stopping && foreground && IsWindowVisible(window) &&
         (!shared->stop_event || WaitForSingleObject(shared->stop_event, 0) == WAIT_TIMEOUT) &&
+        (!shared->owner || WaitForSingleObject(shared->owner, 0) == WAIT_TIMEOUT) &&
+        (!shared->supervisor || WaitForSingleObject(shared->supervisor, 0) == WAIT_TIMEOUT) &&
         IsWindowEnabled(window) && ClassIs(window, L"#32770") && SameIdentity(dialog) &&
         SameSecurity(dialog.process) && idle &&
         (shared->marker.empty() || (shared->marked_window == window &&
@@ -483,6 +498,8 @@ struct Watcher {
             ~Deadline() { if (value) InterlockedExchange64(value, 0); }
         } deadline(shared->deadline);
         if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
+            (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
+            (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||
             shared->stopping || (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
             window != GetForegroundWindow() || GetTickCount() - event_time > 500) {
             transition.OtherForeground(); return;
@@ -502,12 +519,16 @@ struct Watcher {
                 !SameThread(controls.toolbar, identity) || shared->marker.empty() ||
                 !SameIdentity(identity) ||
                 (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
+                (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
+                (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||
                 !SetPropW(window, shared->marker.c_str(), reinterpret_cast<HANDLE>(1))) {
                 transition.OtherForeground(); last_dialog = {}; return;
             }
             shared->marked_window = window;
             last_dialog = identity;
-            if (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) {
+            if ((shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
+                (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
+                (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT)) {
                 ClearMarker(); transition.OtherForeground(); last_dialog = {}; return;
             }
         } else if (GetPropW(window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1)) {
@@ -637,16 +658,29 @@ NativeDialogFolderLinkTestResult NativeDialogFolderLinkNavigateTwiceForTest(
 
 
 namespace {
-struct ParentWait { HANDLE parent = nullptr; HANDLE stop = nullptr; DWORD thread = 0; volatile LONG64* deadline = nullptr; };
+struct ParentWait { HANDLE parent = nullptr; HANDLE stop = nullptr; HANDLE supervisor = nullptr; HANDLE finished = nullptr;
+    DWORD thread = 0; volatile LONG64* deadline = nullptr; };
 DWORD WINAPI WaitForParent(void* context) {
     const auto* wait = static_cast<ParentWait*>(context);
-    HANDLE handles[] = {wait->parent, wait->stop};
-    while (WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, 250) == WAIT_TIMEOUT) {
+    HANDLE handles[] = {wait->parent, wait->stop, wait->supervisor};
+    DWORD reason = WAIT_TIMEOUT;
+    while ((reason = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, 250)) == WAIT_TIMEOUT) {
         const LONG64 deadline = InterlockedCompareExchange64(wait->deadline, 0, 0);
-        if (deadline > 0 && GetTickCount64() >= static_cast<ULONGLONG>(deadline))
+        if (deadline > 0 && GetTickCount64() >= static_cast<ULONGLONG>(deadline)) {
+            TraceFolderLink(L"helper_operation_timeout");
             TerminateProcess(GetCurrentProcess(), 4); // the owned helper, never a third-party process
+        }
     }
-    PostThreadMessageW(wait->thread, WM_QUIT, 0, 0);
+    TraceFolderLink(L"helper_shutdown_requested", reason == WAIT_FAILED ? GetLastError() : reason);
+    if (!PostThreadMessageW(wait->thread, WM_QUIT, 0, 0))
+        TraceFolderLink(L"helper_quit_post_failed", GetLastError());
+    // The watcher can be stuck inside an external UIA or network call. Keep
+    // this watchdog alive after supervisor/parent loss instead of abandoning
+    // the process; after the grace period only this disposable helper is killed.
+    if (WaitForSingleObject(wait->finished, 1500) != WAIT_OBJECT_0) {
+        TraceFolderLink(L"helper_shutdown_timeout");
+        TerminateProcess(GetCurrentProcess(), 6);
+    }
     return 0;
 }
 bool SameExecutable(HANDLE parent) {
@@ -656,7 +690,7 @@ bool SameExecutable(HANDLE parent) {
     return size && size < ARRAYSIZE(own) && QueryFullProcessImageNameW(parent, 0, other, &other_size) &&
         _wcsicmp(own, other) == 0;
 }
-bool IsActualParent(DWORD expected_pid) {
+bool IsChildOf(HANDLE process, DWORD expected_pid) {
     struct BasicInfo {
         LONG exit_status;
         void* peb;
@@ -668,8 +702,14 @@ bool IsActualParent(DWORD expected_pid) {
     using Query = LONG (WINAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
     HMODULE module = GetModuleHandleW(L"ntdll.dll");
     const auto query = module ? reinterpret_cast<Query>(GetProcAddress(module, "NtQueryInformationProcess")) : nullptr;
-    return query && query(GetCurrentProcess(), 0, &info, sizeof(info), nullptr) >= 0 &&
-        info.process_id == GetCurrentProcessId() && info.parent_id == expected_pid;
+    return query && query(process, 0, &info, sizeof(info), nullptr) >= 0 &&
+        info.process_id == GetProcessId(process) && info.parent_id == expected_pid;
+}
+bool IsActualParent(DWORD expected_pid) { return IsChildOf(GetCurrentProcess(), expected_pid); }
+uint64_t ProcessCreated(HANDLE process) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) return 0;
+    return (static_cast<uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
 }
 void CloseOwned(HANDLE& value) { if (value) { CloseHandle(value); value = nullptr; } }
 BOOL CALLBACK RemoveOwnMarker(HWND window, LPARAM value) {
@@ -723,48 +763,102 @@ void RecoverInterrupted(const std::wstring& marker, RecoveryRecord* record, bool
         }
     }
 }
-struct CleanupTask {
-    HANDLE process = nullptr;
-    HANDLE mapping = nullptr;
-    HANDLE done = nullptr;
-    std::wstring marker;
-};
-DWORD WINAPI CleanupAfterExit(void* parameter) {
-    std::unique_ptr<CleanupTask> task(static_cast<CleanupTask*>(parameter));
-    if (WaitForSingleObject(task->process, INFINITE) == WAIT_OBJECT_0) {
+bool StartSupervisor(HANDLE parent, HANDLE helper, HANDLE mapping, HANDLE ready, HANDLE done,
+                     const std::wstring& marker, HANDLE& supervisor) {
+    // Each handle is explicitly duplicated as inheritable. No job handle is
+    // inherited, so a parent crash still closes the helper's kill-on-close job.
+    HANDLE inherited[5]{};
+    HANDLE originals[] = {parent, helper, mapping, ready, done};
+    const DWORD access[] = {SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FILE_MAP_ALL_ACCESS,
+        EVENT_MODIFY_STATE, EVENT_MODIFY_STATE};
+    const HANDLE self = GetCurrentProcess();
+    for (size_t i = 0; i < ARRAYSIZE(inherited); ++i) {
+        if (!DuplicateHandle(self, originals[i], self, &inherited[i], access[i], TRUE, 0)) {
+            for (HANDLE& handle : inherited) CloseOwned(handle);
+            return false;
+        }
+    }
+    wchar_t executable[32768]{};
+    const DWORD size = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    std::vector<BYTE> storage(bytes);
+    auto* attributes = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    if (!size || size >= ARRAYSIZE(executable) || !bytes ||
+        !InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) {
+        for (HANDLE& handle : inherited) CloseOwned(handle);
+        return false;
+    }
+    const bool configured = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                       inherited, sizeof(inherited), nullptr, nullptr) != FALSE;
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    startup.StartupInfo.wShowWindow = SW_HIDE;
+    startup.lpAttributeList = attributes;
+    std::wstring command = L"\"" + std::wstring(executable) + L"\" --native-folder-link-supervisor";
+    for (HANDLE handle : inherited) command += L" " + std::to_wstring(reinterpret_cast<uintptr_t>(handle));
+    command += L" " + marker;
+    PROCESS_INFORMATION child{};
+    const bool created = configured && CreateProcessW(executable, command.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr, &startup.StartupInfo, &child);
+    DeleteProcThreadAttributeList(attributes);
+    for (HANDLE& handle : inherited) CloseOwned(handle);
+    if (!created) return false;
+    CloseHandle(child.hThread);
+    supervisor = child.hProcess;
+    return true;
+}
+struct FallbackTask { HANDLE helper = nullptr, supervisor = nullptr, mapping = nullptr, done = nullptr;
+    std::wstring marker; };
+DWORD WINAPI CleanupFallback(void* context) {
+    std::unique_ptr<FallbackTask> task(static_cast<FallbackTask*>(context));
+    HANDLE processes[] = {task->helper, task->supervisor};
+    if (WaitForMultipleObjects(ARRAYSIZE(processes), processes, TRUE, INFINITE) == WAIT_OBJECT_0 &&
+        WaitForSingleObject(task->done, 0) == WAIT_TIMEOUT) {
         auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(task->mapping, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                   sizeof(RecoveryRecord)));
         if (record) {
-            if (InterlockedCompareExchange(&record->cleanup_claim, 1, 0) == 0) {
+            // A claim of 1 means the supervisor may have been interrupted in
+            // a cross-process message. Its outcome is unknown: do not replay.
+            if (InterlockedCompareExchange(&record->cleanup_claim, 1, 0) == 0)
                 RecoverInterrupted(task->marker, record);
-                CleanupMarker(task->marker);
-                InterlockedExchange(&record->cleanup_claim, 2);
-            }
+            CleanupMarker(task->marker);
+            InterlockedExchange(&record->cleanup_claim, 2);
             UnmapViewOfFile(record);
         }
+        SetEvent(task->done);
     }
-    SetEvent(task->done);
-    CloseHandle(task->done);
-    CloseHandle(task->mapping);
-    CloseHandle(task->process);
+    CloseHandle(task->helper); CloseHandle(task->supervisor);
+    CloseHandle(task->mapping); CloseHandle(task->done);
     return 0;
 }
-bool StartCleanupTask(HANDLE process, HANDLE mapping, HANDLE done, const std::wstring& marker) {
-    auto task = std::make_unique<CleanupTask>();
+bool StartFallback(HANDLE helper, HANDLE supervisor, HANDLE mapping, HANDLE done, const std::wstring& marker) {
+    auto task = std::make_unique<FallbackTask>();
     task->marker = marker;
     const HANDLE self = GetCurrentProcess();
-    if (!DuplicateHandle(self, process, self, &task->process, SYNCHRONIZE, FALSE, 0) ||
+    if (!DuplicateHandle(self, helper, self, &task->helper, SYNCHRONIZE, FALSE, 0) ||
+        !DuplicateHandle(self, supervisor, self, &task->supervisor, SYNCHRONIZE, FALSE, 0) ||
         !DuplicateHandle(self, mapping, self, &task->mapping, FILE_MAP_ALL_ACCESS, FALSE, 0) ||
-        !DuplicateHandle(self, done, self, &task->done, EVENT_MODIFY_STATE, FALSE, 0)) {
-        CloseOwned(task->process); CloseOwned(task->mapping); CloseOwned(task->done); return false;
+        !DuplicateHandle(self, done, self, &task->done, SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, 0)) {
+        CloseOwned(task->helper); CloseOwned(task->supervisor); CloseOwned(task->mapping); CloseOwned(task->done);
+        return false;
     }
-    HANDLE thread = CreateThread(nullptr, 0, CleanupAfterExit, task.get(), 0, nullptr);
+    HANDLE thread = CreateThread(nullptr, 0, CleanupFallback, task.get(), 0, nullptr);
     if (!thread) {
-        CloseOwned(task->process); CloseOwned(task->mapping); CloseOwned(task->done); return false;
+        CloseOwned(task->helper); CloseOwned(task->supervisor); CloseOwned(task->mapping); CloseOwned(task->done);
+        return false;
     }
     task.release();
     CloseHandle(thread);
     return true;
+}
+DWORD WINAPI RecoveryWatchdog(void* context) {
+    HANDLE finished = static_cast<HANDLE>(context);
+    if (WaitForSingleObject(finished, 3000) == WAIT_TIMEOUT)
+        TerminateProcess(GetCurrentProcess(), 5); // only this disposable supervisor
+    return 0;
 }
 }
 
@@ -800,48 +894,129 @@ bool NativeDialogFolderLinkRecoverForTest(HWND dialog, HWND band, HWND toolbar, 
 }
 #endif
 
-int NativeDialogFolderLinkHelper(HANDLE parent, HANDLE stop_event, HANDLE heartbeat, const wchar_t* marker) {
+int NativeDialogFolderLinkSupervisor(HANDLE parent, HANDLE helper, HANDLE heartbeat, HANDLE ready,
+                                     HANDLE done, const wchar_t* marker) {
+    TraceFolderLink(L"supervisor_start");
+    const DWORD owner = parent ? GetProcessId(parent) : 0;
+    const DWORD worker = helper ? GetProcessId(helper) : 0;
+    const std::wstring name = marker ? marker : L"";
+    GUID marker_id{};
+    DWORD flags = 0;
+    if (!owner || !worker || owner == worker || !GetHandleInformation(heartbeat, &flags) ||
+        !GetHandleInformation(ready, &flags) || !GetHandleInformation(done, &flags) ||
+        WaitForSingleObject(parent, 0) != WAIT_TIMEOUT || WaitForSingleObject(helper, 0) != WAIT_TIMEOUT ||
+        !IsActualParent(owner) || !IsChildOf(helper, owner) || !SameExecutable(parent) ||
+        !SameExecutable(helper) || !SameSecurity(owner) || !SameSecurity(worker) ||
+        !name.starts_with(L"Pulse.FolderLink.") || FAILED(CLSIDFromString(name.c_str() + 17, &marker_id))) {
+        TraceFolderLink(L"supervisor_identity_rejected");
+        return 2;
+    }
+    auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(heartbeat, FILE_MAP_ALL_ACCESS, 0, 0,
+                                                             sizeof(RecoveryRecord)));
+    if (!record) { TraceFolderLink(L"supervisor_mapping_failed", GetLastError()); return 2; }
+    record->supervisor_pid = GetCurrentProcessId();
+    record->supervisor_created = ProcessCreated(GetCurrentProcess());
+    if (!record->supervisor_created || !SetEvent(ready)) {
+        TraceFolderLink(L"supervisor_ready_failed", GetLastError()); UnmapViewOfFile(record); return 2;
+    }
+    TraceFolderLink(L"supervisor_ready");
+    // Monitor both handles directly. After parent death its job terminates the
+    // helper; if the kernel cannot confirm that within five seconds, retain
+    // the marker and exit without touching the live window.
+    HANDLE watched[] = {helper, parent};
+    DWORD result = WaitForMultipleObjects(ARRAYSIZE(watched), watched, FALSE, INFINITE);
+    if (result == WAIT_OBJECT_0 + 1) result = WaitForSingleObject(helper, 5000);
+    TraceFolderLink(L"supervisor_helper_wait", result);
+    if (result == WAIT_OBJECT_0 && InterlockedCompareExchange(&record->cleanup_claim, 1, 0) == 0) {
+        HANDLE finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE watchdog = finished ? CreateThread(nullptr, 0, RecoveryWatchdog, finished, 0, nullptr) : nullptr;
+        if (!watchdog) { if (finished) CloseHandle(finished); UnmapViewOfFile(record); return 3; }
+        RecoverInterrupted(name, record);
+        CleanupMarker(name);
+        InterlockedExchange(&record->cleanup_claim, 2);
+        SetEvent(done);
+        SetEvent(finished);
+        WaitForSingleObject(watchdog, 100);
+        CloseHandle(watchdog);
+        CloseHandle(finished);
+    }
+    UnmapViewOfFile(record);
+    TraceFolderLink(L"supervisor_exit", result);
+    return result == WAIT_OBJECT_0 ? 0 : 3;
+}
+
+int NativeDialogFolderLinkHelper(HANDLE parent, HANDLE stop_event, HANDLE heartbeat, HANDLE ready, const wchar_t* marker) {
+    TraceFolderLink(L"helper_start");
     DWORD flags = 0;
     const DWORD parent_pid = parent ? GetProcessId(parent) : 0;
     const std::wstring marker_value = marker ? marker : L"";
     GUID marker_id{};
     if (!parent_pid || parent_pid == GetCurrentProcessId() ||
         !GetHandleInformation(parent, &flags) || !GetHandleInformation(stop_event, &flags) ||
-        !GetHandleInformation(heartbeat, &flags) ||
+        !GetHandleInformation(heartbeat, &flags) || !GetHandleInformation(ready, &flags) ||
         WaitForSingleObject(parent, 0) != WAIT_TIMEOUT || WaitForSingleObject(stop_event, 0) != WAIT_TIMEOUT ||
         !IsActualParent(parent_pid) || !SameExecutable(parent) || !SameSecurity(parent_pid) ||
         !marker_value.starts_with(L"Pulse.FolderLink.") ||
-        FAILED(CLSIDFromString(marker_value.c_str() + 17, &marker_id))) return 2;
+        FAILED(CLSIDFromString(marker_value.c_str() + 17, &marker_id))) {
+        TraceFolderLink(L"helper_identity_rejected"); return 2;
+    }
     auto shared = std::make_shared<NativeDialogFolderLink::Shared>();
     auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(heartbeat, FILE_MAP_WRITE, 0, 0, sizeof(RecoveryRecord)));
-    if (!record) return 2;
+    if (!record) { TraceFolderLink(L"helper_mapping_failed", GetLastError()); return 2; }
+    HANDLE ready_checks[] = {parent, stop_event, ready};
+    const DWORD ready_result = WaitForMultipleObjects(ARRAYSIZE(ready_checks), ready_checks, FALSE, 5000);
+    if (ready_result != WAIT_OBJECT_0 + 2) {
+        TraceFolderLink(L"helper_ready_failed", ready_result);
+        UnmapViewOfFile(record); return 2;
+    }
+    HANDLE supervisor = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, record->supervisor_pid);
+    if (!supervisor || WaitForSingleObject(supervisor, 0) != WAIT_TIMEOUT ||
+        !record->supervisor_created || ProcessCreated(supervisor) != record->supervisor_created ||
+        !IsChildOf(supervisor, parent_pid) || !SameExecutable(supervisor) || !SameSecurity(record->supervisor_pid) ||
+        WaitForSingleObject(parent, 0) != WAIT_TIMEOUT || WaitForSingleObject(stop_event, 0) != WAIT_TIMEOUT) {
+        TraceFolderLink(L"helper_supervisor_rejected");
+        CloseOwned(supervisor); UnmapViewOfFile(record); return 2;
+    }
     volatile LONG64* deadline = &record->deadline;
     shared->owner_pid = parent_pid;
+    shared->owner = parent;
     shared->stop_event = stop_event;
+    shared->supervisor = supervisor;
     shared->deadline = deadline;
     shared->recovery = record;
     shared->marker = marker_value;
     MSG message{};
     PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-    ParentWait wait{parent, stop_event, GetCurrentThreadId(), deadline};
+    HANDLE finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!finished) { TraceFolderLink(L"helper_finished_event_failed", GetLastError()); CloseOwned(supervisor); UnmapViewOfFile(record); return 3; }
+    ParentWait wait{parent, stop_event, supervisor, finished, GetCurrentThreadId(), deadline};
     HANDLE waiter = CreateThread(nullptr, 0, WaitForParent, &wait, 0, nullptr);
-    if (!waiter) { UnmapViewOfFile(record); return 3; }
+    if (!waiter) { TraceFolderLink(L"helper_watchdog_failed", GetLastError()); CloseHandle(finished); CloseOwned(supervisor); UnmapViewOfFile(record); return 3; }
+    TraceFolderLink(L"helper_ready");
     InterlockedExchange64(deadline, static_cast<LONG64>(GetTickCount64() + 5000));
     ThreadMain(new std::shared_ptr<NativeDialogFolderLink::Shared>(shared));
+    SetEvent(finished);
     SetEvent(stop_event);
     WaitForSingleObject(waiter, INFINITE);
     CloseHandle(waiter);
+    CloseHandle(finished);
+    CloseOwned(supervisor);
     UnmapViewOfFile(record);
+    TraceFolderLink(L"helper_exit");
     return 0;
 }
 
 NativeDialogFolderLink::NativeDialogFolderLink() {
+    TraceFolderLink(L"parent_start");
     GUID marker_id{};
     wchar_t marker_text[64]{};
-    if (FAILED(CoCreateGuid(&marker_id)) || !StringFromGUID2(marker_id, marker_text, ARRAYSIZE(marker_text))) return;
+    if (FAILED(CoCreateGuid(&marker_id)) || !StringFromGUID2(marker_id, marker_text, ARRAYSIZE(marker_text))) {
+        TraceFolderLink(L"parent_marker_failed"); return;
+    }
     marker_ = std::wstring(L"Pulse.FolderLink.") + marker_text;
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     stop_event_ = CreateEventW(&security, TRUE, FALSE, nullptr);
+    ready_event_ = CreateEventW(&security, TRUE, FALSE, nullptr);
     heartbeat_mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(RecoveryRecord), nullptr);
     if (heartbeat_mapping_)
         recovery_view_ = MapViewOfFile(heartbeat_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(RecoveryRecord));
@@ -850,25 +1025,29 @@ NativeDialogFolderLink::NativeDialogFolderLink() {
     job_ = CreateJobObjectW(nullptr, nullptr);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!stop_event_ || !heartbeat_mapping_ || !deadline_ || !parent || !job_ ||
+    if (!stop_event_ || !ready_event_ || !heartbeat_mapping_ || !deadline_ || !parent || !job_ ||
         !SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        TraceFolderLink(L"parent_resources_failed", GetLastError());
         CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
     }
     wchar_t executable[32768]{};
     const DWORD size = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
     if (!size || size >= ARRAYSIZE(executable)) {
+        TraceFolderLink(L"parent_executable_failed", GetLastError());
         CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
     }
     SIZE_T bytes = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    InitializeProcThreadAttributeList(nullptr, 2, 0, &bytes);
     std::vector<BYTE> storage(bytes);
     auto* attributes = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
-    if (!bytes || !InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) {
+    if (!bytes || !InitializeProcThreadAttributeList(attributes, 2, 0, &bytes)) {
+        TraceFolderLink(L"parent_attributes_failed", GetLastError());
         CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
     }
-    HANDLE inherited[] = {parent, stop_event_, heartbeat_mapping_};
+    HANDLE inherited[] = {parent, stop_event_, heartbeat_mapping_, ready_event_};
     const bool configured = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                                       inherited, sizeof(inherited), nullptr, nullptr) != FALSE;
+                                                       inherited, sizeof(inherited), nullptr, nullptr) &&
+        UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_, sizeof(job_), nullptr, nullptr);
     PROCESS_INFORMATION process{};
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
@@ -882,31 +1061,38 @@ NativeDialogFolderLink::NativeDialogFolderLink() {
     std::wstring command = L"\"" + std::wstring(executable) + L"\" --native-folder-link-helper " +
         std::to_wstring(reinterpret_cast<uintptr_t>(parent)) + L" " +
         std::to_wstring(reinterpret_cast<uintptr_t>(stop_event_)) + L" " +
-        std::to_wstring(reinterpret_cast<uintptr_t>(heartbeat_mapping_)) + L" " + marker_;
+        std::to_wstring(reinterpret_cast<uintptr_t>(heartbeat_mapping_)) + L" " +
+        std::to_wstring(reinterpret_cast<uintptr_t>(ready_event_)) + L" " + marker_;
     const bool created = configured && CreateProcessW(executable, command.data(), nullptr, nullptr, TRUE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr,
         &startup.StartupInfo, &process);
     DeleteProcThreadAttributeList(attributes);
-    CloseOwned(parent);
-    if (!created) { CloseOwned(stop_event_); CloseOwned(job_); return; }
+    if (!created) { TraceFolderLink(L"parent_helper_create_failed", GetLastError()); CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return; }
     cleanup_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!AssignProcessToJobObject(job_, process.hProcess) || !cleanup_event_ ||
-        !StartCleanupTask(process.hProcess, heartbeat_mapping_, cleanup_event_, marker_) ||
+    if (!cleanup_event_ ||
+        !StartSupervisor(parent, process.hProcess, heartbeat_mapping_, ready_event_, cleanup_event_, marker_, supervisor_) ||
+        !StartFallback(process.hProcess, supervisor_, heartbeat_mapping_, cleanup_event_, marker_) ||
         ResumeThread(process.hThread) == DWORD(-1)) {
+        TraceFolderLink(L"parent_supervisor_or_resume_failed", GetLastError());
         TerminateProcess(process.hProcess, 1); // child just created by this instance
         CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        CloseOwned(parent); CloseOwned(supervisor_);
         CloseOwned(cleanup_event_); CloseOwned(stop_event_); CloseOwned(job_); return;
     }
+    CloseOwned(parent);
     CloseHandle(process.hThread);
     process_ = process.hProcess;
+    TraceFolderLink(L"parent_children_started");
 }
 NativeDialogFolderLink::~NativeDialogFolderLink() {
     if (stop_event_) SetEvent(stop_event_);
     CloseOwned(job_); // kill-on-close ends even a blocked helper
     if (cleanup_event_) WaitForSingleObject(cleanup_event_, 200);
     CloseOwned(cleanup_event_);
+    CloseOwned(supervisor_);
     CloseOwned(process_);
     CloseOwned(stop_event_);
+    CloseOwned(ready_event_);
     if (recovery_view_) UnmapViewOfFile(recovery_view_);
     CloseOwned(heartbeat_mapping_);
 }
@@ -918,16 +1104,27 @@ bool NativeDialogFolderLink::Stop() noexcept {
         SetEvent(stop_event_);
     }
     if (WaitForSingleObject(process_, 0) != WAIT_OBJECT_0) {
-        if (GetTickCount64() - stop_started_ >= 1000 && job_) TerminateJobObject(job_, 1);
+        if (GetTickCount64() - stop_started_ >= 1000 && job_) {
+            TraceFolderLink(L"parent_helper_termination");
+            TerminateJobObject(job_, 1);
+        }
         return false;
     }
+    if (supervisor_ && WaitForSingleObject(supervisor_, 0) != WAIT_OBJECT_0) return false;
     if (cleanup_event_ && WaitForSingleObject(cleanup_event_, 0) != WAIT_OBJECT_0) return false;
     CloseOwned(process_); CloseOwned(stop_event_); CloseOwned(job_);
     CloseOwned(cleanup_event_);
+    CloseOwned(supervisor_); CloseOwned(ready_event_);
     return true;
 }
 bool NativeDialogFolderLink::IsStopping() noexcept {
     if (!stop_started_ && process_ && WaitForSingleObject(process_, 0) == WAIT_OBJECT_0) {
+        if (!unexpected_exit_reported_) {
+            DWORD code = 0;
+            GetExitCodeProcess(process_, &code);
+            TraceFolderLink(L"parent_helper_unexpected_exit", code);
+            unexpected_exit_reported_ = true;
+        }
         // Unexpected exit disables this instance until explicitly restarted;
         // this avoids a process respawn loop after repeated UIA failures.
         // The dedicated cleanup task watches the process handle directly.

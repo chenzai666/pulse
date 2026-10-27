@@ -2842,7 +2842,8 @@ int RunQuickPreviewAuditTest();
 #endif
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
-    if (__argc == 6 && wcscmp(__wargv[1], L"--native-folder-link-helper") == 0) {
+    if ((__argc == 7 && wcscmp(__wargv[1], L"--native-folder-link-helper") == 0) ||
+        (__argc == 8 && wcscmp(__wargv[1], L"--native-folder-link-supervisor") == 0)) {
         auto handle_arg = [](const wchar_t* text) -> HANDLE {
             if (!text || !*text) return nullptr;
             for (const wchar_t* p = text; *p; ++p) if (*p < L'0' || *p > L'9') return nullptr;
@@ -2851,8 +2852,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             if (!end || *end || !value || value > static_cast<unsigned long long>(UINTPTR_MAX)) return nullptr;
             return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value));
         };
-        return app::NativeDialogFolderLinkHelper(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
-                                                  handle_arg(__wargv[4]), __wargv[5]);
+        if (__argc == 7)
+            return app::NativeDialogFolderLinkHelper(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
+                                                     handle_arg(__wargv[4]), handle_arg(__wargv[5]), __wargv[6]);
+        return app::NativeDialogFolderLinkSupervisor(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
+            handle_arg(__wargv[4]), handle_arg(__wargv[5]), handle_arg(__wargv[6]), __wargv[7]);
     }
 #ifdef PULSE_WITH_SELFTEST
     std::optional<CLSID> tag_com_audit_class;
