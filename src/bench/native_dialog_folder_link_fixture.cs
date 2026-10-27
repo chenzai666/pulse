@@ -169,15 +169,38 @@ static class Probe {
      Thread.Sleep(50);
     }
     rejected &= observed;
+    bool twice=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" twice");
+    bool returned=false; int beforeChanges=0;
+    Int32.TryParse(previous[4],out beforeChanges);
+    DateTime twiceUntil=DateTime.UtcNow.AddSeconds(5);
+    while(DateTime.UtcNow<twiceUntil) {
+     string[] state=Read(status).Split('\n'); int changes=0;
+     if(state.Length>=5 && Int32.TryParse(state[4],out changes) && changes>=beforeChanges+2 &&
+        String.Equals(state[0],previous[0],StringComparison.OrdinalIgnoreCase) &&
+        (mode=="folder"||state[1]==previous[1]) && state[2]==previous[2] && state[3]=="0") {returned=true;break;}
+     Thread.Sleep(50);
+    }
     bool issued=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
     DateTime until=DateTime.UtcNow.AddSeconds(5);
     while(DateTime.UtcNow<until) { string[] lines=Read(status).Split('\n');
       if(lines.Length>=4 && String.Equals(lines[0],target,StringComparison.OrdinalIgnoreCase) &&
-         (mode=="folder" || lines[1]==previous[1]) && lines[2]==previous[2] && lines[3]=="0") {ok=rejected&&issued;break;} Thread.Sleep(50); }
+         (mode=="folder" || lines[1]==previous[1]) && lines[2]==previous[2] && lines[3]=="0") {ok=rejected&&twice&&returned&&issued;break;} Thread.Sleep(50); }
+    bool recovered=ok&&RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"start")+"\" recover");
+    bool recoveryPreserved=false; DateTime recoveryUntil=DateTime.UtcNow.AddSeconds(2);
+    while(DateTime.UtcNow<recoveryUntil) {
+     string[] afterRecovery=Read(status).Split('\n');
+     if(afterRecovery.Length>=5&&!String.IsNullOrEmpty(afterRecovery[4])) {
+      recoveryPreserved=String.Equals(afterRecovery[0],target,StringComparison.OrdinalIgnoreCase)&&
+       (mode=="folder"||afterRecovery[1]==previous[1])&&afterRecovery[2]==previous[2]&&afterRecovery[3]=="0";
+      break;
+     }
+     Thread.Sleep(50);
+    }
+    ok &= recovered&&recoveryPreserved;
     bool unwritten=!File.Exists(Path.Combine(root,"start","verification-only.txt")) &&
       !File.Exists(Path.Combine(target,"verification-only.txt"));
     ok &= unwritten;
-    Console.WriteLine("invalid_rejected="+rejected+" reject_snapshot_observed="+observed+" navigation_issued="+issued+" fixture_file_absent="+unwritten);
+    Console.WriteLine("invalid_rejected="+rejected+" reject_snapshot_observed="+observed+" twice_issued="+twice+" twice_returned="+returned+" navigation_issued="+issued+" recovery="+recovered+" recovery_preserved="+recoveryPreserved+" fixture_file_absent="+unwritten);
    }
    Console.WriteLine("final="+Read(status).Replace(root,"<root>").Replace("\n","|")); if(IsWindow(dialog))PostMessage(dialog,0x111,(IntPtr)2,IntPtr.Zero);
   }

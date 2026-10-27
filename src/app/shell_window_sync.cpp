@@ -103,12 +103,21 @@ void SyncShellWindows(AppState& s) {
     const app::Tab* active = ActiveTab(s);
     std::wstring source = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
     if (!app::IsShellWindowPath(source)) source.clear();
-    app::PublishFolderSource(s.hwnd, source, !s.isolatedTest && !s.shot.active && !s.menushot);
-    if (!s.isolatedTest && !s.shot.active && !s.menushot) {
+    bool publish_folder = !s.isolatedTest && !s.shot.active && !s.menushot;
+#ifdef PULSE_WITH_SELFTEST
+    if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0)
+        publish_folder = true;
+#endif
+    app::PublishFolderSource(s.hwnd, source, publish_folder);
+#ifdef PULSE_WITH_SELFTEST
+    // The production integration is held back until the complete lifecycle
+    // and native-dialog end-to-end checks have passed.
+    if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0) {
         auto& watcher = s.core.native_dialog_folder_link;
         if (watcher && watcher->IsStopping() && watcher->Stop()) watcher.reset();
         if (!watcher) watcher = std::make_unique<app::NativeDialogFolderLink>();
     }
+#endif
     SyncExplorerTakeover(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {

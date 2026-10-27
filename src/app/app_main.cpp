@@ -2842,6 +2842,18 @@ int RunQuickPreviewAuditTest();
 #endif
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+    if (__argc == 6 && wcscmp(__wargv[1], L"--native-folder-link-helper") == 0) {
+        auto handle_arg = [](const wchar_t* text) -> HANDLE {
+            if (!text || !*text) return nullptr;
+            for (const wchar_t* p = text; *p; ++p) if (*p < L'0' || *p > L'9') return nullptr;
+            wchar_t* end = nullptr;
+            const unsigned long long value = _wcstoui64(text, &end, 10);
+            if (!end || *end || !value || value > static_cast<unsigned long long>(UINTPTR_MAX)) return nullptr;
+            return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value));
+        };
+        return app::NativeDialogFolderLinkHelper(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
+                                                  handle_arg(__wargv[4]), __wargv[5]);
+    }
 #ifdef PULSE_WITH_SELFTEST
     std::optional<CLSID> tag_com_audit_class;
     if (!app::shell_tags::PrepareCommandAudit(__argc, __wargv, tag_com_audit_class)) return 2;

@@ -2,6 +2,9 @@
 #include "native_dialog_folder_link_policy.h"
 #include "folder_source.h"
 
+// WIN32_LEAN_AND_MEAN omits COM declarations from windows.h. Include COM
+// explicitly before the generated UI Automation interface declarations.
+#include <objbase.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
 #include <atomic>
@@ -14,9 +17,27 @@ namespace pulse::app {
 using Microsoft::WRL::ComPtr;
 using folder_link::WindowIdentity;
 
+// Shared with the owning parent process. The helper publishes immutable
+// identity and text before publishing a stage with an interlocked operation.
+// The parent consumes it only after the helper process is signaled.
+struct RecoveryRecord {
+    volatile LONG64 deadline = 0;
+    volatile LONG stage = 0;
+    volatile LONG cleanup_claim = 0;
+    DWORD pid = 0, thread = 0, input_tick = 0;
+    uint64_t created = 0;
+    uintptr_t dialog = 0, band = 0, toolbar = 0, edit = 0, original_focus = 0;
+    wchar_t original_text[32768]{};
+    wchar_t attempted_text[32768]{};
+};
+
 struct NativeDialogFolderLink::Shared {
     std::atomic<bool> stopping{false};
     std::atomic<DWORD> thread_id{0};
+    DWORD owner_pid = 0;
+    HANDLE stop_event = nullptr;
+    volatile LONG64* deadline = nullptr;
+    RecoveryRecord* recovery = nullptr;
     std::wstring marker;
     HWND marked_window = nullptr;
 #ifdef PULSE_WITH_SELFTEST
@@ -110,9 +131,9 @@ bool ReadControl(HWND control, std::wstring& value) {
     return true;
 }
 
-bool PulseFolder(HWND window, WindowIdentity& identity, std::wstring& folder) {
+bool PulseFolder(HWND window, DWORD owner_pid, WindowIdentity& identity, std::wstring& folder) {
     if (!ClassIs(window, L"PulseCustomMainWindow") || !Identity(window, identity) ||
-        identity.process != GetCurrentProcessId() || !GetPropW(window, kFolderSourceMarker)) return false;
+        identity.process != owner_pid || !GetPropW(window, kFolderSourceMarker)) return false;
     HWND control = GetDlgItem(window, kFolderSourceControl);
     DWORD pid = 0;
     const DWORD tid = GetWindowThreadProcessId(control, &pid);
@@ -185,6 +206,7 @@ bool Current(const WindowIdentity& dialog, const std::shared_ptr<NativeDialogFol
     if (shared->test_allow_nonforeground) { foreground = true; idle = true; }
 #endif
     return !shared->stopping && foreground && IsWindowVisible(window) &&
+        (!shared->stop_event || WaitForSingleObject(shared->stop_event, 0) == WAIT_TIMEOUT) &&
         IsWindowEnabled(window) && ClassIs(window, L"#32770") && SameIdentity(dialog) &&
         SameSecurity(dialog.process) && idle &&
         (shared->marker.empty() || (shared->marked_window == window &&
@@ -335,10 +357,19 @@ struct ReleaseReturn {
     }
 };
 
+struct RecoverySession {
+    RecoveryRecord* record;
+    bool complete = false;
+    explicit RecoverySession(RecoveryRecord* value) : record(value) {}
+    ~RecoverySession() { if (record && complete) InterlockedExchange(&record->stage, 0); }
+    void Publish(LONG stage) { if (record) InterlockedExchange(&record->stage, stage); }
+};
+
 void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
               const std::shared_ptr<NativeDialogFolderLink::Shared>& shared, IUIAutomation* automation) {
     LASTINPUTINFO input{sizeof(input), 0};
-    if (!GetLastInputInfo(&input) || !Current(dialog, shared, input.dwTime) || !IsFolderSourcePath(folder)) return;
+    if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
+        !GetLastInputInfo(&input) || !Current(dialog, shared, input.dwTime) || !IsFolderSourcePath(folder)) return;
     const DWORD attributes = GetFileAttributesW(folder.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
         !Current(dialog, shared, input.dwTime)) return;
@@ -362,11 +393,21 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     POINT again{};
     if (!BlankPoint(automation, check.toolbar, again) || again.x != point.x || again.y != point.y ||
         !Current(dialog, shared, input.dwTime) || !FocusIs(dialog.thread, original_focus)) return;
+    RecoverySession recovery(shared->recovery);
+    if (auto* r = shared->recovery) {
+        r->pid = dialog.process; r->thread = dialog.thread; r->created = dialog.process_created;
+        r->input_tick = input.dwTime; r->dialog = dialog.window;
+        r->band = reinterpret_cast<uintptr_t>(controls.band);
+        r->toolbar = reinterpret_cast<uintptr_t>(check.toolbar);
+        r->edit = 0; r->original_focus = reinterpret_cast<uintptr_t>(original_focus);
+        r->original_text[0] = L'\0'; r->attempted_text[0] = L'\0';
+    }
     RestoreFocus restore{dialog, shared, input.dwTime, controls.band, original_focus, original.Get()};
     DWORD_PTR ignored = 0;
     const LPARAM position = MAKELPARAM(point.x, point.y);
     ReleaseToolbar release{dialog, shared, controls.band, check.toolbar};
     release.down_attempted = true;
+    recovery.Publish(1);
     if (!SendTimed(check.toolbar, WM_LBUTTONDOWN, MK_LBUTTON, position, ignored)) return;
     // Mouse-up is directed to the same verified toolbar, even if the down
     // handler changed focus. Never send a message to a replacement window.
@@ -374,6 +415,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
         !IsChild(check.band, check.toolbar) || !ClassIs(check.toolbar, L"ToolbarWindow32")) return;
     if (!SendTimed(check.toolbar, WM_LBUTTONUP, 0, position, ignored)) return;
     release.up_sent = true;
+    recovery.Publish(2);
     if (!Current(dialog, shared, input.dwTime) || !FindBand(window, check, false) || check.band != controls.band ||
         check.edits != 1 || !SameThread(check.edit, dialog) || !IsWindowEnabled(check.edit) ||
         !FocusIs(dialog.thread, check.edit)) return;
@@ -381,9 +423,16 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     RestoreAddress restore_address{dialog, shared, input.dwTime, controls.band, edit, folder};
     if (!ReadControl(edit, restore_address.previous) || !Current(dialog, shared, input.dwTime) ||
         !FocusIs(dialog.thread, edit)) return;
-    if (SamePhysicalFolder(restore_address.previous, folder)) return;
+    if (SamePhysicalFolder(restore_address.previous, folder)) { recovery.complete = true; return; }
+    if (auto* r = shared->recovery) {
+        r->edit = reinterpret_cast<uintptr_t>(edit);
+        if (wcscpy_s(r->original_text, restore_address.previous.c_str()) ||
+            wcscpy_s(r->attempted_text, folder.c_str())) return;
+    }
+    recovery.Publish(3);
     if (!SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(folder.c_str()), ignored) || !ignored) return;
     restore_address.changed = true;
+    recovery.Publish(4);
     std::wstring text;
     if (!Current(dialog, shared, input.dwTime) || !FindBand(window, check, false) || check.edit != edit ||
         check.edits != 1 || !SameThread(edit, dialog) || !FocusIs(dialog.thread, edit) ||
@@ -393,8 +442,10 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     // input and no WM_COMMAND / IDOK are ever sent by Pulse.
     ReleaseReturn release_return{dialog, shared, controls.band, edit};
     release_return.attempted = true;
+    recovery.Publish(5);
     if (!SendTimed(edit, WM_KEYDOWN, VK_RETURN, 0, ignored)) return;
     restore_address.submitted = true;
+    recovery.Publish(6);
 #ifdef PULSE_WITH_SELFTEST
     shared->test_issued = true;
 #endif
@@ -402,6 +453,10 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
         ClassIs(edit, L"Edit") && GetDlgCtrlID(edit) == kAddressId && IsChild(controls.band, edit) &&
         FocusIs(dialog.thread, edit))
         release_return.released = SendTimed(edit, WM_KEYUP, VK_RETURN, 0, ignored);
+    // A successful key-down is the navigation commit. The editor may be
+    // destroyed immediately; never retain an uncommitted recovery stage for
+    // that completed operation. ReleaseReturn still pairs key-up when safe.
+    recovery.complete = true;
 }
 
 struct Watcher {
@@ -412,6 +467,7 @@ struct Watcher {
     HWINEVENTHOOK foreground = nullptr, destroyed = nullptr;
 
     void ClearMarker() {
+        if (shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) return;
         if (shared->marked_window && SameIdentity(last_dialog) &&
             GetPropW(shared->marked_window, shared->marker.c_str()) == reinterpret_cast<HANDLE>(1))
             RemovePropW(shared->marked_window, shared->marker.c_str());
@@ -419,12 +475,21 @@ struct Watcher {
     }
 
     void OnForeground(HWND window, DWORD event_time) {
-        if (shared->stopping || window != GetForegroundWindow() || GetTickCount() - event_time > 500) {
+        struct Deadline {
+            volatile LONG64* value;
+            explicit Deadline(volatile LONG64* p) : value(p) {
+                if (value) InterlockedExchange64(value, static_cast<LONG64>(GetTickCount64() + 5000));
+            }
+            ~Deadline() { if (value) InterlockedExchange64(value, 0); }
+        } deadline(shared->deadline);
+        if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
+            shared->stopping || (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
+            window != GetForegroundWindow() || GetTickCount() - event_time > 500) {
             transition.OtherForeground(); return;
         }
         WindowIdentity identity{};
         std::wstring folder;
-        if (PulseFolder(window, identity, folder)) {
+        if (PulseFolder(window, shared->owner_pid, identity, folder)) {
             pulse = identity;
             transition.PulseForeground(identity, std::move(folder));
             return;
@@ -435,17 +500,22 @@ struct Watcher {
             Controls controls;
             if (!FindBand(window, controls) || !SameThread(controls.band, identity) ||
                 !SameThread(controls.toolbar, identity) || shared->marker.empty() ||
-                !SameIdentity(identity) || !SetPropW(window, shared->marker.c_str(), reinterpret_cast<HANDLE>(1))) {
+                !SameIdentity(identity) ||
+                (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
+                !SetPropW(window, shared->marker.c_str(), reinterpret_cast<HANDLE>(1))) {
                 transition.OtherForeground(); last_dialog = {}; return;
             }
             shared->marked_window = window;
             last_dialog = identity;
+            if (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) {
+                ClearMarker(); transition.OtherForeground(); last_dialog = {}; return;
+            }
         } else if (GetPropW(window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1)) {
             transition.OtherForeground(); shared->marked_window = nullptr; last_dialog = {}; return;
         }
         transition.DialogForeground(identity);
         WindowIdentity current_pulse{};
-        if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), current_pulse, folder)) {
+        if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), shared->owner_pid, current_pulse, folder)) {
             if (transition.Consume(identity, current_pulse, folder)) Navigate(identity, folder, shared, automation.Get());
         }
         last_dialog = identity;
@@ -465,7 +535,12 @@ struct Watcher {
 thread_local Watcher* active_watcher = nullptr;
 void CALLBACK EventCallback(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD time) {
     if (!active_watcher || !window || object != OBJID_WINDOW || child != CHILDID_SELF) return;
-    if (event == EVENT_SYSTEM_FOREGROUND) active_watcher->OnForeground(window, time);
+    if (event == EVENT_SYSTEM_FOREGROUND) {
+        active_watcher->OnForeground(window, time);
+        if (active_watcher->shared->recovery &&
+            InterlockedCompareExchange(&active_watcher->shared->recovery->stage, 0, 0) != 0)
+            PostQuitMessage(0); // let the parent recover after this process exits
+    }
     else if (event == EVENT_OBJECT_DESTROY) active_watcher->OnDestroy(window);
 }
 DWORD WINAPI ThreadMain(void* context) {
@@ -478,10 +553,6 @@ DWORD WINAPI ThreadMain(void* context) {
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialized)) return 0;
     Watcher watcher{shared};
-    GUID marker_id{};
-    wchar_t marker_text[64]{};
-    if (SUCCEEDED(CoCreateGuid(&marker_id)) && StringFromGUID2(marker_id, marker_text, ARRAYSIZE(marker_text)))
-        shared->marker = std::wstring(L"Pulse.FolderLink.") + marker_text;
     if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
                                    IID_PPV_ARGS(&watcher.automation))) && watcher.automation) {
         active_watcher = &watcher;
@@ -491,6 +562,7 @@ DWORD WINAPI ThreadMain(void* context) {
                                            EventCallback, 0, 0, WINEVENT_OUTOFCONTEXT);
         if (watcher.foreground && watcher.destroyed && !shared->stopping) {
             watcher.OnForeground(GetForegroundWindow(), GetTickCount());
+            if (shared->deadline) InterlockedExchange64(shared->deadline, 0);
             while (!shared->stopping && GetMessageW(&message, nullptr, 0, 0) > 0) {
                 TranslateMessage(&message); DispatchMessageW(&message);
             }
@@ -507,9 +579,16 @@ DWORD WINAPI ThreadMain(void* context) {
 } // namespace
 
 #ifdef PULSE_WITH_SELFTEST
+bool IsPrivateTestDesktop(HDESK desktop) {
+    wchar_t name[256]{};
+    DWORD bytes = 0;
+    return desktop && GetUserObjectInformationW(desktop, UOI_NAME, name, sizeof(name), &bytes) &&
+        std::wstring_view(name).starts_with(L"PulseFolderProbe_");
+}
 bool NativeDialogFolderLinkNavigateForTest(HWND dialog, const std::wstring& folder,
                                             HDESK desktop, bool allow_nonforeground) {
-    if (!desktop || !SetThreadDesktop(desktop)) return false;
+    if (!IsPrivateTestDesktop(desktop) ||
+        (GetThreadDesktop(GetCurrentThreadId()) != desktop && !SetThreadDesktop(desktop))) return false;
     WindowIdentity identity{};
     if (!DialogIdentity(dialog, identity)) return false;
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -524,32 +603,341 @@ bool NativeDialogFolderLinkNavigateForTest(HWND dialog, const std::wstring& fold
     CoUninitialize();
     return shared->test_issued;
 }
+
+NativeDialogFolderLinkTestResult NativeDialogFolderLinkNavigateTwiceForTest(
+    HWND dialog, const std::wstring& first, const std::wstring& second, HDESK desktop) {
+    NativeDialogFolderLinkTestResult result;
+    if (!IsPrivateTestDesktop(desktop) ||
+        (GetThreadDesktop(GetCurrentThreadId()) != desktop && !SetThreadDesktop(desktop))) return result;
+    WindowIdentity identity{};
+    if (!DialogIdentity(dialog, identity)) return result;
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialized)) return result;
+    ComPtr<IUIAutomation> automation;
+    auto shared = std::make_shared<NativeDialogFolderLink::Shared>();
+    auto record = std::make_unique<RecoveryRecord>();
+    shared->recovery = record.get();
+    shared->test_allow_nonforeground = true;
+    if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&automation))) && automation) {
+        Navigate(identity, first, shared, automation.Get());
+        result.first_issued = shared->test_issued;
+        result.first_stage = InterlockedCompareExchange(&record->stage, 0, 0);
+        shared->test_issued = false;
+        Navigate(identity, second, shared, automation.Get());
+        result.second_issued = shared->test_issued;
+        result.second_stage = InterlockedCompareExchange(&record->stage, 0, 0);
+    }
+    automation.Reset();
+    CoUninitialize();
+    return result;
+}
 #endif
 
 
-NativeDialogFolderLink::NativeDialogFolderLink() : shared_(std::make_shared<Shared>()) {
-    auto* context = new std::shared_ptr<Shared>(shared_);
-    thread_ = CreateThread(nullptr, 0, ThreadMain, context, 0, nullptr);
-    if (!thread_) { delete context; shared_->stopping = true; }
-}
-NativeDialogFolderLink::~NativeDialogFolderLink() {
-    Stop();
-    // Final process shutdown must not tear down COM/CRT while the watcher is
-    // still executing. Settings changes keep the object alive on a timeout.
-    if (thread_) { WaitForSingleObject(thread_, INFINITE); CloseHandle(thread_); thread_ = nullptr; }
-}
-bool NativeDialogFolderLink::Stop() noexcept {
-    if (!shared_) return true;
-    shared_->stopping = true;
-    const DWORD id = shared_->thread_id.load();
-    if (id) PostThreadMessageW(id, WM_QUIT, 0, 0);
-    if (thread_) {
-        if (WaitForSingleObject(thread_, 0) != WAIT_OBJECT_0) return false;
-        CloseHandle(thread_);
-        thread_ = nullptr;
+
+namespace {
+struct ParentWait { HANDLE parent = nullptr; HANDLE stop = nullptr; DWORD thread = 0; volatile LONG64* deadline = nullptr; };
+DWORD WINAPI WaitForParent(void* context) {
+    const auto* wait = static_cast<ParentWait*>(context);
+    HANDLE handles[] = {wait->parent, wait->stop};
+    while (WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, 250) == WAIT_TIMEOUT) {
+        const LONG64 deadline = InterlockedCompareExchange64(wait->deadline, 0, 0);
+        if (deadline > 0 && GetTickCount64() >= static_cast<ULONGLONG>(deadline))
+            TerminateProcess(GetCurrentProcess(), 4); // the owned helper, never a third-party process
     }
-    shared_.reset();
+    PostThreadMessageW(wait->thread, WM_QUIT, 0, 0);
+    return 0;
+}
+bool SameExecutable(HANDLE parent) {
+    wchar_t own[32768]{}, other[32768]{};
+    const DWORD size = GetModuleFileNameW(nullptr, own, ARRAYSIZE(own));
+    DWORD other_size = ARRAYSIZE(other);
+    return size && size < ARRAYSIZE(own) && QueryFullProcessImageNameW(parent, 0, other, &other_size) &&
+        _wcsicmp(own, other) == 0;
+}
+bool IsActualParent(DWORD expected_pid) {
+    struct BasicInfo {
+        LONG exit_status;
+        void* peb;
+        ULONG_PTR affinity;
+        LONG priority;
+        ULONG_PTR process_id;
+        ULONG_PTR parent_id;
+    } info{};
+    using Query = LONG (WINAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
+    HMODULE module = GetModuleHandleW(L"ntdll.dll");
+    const auto query = module ? reinterpret_cast<Query>(GetProcAddress(module, "NtQueryInformationProcess")) : nullptr;
+    return query && query(GetCurrentProcess(), 0, &info, sizeof(info), nullptr) >= 0 &&
+        info.process_id == GetCurrentProcessId() && info.parent_id == expected_pid;
+}
+void CloseOwned(HANDLE& value) { if (value) { CloseHandle(value); value = nullptr; } }
+BOOL CALLBACK RemoveOwnMarker(HWND window, LPARAM value) {
+    const auto* marker = reinterpret_cast<const std::wstring*>(value);
+    if (!marker->empty() && GetPropW(window, marker->c_str()) == reinterpret_cast<HANDLE>(1))
+        RemovePropW(window, marker->c_str());
+    return TRUE;
+}
+void CleanupMarker(const std::wstring& marker) {
+    if (!marker.empty()) EnumWindows(RemoveOwnMarker, reinterpret_cast<LPARAM>(&marker));
+}
+void RecoverInterrupted(const std::wstring& marker, RecoveryRecord* record, bool test_nonforeground = false) {
+    if (!record) return;
+    const LONG stage = InterlockedCompareExchange(&record->stage, 0, 0);
+    if (stage <= 0) return;
+    WindowIdentity identity{record->dialog, record->pid, record->thread, record->created};
+    HWND window = reinterpret_cast<HWND>(record->dialog);
+    HWND band = reinterpret_cast<HWND>(record->band);
+    HWND toolbar = reinterpret_cast<HWND>(record->toolbar);
+    HWND edit = reinterpret_cast<HWND>(record->edit);
+    const auto foreground = [window, test_nonforeground] {
+#ifdef PULSE_WITH_SELFTEST
+        if (test_nonforeground) return true;
+#else
+        (void)test_nonforeground;
+#endif
+        return GetForegroundWindow() == window;
+    };
+    if (!SameIdentity(identity) || !SameSecurity(identity.process) ||
+        !foreground() || !IsWindowVisible(window) || !IsWindowEnabled(window) ||
+        !IdleSince(record->input_tick) || GetPropW(window, marker.c_str()) != reinterpret_cast<HANDLE>(1) ||
+        !IsChild(window, band) || !ClassIs(band, L"Address Band Root") ||
+        GetDlgCtrlID(band) != kAddressId || !SameThread(band, identity)) return;
+    if (stage == 1 && IsChild(band, toolbar) && ClassIs(toolbar, L"ToolbarWindow32") &&
+        GetDlgCtrlID(toolbar) == kToolbarId && SameThread(toolbar, identity)) {
+        if (foreground() && IdleSince(record->input_tick) && SameIdentity(identity)) {
+            DWORD_PTR ignored = 0;
+            SendTimed(toolbar, WM_LBUTTONUP, 0, MAKELPARAM(0xffff, 0xffff), ignored);
+        }
+    }
+    // Stage 5 means Return may already have been delivered; never roll back
+    // that address. At stages 3/4 restore only our exact unsubmitted text.
+    if ((stage == 3 || stage == 4) && IsChild(band, edit) && ClassIs(edit, L"Edit") &&
+        GetDlgCtrlID(edit) == kAddressId && SameThread(edit, identity) && FocusIs(identity.thread, edit)) {
+        std::wstring current;
+        if (ReadControl(edit, current) && current == record->attempted_text &&
+            foreground() && IdleSince(record->input_tick) &&
+            SameIdentity(identity) && FocusIs(identity.thread, edit)) {
+            DWORD_PTR ignored = 0;
+            SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(record->original_text), ignored);
+        }
+    }
+}
+struct CleanupTask {
+    HANDLE process = nullptr;
+    HANDLE mapping = nullptr;
+    HANDLE done = nullptr;
+    std::wstring marker;
+};
+DWORD WINAPI CleanupAfterExit(void* parameter) {
+    std::unique_ptr<CleanupTask> task(static_cast<CleanupTask*>(parameter));
+    if (WaitForSingleObject(task->process, INFINITE) == WAIT_OBJECT_0) {
+        auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(task->mapping, FILE_MAP_ALL_ACCESS, 0, 0,
+                                                                  sizeof(RecoveryRecord)));
+        if (record) {
+            if (InterlockedCompareExchange(&record->cleanup_claim, 1, 0) == 0) {
+                RecoverInterrupted(task->marker, record);
+                CleanupMarker(task->marker);
+                InterlockedExchange(&record->cleanup_claim, 2);
+            }
+            UnmapViewOfFile(record);
+        }
+    }
+    SetEvent(task->done);
+    CloseHandle(task->done);
+    CloseHandle(task->mapping);
+    CloseHandle(task->process);
+    return 0;
+}
+bool StartCleanupTask(HANDLE process, HANDLE mapping, HANDLE done, const std::wstring& marker) {
+    auto task = std::make_unique<CleanupTask>();
+    task->marker = marker;
+    const HANDLE self = GetCurrentProcess();
+    if (!DuplicateHandle(self, process, self, &task->process, SYNCHRONIZE, FALSE, 0) ||
+        !DuplicateHandle(self, mapping, self, &task->mapping, FILE_MAP_ALL_ACCESS, FALSE, 0) ||
+        !DuplicateHandle(self, done, self, &task->done, EVENT_MODIFY_STATE, FALSE, 0)) {
+        CloseOwned(task->process); CloseOwned(task->mapping); CloseOwned(task->done); return false;
+    }
+    HANDLE thread = CreateThread(nullptr, 0, CleanupAfterExit, task.get(), 0, nullptr);
+    if (!thread) {
+        CloseOwned(task->process); CloseOwned(task->mapping); CloseOwned(task->done); return false;
+    }
+    task.release();
+    CloseHandle(thread);
     return true;
 }
-bool NativeDialogFolderLink::IsStopping() const noexcept { return !shared_ || shared_->stopping.load(); }
+}
+
+#ifdef PULSE_WITH_SELFTEST
+bool NativeDialogFolderLinkRecoverForTest(HWND dialog, HWND band, HWND toolbar, HWND edit,
+    LONG stage, const std::wstring& previous, const std::wstring& attempted, HDESK desktop) {
+    if (!IsPrivateTestDesktop(desktop) ||
+        (GetThreadDesktop(GetCurrentThreadId()) != desktop && !SetThreadDesktop(desktop)) ||
+        stage < 1 || stage > 6) return false;
+    WindowIdentity identity{};
+    if (!DialogIdentity(dialog, identity) || !IsChild(dialog, band) || !SameThread(band, identity)) return false;
+    GUID id{};
+    wchar_t text[64]{};
+    if (FAILED(CoCreateGuid(&id)) || !StringFromGUID2(id, text, ARRAYSIZE(text))) return false;
+    const std::wstring marker = std::wstring(L"Pulse.FolderLink.") + text;
+    if (!SetPropW(dialog, marker.c_str(), reinterpret_cast<HANDLE>(1))) return false;
+    auto record = std::make_unique<RecoveryRecord>();
+    LASTINPUTINFO input{sizeof(input), 0};
+    const bool valid = GetLastInputInfo(&input) &&
+        !wcscpy_s(record->original_text, previous.c_str()) &&
+        !wcscpy_s(record->attempted_text, attempted.c_str());
+    if (valid) {
+        record->pid = identity.process; record->thread = identity.thread; record->created = identity.process_created;
+        record->dialog = identity.window; record->input_tick = input.dwTime;
+        record->band = reinterpret_cast<uintptr_t>(band);
+        record->toolbar = reinterpret_cast<uintptr_t>(toolbar);
+        record->edit = reinterpret_cast<uintptr_t>(edit);
+        InterlockedExchange(&record->stage, stage);
+        RecoverInterrupted(marker, record.get(), true);
+    }
+    if (GetPropW(dialog, marker.c_str()) == reinterpret_cast<HANDLE>(1)) RemovePropW(dialog, marker.c_str());
+    return valid;
+}
+#endif
+
+int NativeDialogFolderLinkHelper(HANDLE parent, HANDLE stop_event, HANDLE heartbeat, const wchar_t* marker) {
+    DWORD flags = 0;
+    const DWORD parent_pid = parent ? GetProcessId(parent) : 0;
+    const std::wstring marker_value = marker ? marker : L"";
+    GUID marker_id{};
+    if (!parent_pid || parent_pid == GetCurrentProcessId() ||
+        !GetHandleInformation(parent, &flags) || !GetHandleInformation(stop_event, &flags) ||
+        !GetHandleInformation(heartbeat, &flags) ||
+        WaitForSingleObject(parent, 0) != WAIT_TIMEOUT || WaitForSingleObject(stop_event, 0) != WAIT_TIMEOUT ||
+        !IsActualParent(parent_pid) || !SameExecutable(parent) || !SameSecurity(parent_pid) ||
+        !marker_value.starts_with(L"Pulse.FolderLink.") ||
+        FAILED(CLSIDFromString(marker_value.c_str() + 17, &marker_id))) return 2;
+    auto shared = std::make_shared<NativeDialogFolderLink::Shared>();
+    auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(heartbeat, FILE_MAP_WRITE, 0, 0, sizeof(RecoveryRecord)));
+    if (!record) return 2;
+    volatile LONG64* deadline = &record->deadline;
+    shared->owner_pid = parent_pid;
+    shared->stop_event = stop_event;
+    shared->deadline = deadline;
+    shared->recovery = record;
+    shared->marker = marker_value;
+    MSG message{};
+    PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+    ParentWait wait{parent, stop_event, GetCurrentThreadId(), deadline};
+    HANDLE waiter = CreateThread(nullptr, 0, WaitForParent, &wait, 0, nullptr);
+    if (!waiter) { UnmapViewOfFile(record); return 3; }
+    InterlockedExchange64(deadline, static_cast<LONG64>(GetTickCount64() + 5000));
+    ThreadMain(new std::shared_ptr<NativeDialogFolderLink::Shared>(shared));
+    SetEvent(stop_event);
+    WaitForSingleObject(waiter, INFINITE);
+    CloseHandle(waiter);
+    UnmapViewOfFile(record);
+    return 0;
+}
+
+NativeDialogFolderLink::NativeDialogFolderLink() {
+    GUID marker_id{};
+    wchar_t marker_text[64]{};
+    if (FAILED(CoCreateGuid(&marker_id)) || !StringFromGUID2(marker_id, marker_text, ARRAYSIZE(marker_text))) return;
+    marker_ = std::wstring(L"Pulse.FolderLink.") + marker_text;
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    stop_event_ = CreateEventW(&security, TRUE, FALSE, nullptr);
+    heartbeat_mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, sizeof(RecoveryRecord), nullptr);
+    if (heartbeat_mapping_)
+        recovery_view_ = MapViewOfFile(heartbeat_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(RecoveryRecord));
+    if (recovery_view_) deadline_ = &static_cast<RecoveryRecord*>(recovery_view_)->deadline;
+    HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, TRUE, GetCurrentProcessId());
+    job_ = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!stop_event_ || !heartbeat_mapping_ || !deadline_ || !parent || !job_ ||
+        !SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
+    }
+    wchar_t executable[32768]{};
+    const DWORD size = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (!size || size >= ARRAYSIZE(executable)) {
+        CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
+    }
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    std::vector<BYTE> storage(bytes);
+    auto* attributes = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    if (!bytes || !InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) {
+        CloseOwned(parent); CloseOwned(stop_event_); CloseOwned(job_); return;
+    }
+    HANDLE inherited[] = {parent, stop_event_, heartbeat_mapping_};
+    const bool configured = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                       inherited, sizeof(inherited), nullptr, nullptr) != FALSE;
+    PROCESS_INFORMATION process{};
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    startup.StartupInfo.wShowWindow = SW_HIDE;
+    // The helper never reads stdin or writes to the parent's console.
+    startup.StartupInfo.hStdInput = nullptr;
+    startup.StartupInfo.hStdOutput = nullptr;
+    startup.StartupInfo.hStdError = nullptr;
+    startup.lpAttributeList = attributes;
+    std::wstring command = L"\"" + std::wstring(executable) + L"\" --native-folder-link-helper " +
+        std::to_wstring(reinterpret_cast<uintptr_t>(parent)) + L" " +
+        std::to_wstring(reinterpret_cast<uintptr_t>(stop_event_)) + L" " +
+        std::to_wstring(reinterpret_cast<uintptr_t>(heartbeat_mapping_)) + L" " + marker_;
+    const bool created = configured && CreateProcessW(executable, command.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr,
+        &startup.StartupInfo, &process);
+    DeleteProcThreadAttributeList(attributes);
+    CloseOwned(parent);
+    if (!created) { CloseOwned(stop_event_); CloseOwned(job_); return; }
+    cleanup_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!AssignProcessToJobObject(job_, process.hProcess) || !cleanup_event_ ||
+        !StartCleanupTask(process.hProcess, heartbeat_mapping_, cleanup_event_, marker_) ||
+        ResumeThread(process.hThread) == DWORD(-1)) {
+        TerminateProcess(process.hProcess, 1); // child just created by this instance
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        CloseOwned(cleanup_event_); CloseOwned(stop_event_); CloseOwned(job_); return;
+    }
+    CloseHandle(process.hThread);
+    process_ = process.hProcess;
+}
+NativeDialogFolderLink::~NativeDialogFolderLink() {
+    if (stop_event_) SetEvent(stop_event_);
+    CloseOwned(job_); // kill-on-close ends even a blocked helper
+    if (cleanup_event_) WaitForSingleObject(cleanup_event_, 200);
+    CloseOwned(cleanup_event_);
+    CloseOwned(process_);
+    CloseOwned(stop_event_);
+    if (recovery_view_) UnmapViewOfFile(recovery_view_);
+    CloseOwned(heartbeat_mapping_);
+}
+bool NativeDialogFolderLink::Stop() noexcept {
+    if (!process_) return true;
+    if (!stop_started_) {
+        stop_started_ = GetTickCount64();
+        if (!stop_started_) stop_started_ = 1;
+        SetEvent(stop_event_);
+    }
+    if (WaitForSingleObject(process_, 0) != WAIT_OBJECT_0) {
+        if (GetTickCount64() - stop_started_ >= 1000 && job_) TerminateJobObject(job_, 1);
+        return false;
+    }
+    if (cleanup_event_ && WaitForSingleObject(cleanup_event_, 0) != WAIT_OBJECT_0) return false;
+    CloseOwned(process_); CloseOwned(stop_event_); CloseOwned(job_);
+    CloseOwned(cleanup_event_);
+    return true;
+}
+bool NativeDialogFolderLink::IsStopping() noexcept {
+    if (!stop_started_ && process_ && WaitForSingleObject(process_, 0) == WAIT_OBJECT_0) {
+        // Unexpected exit disables this instance until explicitly restarted;
+        // this avoids a process respawn loop after repeated UIA failures.
+        // The dedicated cleanup task watches the process handle directly.
+        // Keep this failed instance inert until explicit stop/restart.
+        return false;
+    }
+    if (!stop_started_ && deadline_) {
+        const LONG64 deadline = InterlockedCompareExchange64(deadline_, 0, 0);
+        if (deadline > 0 && GetTickCount64() >= static_cast<ULONGLONG>(deadline)) Stop();
+    }
+    return stop_started_ != 0;
+}
 } // namespace pulse::app
