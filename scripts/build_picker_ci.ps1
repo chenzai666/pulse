@@ -23,6 +23,9 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover_test.cpp', 'src/app/native_dialog_wire.h',
     'src/app/native_dialog_wire_test.cpp', 'src/app/native_file_dialog_adapter.cpp', 'src/app/native_file_dialog_adapter.h',
     'src/app/folder_source.h', 'src/app/native_folder_follow.h', 'src/bench/native_folder_follow_test.cpp', 'src/bench/folder_source_test.cpp',
+    'src/app/native_dialog_folder_link.h', 'src/app/native_dialog_folder_link.cpp', 'src/app/native_dialog_folder_link_policy.h',
+    'src/bench/native_dialog_folder_link_policy_test.cpp', 'src/bench/native_dialog_folder_link_driver.cpp',
+    'src/bench/native_dialog_folder_link_fixture.cs',
     'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp',
     'src/app/explorer_window_takeover.cpp', 'src/app/explorer_takeover_guard.h',
     'src/bench/explorer_takeover_guard_test.cpp', 'src/bench/explorer_takeover_connection_test.cpp',
@@ -89,6 +92,16 @@ chcp 65001 >nul
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\folder_source_test.cpp" /Fe:"$taskBuild\folder-source-test.exe" /Fo:"$taskBuild\folder-source-test.obj" user32.lib
 if errorlevel 1 exit /b 1
 "$taskBuild\folder-source-test.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_folder_link_policy_test.cpp" /Fe:"$taskBuild\native-dialog-folder-link-policy-test.exe" /Fo:"$taskBuild\native-dialog-folder-link-policy-test.obj"
+if errorlevel 1 exit /b 1
+"$taskBuild\native-dialog-folder-link-policy-test.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 /WX /DPULSE_WITH_SELFTEST=1 "$taskRepo\src\bench\native_dialog_folder_link_driver.cpp" "$taskRepo\src\app\native_dialog_folder_link.cpp" /Fe:"$taskBuild\native-dialog-folder-link-driver.exe" /Fo:"$taskBuild\\" /link user32.lib advapi32.lib ole32.lib oleaut32.lib uiautomationcore.lib uuid.lib
+if errorlevel 1 exit /b 1
+"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:"$taskBuild\native-dialog-folder-link-fixture.exe" "$taskRepo\src\bench\native_dialog_folder_link_fixture.cs"
+if errorlevel 1 exit /b 1
+"$taskBuild\native-dialog-folder-link-fixture.exe" > "$galleryOutput\native-dialog-folder-link.log" 2>&1
 if errorlevel 1 exit /b 1
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1

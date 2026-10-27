@@ -104,6 +104,11 @@ void SyncShellWindows(AppState& s) {
     std::wstring source = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
     if (!app::IsShellWindowPath(source)) source.clear();
     app::PublishFolderSource(s.hwnd, source, !s.isolatedTest && !s.shot.active && !s.menushot);
+    if (!s.isolatedTest && !s.shot.active && !s.menushot) {
+        auto& watcher = s.core.native_dialog_folder_link;
+        if (watcher && watcher->IsStopping() && watcher->Stop()) watcher.reset();
+        if (!watcher) watcher = std::make_unique<app::NativeDialogFolderLink>();
+    }
     SyncExplorerTakeover(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {
@@ -142,6 +147,8 @@ void SyncShellWindows(AppState& s) {
 }
 
 void StopShellWindows(AppState& s) {
+    if (s.core.native_dialog_folder_link && s.core.native_dialog_folder_link->Stop())
+        s.core.native_dialog_folder_link.reset();
     if (s.explorer_takeover) s.explorer_takeover->Stop();
     s.explorer_takeover.reset();
     // Stop synchronizes with posting; release requests which the destroyed

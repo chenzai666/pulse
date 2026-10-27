@@ -31,6 +31,7 @@
 #include "host_window.h"
 #include "window_registry.h"
 #include "live_network_search.h"
+#include "native_dialog_folder_link.h"
 #include "places.h"
 #include "saved_search.h"
 #include "search_history.h"
@@ -193,6 +194,7 @@ struct AppCore {
     std::unique_ptr<app::ShellWindowRegistry> shell_windows;
     std::vector<app::ShellWindowEntry> shell_windows_published;
     std::unique_ptr<app::ExplorerWindowTakeover> explorer_takeover;   // experimental (B站 #1 2b)
+    std::unique_ptr<app::NativeDialogFolderLink> native_dialog_folder_link;
 
     // Cut state mirrored into list rows (ui.md §5.2 rule 6: 55% opacity).
     std::vector<std::wstring> cutPaths;
