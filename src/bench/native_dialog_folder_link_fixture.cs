@@ -49,8 +49,8 @@ using System.Runtime.InteropServices;
  [PreserveSig] int OnOverwrite(IFileDialog d, IShellItem s, out uint response);
 }
 [ComVisible(true), ClassInterface(ClassInterfaceType.None)] sealed class Events : IFileDialogEvents {
- readonly string status; int count=0;
- public Events(string s) { status=s; }
+ readonly string status; readonly bool seedName; bool seeded=false; int count=0;
+ public Events(string s, bool useName) { status=s; seedName=useName; }
  void Write(IFileDialog d) {
   IShellItem item; string folder="", file=""; uint index=0;
   if(d.GetFolder(out item)>=0 && item!=null) { IntPtr p; if(item.GetDisplayName(0x80058000,out p)>=0 && p!=IntPtr.Zero) {folder=Marshal.PtrToStringUni(p);Marshal.FreeCoTaskMem(p);} Marshal.ReleaseComObject(item); }
@@ -59,8 +59,8 @@ using System.Runtime.InteropServices;
  }
  public int OnFileOk(IFileDialog d) {count++;Write(d);return 1;}
  public int OnFolderChanging(IFileDialog d,IShellItem s){return 0;}
- public int OnFolderChange(IFileDialog d){Write(d);return 0;}
- public int OnSelectionChange(IFileDialog d){return 0;}
+ public int OnFolderChange(IFileDialog d){if(seedName&&!seeded){seeded=true;d.SetFileName("verification-only.txt");}Write(d);return 0;}
+ public int OnSelectionChange(IFileDialog d){Write(d);return 0;}
  public int OnShareViolation(IFileDialog d,IShellItem s,out uint r){r=0;return 0;}
  public int OnTypeChange(IFileDialog d){Write(d);return 0;}
  public int OnOverwrite(IFileDialog d,IShellItem s,out uint r){r=0;return 0;}
@@ -93,6 +93,15 @@ static class Probe {
  [DllImport("shell32.dll",CharSet=CharSet.Unicode,PreserveSig=true)] static extern int SHCreateItemFromParsingName(string path,IntPtr bind,ref Guid iid,[MarshalAs(UnmanagedType.Interface)] out IShellItem item);
  static string Class(IntPtr w){var b=new StringBuilder(128);GetClassName(w,b,b.Capacity);return b.ToString();}
  static string Title(IntPtr w){var b=new StringBuilder(1024);GetWindowText(w,b,b.Capacity);return b.ToString();}
+ static bool RunDriver(string driver,string args) {
+  var process=Process.Start(new ProcessStartInfo(driver,args) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true});
+  bool finished=process.WaitForExit(5000);
+  if(!finished){process.Kill();process.WaitForExit();}
+  string output=process.StandardOutput.ReadToEnd(); string error=process.StandardError.ReadToEnd();
+  int code=process.ExitCode; process.Dispose();
+  Console.WriteLine("driver_exit="+code+" timed_out="+(!finished)+" output="+output.Trim()+" error="+error.Trim());
+  return finished&&code==0;
+ }
  static int Child(string mode,string root,string title,string desktopName) {
   IntPtr desktop=OpenDesktop(desktopName,0,false,READOBJECTS|CREATEWINDOW|WRITEOBJECTS|ENUMERATE|HOOKCONTROL);
   if(desktop==IntPtr.Zero || !SetThreadDesktop(desktop)) { Console.WriteLine("child desktop fail: "+Marshal.GetLastWin32Error()); return 10; }
@@ -103,7 +112,7 @@ static class Probe {
   else {d.SetFileTypes(2,new Filter[]{new Filter{name="Text",spec="*.txt"},new Filter{name="All",spec="*.*"}});d.SetFileTypeIndex(2);d.SetFileName("verification-only.txt");}
   Guid iid=new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");IShellItem item;
   if(SHCreateItemFromParsingName(Path.Combine(root,"start"),IntPtr.Zero,ref iid,out item)>=0){d.SetFolder(item);Marshal.ReleaseComObject(item);}
-  if(mode!="folder")d.SetFileName("verification-only.txt"); d.SetTitle(title); var events=new Events(Path.Combine(root,"status-"+mode+".txt"));uint cookie;
+  if(mode!="folder")d.SetFileName("verification-only.txt"); d.SetTitle(title); var events=new Events(Path.Combine(root,"status-"+mode+".txt"),mode!="folder");uint cookie;
   int hr=d.Advise(events,out cookie);if(hr<0)return 11;
   d.Show(IntPtr.Zero);d.Unadvise(cookie);Marshal.ReleaseComObject(d);GC.KeepAlive(events);CloseDesktop(desktop);return 0;
  }
@@ -121,18 +130,14 @@ static class Probe {
   if(dialog!=IntPtr.Zero){
    string status=Path.Combine(root,"status-"+mode+".txt");
    string initial=""; DateTime initialDeadline=DateTime.UtcNow.AddSeconds(5);
-   while(DateTime.UtcNow<initialDeadline) { initial=Read(status); if(initial.StartsWith(Path.Combine(root,"start")+"\n",StringComparison.OrdinalIgnoreCase)) break; Thread.Sleep(50); }
+   while(DateTime.UtcNow<initialDeadline) { initial=Read(status); string[] ready=initial.Split('\n'); if(ready.Length>=4&&String.Equals(ready[0],Path.Combine(root,"start"),StringComparison.OrdinalIgnoreCase)&&(mode=="folder"||ready[1]=="verification-only.txt")) break; Thread.Sleep(50); }
    string[] previous=initial.Split('\n'); string target=Path.Combine(root,"target");
    // The driver links the production code and accepts only this fixture PID.
    string driver=Path.Combine(Path.GetDirectoryName(exe),"native-dialog-folder-link-driver.exe");
-   if(previous.Length>=4 && File.Exists(driver)) {
-    var invalid=Process.Start(new ProcessStartInfo(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"missing")+"\" reject") {UseShellExecute=false,CreateNoWindow=true});
-    bool rejected=invalid.WaitForExit(5000) && invalid.ExitCode==0;
-    if(!invalid.HasExited){invalid.Kill();invalid.WaitForExit();} invalid.Dispose();
+   if(previous.Length>=4 && (mode=="folder"||previous[1]=="verification-only.txt") && File.Exists(driver)) {
+    bool rejected=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"missing")+"\" reject");
     string unchanged=Read(status); rejected &= unchanged==initial;
-    var runner=Process.Start(new ProcessStartInfo(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept") {UseShellExecute=false,CreateNoWindow=true});
-    bool issued=runner.WaitForExit(5000) && runner.ExitCode==0;
-    if(!runner.HasExited){runner.Kill();runner.WaitForExit();} runner.Dispose();
+    bool issued=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
     DateTime until=DateTime.UtcNow.AddSeconds(5);
     while(DateTime.UtcNow<until) { string[] lines=Read(status).Split('\n');
       if(lines.Length>=4 && String.Equals(lines[0],target,StringComparison.OrdinalIgnoreCase) &&
