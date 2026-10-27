@@ -134,10 +134,17 @@ int wmain(int argc, wchar_t** argv) {
         valid ? 1 : 0, controls.shell_views, controls.bands, controls.toolbars, before ? 1 : 0,
         static_cast<void*>(info.hwndFocus), static_cast<void*>(info.hwndCapture), info.flags,
         static_cast<void*>(controls.focus_candidate));
-    // A private desktop is never switched onto the user's display. Its test
-    // dialog may have no active/focused control; put focus on its own edit as
-    // a real user returning to the window would, without changing product checks.
-    if (valid && before && !info.hwndFocus && controls.focus_candidate &&
+    // A previous navigation may leave focus in the address band even after
+    // its directory has changed. Each accept/recovery invocation represents
+    // the user returning to this owned dialog: focus its known filename edit.
+    // No product identity, focus, capture, or security check is relaxed.
+    const bool needs_focus = expect_accept || twice || recover;
+    DWORD candidate_pid = 0;
+    const bool candidate_valid = valid && controls.focus_candidate &&
+        IsChild(dialog, controls.focus_candidate) &&
+        GetWindowThreadProcessId(controls.focus_candidate, &candidate_pid) == target_thread &&
+        candidate_pid == expected_pid;
+    if (needs_focus && before && candidate_valid && info.hwndFocus != controls.focus_candidate &&
         AttachThreadInput(GetCurrentThreadId(), target_thread, TRUE)) {
         SetActiveWindow(dialog);
         SetFocus(controls.focus_candidate);
@@ -146,6 +153,12 @@ int wmain(int argc, wchar_t** argv) {
         const bool after = GetGUIThreadInfo(target_thread, &info) != FALSE;
         std::printf("setup_gui=%d focus=%p capture=%p flags=%lu\n", after ? 1 : 0,
             static_cast<void*>(info.hwndFocus), static_cast<void*>(info.hwndCapture), info.flags);
+    }
+    if (needs_focus && (!candidate_valid || !GetGUIThreadInfo(target_thread, &info) ||
+                        info.hwndFocus != controls.focus_candidate || info.hwndCapture)) {
+        std::printf("fixture_focus_not_ready=1\n");
+        CloseDesktop(desktop);
+        return 1;
     }
     bool result = false;
     if (valid && recover) result = RunRecovery(dialog, target_thread, desktop, argv[4]);

@@ -170,28 +170,37 @@ static class Probe {
     }
     rejected &= observed;
     bool twice=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" twice \""+status+"\"");
-    bool returned=false; int beforeChanges=0;
+    bool returned=false; int beforeChanges=0; string afterTwice=""; DateTime returnedStable=DateTime.UtcNow;
     Int32.TryParse(previous[4],out beforeChanges);
     DateTime twiceUntil=DateTime.UtcNow.AddSeconds(5);
     while(DateTime.UtcNow<twiceUntil) {
-     string[] state=Read(status).Split('\n'); int changes=0;
+     string snapshot=Read(status); string[] state=snapshot.Split('\n'); int changes=0;
      if(state.Length>=5 && Int32.TryParse(state[4],out changes) && changes>=beforeChanges+2 &&
         String.Equals(state[0],previous[0],StringComparison.OrdinalIgnoreCase) &&
-        (mode=="folder"||state[1]==previous[1]) && state[2]==previous[2] && state[3]=="0") {returned=true;break;}
+        (mode=="folder"||state[1]==previous[1]) && state[2]==previous[2] && state[3]=="0") {
+      if(snapshot!=afterTwice){afterTwice=snapshot;returnedStable=DateTime.UtcNow;}
+      else if((DateTime.UtcNow-returnedStable).TotalMilliseconds>=400){returned=true;break;}
+     }
      Thread.Sleep(50);
     }
-    bool issued=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
-    DateTime until=DateTime.UtcNow.AddSeconds(5);
-    while(DateTime.UtcNow<until) { string[] lines=Read(status).Split('\n');
-      if(lines.Length>=4 && String.Equals(lines[0],target,StringComparison.OrdinalIgnoreCase) &&
-         (mode=="folder" || lines[1]==previous[1]) && lines[2]==previous[2] && lines[3]=="0") {ok=rejected&&twice&&returned&&issued;break;} Thread.Sleep(50); }
+    bool issued=twice&&returned&&RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
+    DateTime until=DateTime.UtcNow.AddSeconds(5); string targetSnapshot=""; DateTime targetStable=DateTime.UtcNow;
+    while(DateTime.UtcNow<until) { string snapshot=Read(status); string[] lines=snapshot.Split('\n');
+      if(lines.Length>=5 && !String.IsNullOrEmpty(lines[4]) && String.Equals(lines[0],target,StringComparison.OrdinalIgnoreCase) &&
+         (mode=="folder" || lines[1]==previous[1]) && lines[2]==previous[2] && lines[3]=="0") {
+        if(snapshot!=targetSnapshot){targetSnapshot=snapshot;targetStable=DateTime.UtcNow;}
+        else if((DateTime.UtcNow-targetStable).TotalMilliseconds>=400){ok=rejected&&twice&&returned&&issued;break;}
+      }
+      Thread.Sleep(50);
+    }
     bool recovered=ok&&RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"start")+"\" recover");
-    bool recoveryPreserved=false; DateTime recoveryUntil=DateTime.UtcNow.AddSeconds(2);
+    bool recoveryPreserved=false; string[] targetState=targetSnapshot.Split('\n'); DateTime recoveryUntil=DateTime.UtcNow.AddSeconds(2);
     while(DateTime.UtcNow<recoveryUntil) {
      string[] afterRecovery=Read(status).Split('\n');
      if(afterRecovery.Length>=5&&!String.IsNullOrEmpty(afterRecovery[4])) {
       recoveryPreserved=String.Equals(afterRecovery[0],target,StringComparison.OrdinalIgnoreCase)&&
-       (mode=="folder"||afterRecovery[1]==previous[1])&&afterRecovery[2]==previous[2]&&afterRecovery[3]=="0";
+       (mode=="folder"||afterRecovery[1]==previous[1])&&afterRecovery[2]==previous[2]&&afterRecovery[3]=="0"&&
+       targetState.Length>=5&&afterRecovery[4]==targetState[4];
       break;
      }
      Thread.Sleep(50);
