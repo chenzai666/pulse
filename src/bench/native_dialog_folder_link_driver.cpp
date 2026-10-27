@@ -13,6 +13,9 @@
 #include <string_view>
 #include <utility>
 
+bool RunFolderLinkSequence(HWND dialog, HDESK desktop, const std::wstring& first,
+                           const std::wstring& second, const std::wstring& status, HWND initial_focus);
+
 namespace {
 struct ProbeControls {
     int shell_views = 0;
@@ -101,7 +104,7 @@ bool RunRecovery(HWND dialog, DWORD thread, HDESK desktop, const std::wstring& t
 // Test-only driver. It can inspect only the exact fixture child and private
 // desktop specified by the parent; production builds omit the tested entry.
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 6 || !std::wstring_view(argv[1]).starts_with(L"PulseFolderProbe_")) return 2;
+    if ((argc != 6 && argc != 7) || !std::wstring_view(argv[1]).starts_with(L"PulseFolderProbe_")) return 2;
     wchar_t* end = nullptr;
     const auto raw = _wcstoui64(argv[2], &end, 10);
     if (!raw || !end || *end) return 2;
@@ -112,6 +115,7 @@ int wmain(int argc, wchar_t** argv) {
     const bool twice = std::wstring_view(argv[5]) == L"twice";
     const bool expect_accept = std::wstring_view(argv[5]) == L"accept";
     if (!recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
+    if ((twice && argc != 7) || (!twice && argc != 6)) return 2;
     constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
         DESKTOP_ENUMERATE | DESKTOP_HOOKCONTROL;
     HDESK desktop = OpenDesktopW(argv[1], 0, FALSE, access);
@@ -150,11 +154,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto slash = first.find_last_of(L"\\/");
         if (slash != std::wstring::npos) {
             const auto second = first.substr(0, slash + 1) + L"start";
-            const auto outcome = pulse::app::NativeDialogFolderLinkNavigateTwiceForTest(dialog, first, second, desktop);
-            std::printf("first_issued=%d first_stage=%ld second_issued=%d second_stage=%ld\n",
-                outcome.first_issued ? 1 : 0, outcome.first_stage,
-                outcome.second_issued ? 1 : 0, outcome.second_stage);
-            result = outcome.first_issued && outcome.second_issued && outcome.first_stage == 0 && outcome.second_stage == 0;
+            result = RunFolderLinkSequence(dialog, desktop, first, second, argv[6], controls.focus_candidate);
         }
     } else if (valid) result = pulse::app::NativeDialogFolderLinkNavigateForTest(dialog, argv[4], desktop, true);
     CloseDesktop(desktop);

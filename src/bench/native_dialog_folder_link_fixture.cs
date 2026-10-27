@@ -98,7 +98,7 @@ static class Probe {
  static string Title(IntPtr w){var b=new StringBuilder(1024);GetWindowText(w,b,b.Capacity);return b.ToString();}
  static bool RunDriver(string driver,string args) {
   var process=Process.Start(new ProcessStartInfo(driver,args) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true});
-  bool finished=process.WaitForExit(5000);
+  bool finished=process.WaitForExit(12000);
   if(!finished){process.Kill();process.WaitForExit();}
   string output=process.StandardOutput.ReadToEnd(); string error=process.StandardError.ReadToEnd();
   int code=process.ExitCode; process.Dispose();
@@ -169,7 +169,7 @@ static class Probe {
      Thread.Sleep(50);
     }
     rejected &= observed;
-    bool twice=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" twice");
+    bool twice=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" twice \""+status+"\"");
     bool returned=false; int beforeChanges=0;
     Int32.TryParse(previous[4],out beforeChanges);
     DateTime twiceUntil=DateTime.UtcNow.AddSeconds(5);
