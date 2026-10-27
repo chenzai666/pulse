@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -83,12 +83,14 @@ if (-not $vsRoot) { throw '需要 Visual Studio 2022 C++ 工具' }
 $vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
 $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
-$selftestMode = if ($ReuseRemovalVerification) { 'OFF' } else { 'ON' }
+$selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
+$skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
+$skipRuntime
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\folder_source_test.cpp" /Fe:"$taskBuild\folder-source-test.exe" /Fo:"$taskBuild\folder-source-test.obj" user32.lib
 if errorlevel 1 exit /b 1
 "$taskBuild\folder-source-test.exe"
@@ -107,6 +109,7 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 "$taskBuild\native-dialog-folder-link-fixture.exe" > "$galleryOutput\native-dialog-folder-link.log" 2>&1
 if errorlevel 1 exit /b 1
+:compile_release
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target pulse
@@ -114,7 +117,7 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
-if (-not $ReuseRemovalVerification) {
+if (-not $ReuseRemovalVerification -and -not $BuildOnly) {
 $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $galleryOutput 'settings-integration.log'
 $env:PULSE_TEST_SETTINGS_INTEGRATION = '1'
 $env:PULSE_TEST_DATA_DIR = Join-Path $taskBuild 'isolated-native-dialog-removal'
@@ -127,6 +130,7 @@ try {
     Remove-Item Env:PULSE_TEST_SETTINGS_FLOW, Env:PULSE_TEST_SETTINGS_INTEGRATION, Env:PULSE_TEST_DATA_DIR -ErrorAction SilentlyContinue
 }
 }
+if (-not $BuildOnly) {
 foreach ($case in @('save', 'columns')) {
     $env:PULSE_PICKER_TEST_SNAPSHOT = Join-Path $galleryOutput ($case + '.png')
     $test = Start-Process -FilePath (Join-Path $taskBuild 'pulse.exe') -ArgumentList '--picker-dialog-test', ('--' + $case) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $galleryOutput ($case + '.log')) -RedirectStandardError (Join-Path $galleryOutput ($case + '-error.log'))
@@ -135,7 +139,8 @@ foreach ($case in @('save', 'columns')) {
     if ($test.ExitCode) { throw "内部选择器回归失败：$case" }
 }
 Remove-Item Env:PULSE_PICKER_TEST_SNAPSHOT -ErrorAction SilentlyContinue
-if (-not $ReuseRemovalVerification) {
+}
+if (-not $ReuseRemovalVerification -and -not $BuildOnly) {
 $releaseBatch = Join-Path $taskBuild 'compile-picker-release.bat'
 [IO.File]::WriteAllText($releaseBatch, [IO.File]::ReadAllText($buildBatch).Replace('-DPULSE_WITH_SELFTEST=ON', '-DPULSE_WITH_SELFTEST=OFF'), [Text.UTF8Encoding]::new($false))
 & $releaseBatch

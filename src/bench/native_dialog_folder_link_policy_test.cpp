@@ -34,6 +34,15 @@ int main() {
     Check(t.Consume(dialog, pulse_window, L"C:\\initial"), "unchanged Pulse folder still triggers navigation");
     Check(!t.Consume(dialog, pulse_window, L"C:\\final"), "successful attempt is consumed");
 
+    t.DialogForeground(dialog);
+    t.DialogForeground(dialog);
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.DialogForeground(dialog);
+    t.DialogForeground(dialog);
+    Check(t.Consume(dialog, pulse_window, L"C:\\final"), "duplicate foreground events preserve a matching transition");
+    Check(!t.Consume(dialog, pulse_window, L"C:\\final"), "duplicate events do not permit a second navigation");
+
     Arm(t);
     Check(!t.Consume(dialog, pulse_window, L""), "empty final folder is rejected");
     Check(!t.Consume(dialog, pulse_window, L"C:\\final"), "failed attempt is consumed");

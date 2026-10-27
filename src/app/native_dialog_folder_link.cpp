@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <atomic>
 #include <algorithm>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -403,10 +404,12 @@ struct RecoverySession {
 };
 
 void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
-              const std::shared_ptr<NativeDialogFolderLink::Shared>& shared, IUIAutomation* automation) {
+              const std::shared_ptr<NativeDialogFolderLink::Shared>& shared, IUIAutomation* automation,
+              const DWORD* expected_input = nullptr) {
     LASTINPUTINFO input{sizeof(input), 0};
     if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
-        !GetLastInputInfo(&input) || !Current(dialog, shared, input.dwTime) || !IsFolderSourcePath(folder)) return;
+        !GetLastInputInfo(&input) || (expected_input && input.dwTime != *expected_input) ||
+        !Current(dialog, shared, input.dwTime) || !IsFolderSourcePath(folder)) return;
     const DWORD attributes = GetFileAttributesW(folder.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
         !Current(dialog, shared, input.dwTime)) return;
@@ -502,6 +505,59 @@ struct Watcher {
     WindowIdentity last_dialog{}, pulse{};
     ComPtr<IUIAutomation> automation;
     HWINEVENTHOOK foreground = nullptr, destroyed = nullptr;
+    UINT_PTR poll_timer = 0;
+    WindowIdentity pending_dialog{}, pending_pulse{};
+    std::wstring pending_folder;
+    ULONGLONG queued_at = 0, idle_at = 0;
+    DWORD idle_input = 0;
+    bool navigating = false;
+
+    void CancelPending() {
+        pending_dialog = {}; pending_pulse = {}; pending_folder.clear();
+        queued_at = 0; idle_at = 0; idle_input = 0;
+    }
+
+    void OnTimer() {
+        if (!pending_dialog.valid() || navigating) return;
+        const ULONGLONG now = GetTickCount64();
+        if (shared->stopping || now - queued_at > 1200 ||
+            GetForegroundWindow() != reinterpret_cast<HWND>(pending_dialog.window) ||
+            !SameIdentity(pending_dialog)) { CancelPending(); return; }
+        LASTINPUTINFO input{sizeof(input), 0};
+        if (!GetLastInputInfo(&input)) { CancelPending(); return; }
+        if (!idle_at) {
+            for (const int key : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
+                                  VK_CONTROL, VK_SHIFT, VK_MENU, VK_TAB, VK_LWIN, VK_RWIN})
+                if (GetAsyncKeyState(key) & 0x8000) return;
+            idle_input = input.dwTime;
+            idle_at = now;
+            return;
+        }
+        if (input.dwTime != idle_input) { CancelPending(); return; }
+        if (now - idle_at < 150) return;
+        const WindowIdentity dialog = pending_dialog, source = pending_pulse;
+        const std::wstring expected_folder = pending_folder;
+        const DWORD verified_input = idle_input;
+        CancelPending(); // consume before calls which may reenter the message loop
+        struct Busy {
+            bool& flag;
+            explicit Busy(bool& value) : flag(value) { flag = true; }
+            ~Busy() { flag = false; }
+        } busy(navigating);
+        struct Deadline {
+            volatile LONG64* value;
+            explicit Deadline(volatile LONG64* p) : value(p) {
+                if (value) InterlockedExchange64(value, static_cast<LONG64>(GetTickCount64() + 5000));
+            }
+            ~Deadline() { if (value) InterlockedExchange64(value, 0); }
+        } deadline(shared->deadline);
+        WindowIdentity actual_source{};
+        std::wstring folder;
+        if (!Current(dialog, shared, verified_input) ||
+            !PulseFolder(reinterpret_cast<HWND>(source.window), shared->owner_pid, actual_source, folder) ||
+            !(actual_source == source) || _wcsicmp(folder.c_str(), expected_folder.c_str()) != 0) return;
+        Navigate(dialog, folder, shared, automation.Get(), &verified_input);
+    }
 
     void ClearMarker() {
         if (shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) return;
@@ -512,6 +568,10 @@ struct Watcher {
     }
 
     void OnForeground(HWND window, DWORD event_time) {
+        if (navigating) return; // Current() guards an in-flight navigation; preserve its watchdog.
+        // Out-of-context hooks may deliver an obsolete event after a newer
+        // foreground event. It must not reset the current valid transition.
+        if (window != GetForegroundWindow() || GetTickCount() - event_time > 500) return;
         struct Deadline {
             volatile LONG64* value;
             explicit Deadline(volatile LONG64* p) : value(p) {
@@ -522,10 +582,10 @@ struct Watcher {
         if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
             (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
             (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||
-            shared->stopping || (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
-            window != GetForegroundWindow() || GetTickCount() - event_time > 500) {
-            transition.OtherForeground(); return;
+            shared->stopping || (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT)) {
+            CancelPending(); transition.OtherForeground(); return;
         }
+        if (pending_dialog.valid() && reinterpret_cast<HWND>(pending_dialog.window) != window) CancelPending();
         WindowIdentity identity{};
         std::wstring folder;
         if (PulseFolder(window, shared->owner_pid, identity, folder)) {
@@ -533,7 +593,8 @@ struct Watcher {
             transition.PulseForeground(identity, std::move(folder));
             return;
         }
-        if (!DialogIdentity(window, identity)) { transition.OtherForeground(); return; }
+        if (!DialogIdentity(window, identity)) { CancelPending(); transition.OtherForeground(); return; }
+        if (identity == pending_dialog) return;
         if (!(identity == last_dialog) || shared->marked_window != window) {
             ClearMarker();
             Controls controls;
@@ -559,7 +620,10 @@ struct Watcher {
         transition.DialogForeground(identity);
         WindowIdentity current_pulse{};
         if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), shared->owner_pid, current_pulse, folder)) {
-            if (transition.Consume(identity, current_pulse, folder)) Navigate(identity, folder, shared, automation.Get());
+            if (transition.Consume(identity, current_pulse, folder)) {
+                pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
+                queued_at = GetTickCount64(); idle_at = 0; idle_input = 0;
+            }
         }
         last_dialog = identity;
         // Preserve this dialog as the beginning of the next transition even
@@ -570,6 +634,7 @@ struct Watcher {
         if (reinterpret_cast<uintptr_t>(window) == last_dialog.window ||
             reinterpret_cast<uintptr_t>(window) == pulse.window) {
             transition.OtherForeground();
+            CancelPending();
             ClearMarker();
             last_dialog = {}; pulse = {};
         }
@@ -580,11 +645,18 @@ void CALLBACK EventCallback(HWINEVENTHOOK, DWORD event, HWND window, LONG object
     if (!active_watcher || !window || object != OBJID_WINDOW || child != CHILDID_SELF) return;
     if (event == EVENT_SYSTEM_FOREGROUND) {
         active_watcher->OnForeground(window, time);
-        if (active_watcher->shared->recovery &&
+        if (!active_watcher->navigating && active_watcher->shared->recovery &&
             InterlockedCompareExchange(&active_watcher->shared->recovery->stage, 0, 0) != 0)
             PostQuitMessage(0); // let the parent recover after this process exits
     }
     else if (event == EVENT_OBJECT_DESTROY) active_watcher->OnDestroy(window);
+}
+void CALLBACK PollCallback(HWND, UINT, UINT_PTR timer, DWORD) {
+    if (!active_watcher || timer != active_watcher->poll_timer) return;
+    active_watcher->OnTimer();
+    if (!active_watcher->navigating && active_watcher->shared->recovery &&
+        InterlockedCompareExchange(&active_watcher->shared->recovery->stage, 0, 0) != 0)
+        PostQuitMessage(0);
 }
 DWORD WINAPI ThreadMain(void* context) {
     std::unique_ptr<std::shared_ptr<NativeDialogFolderLink::Shared>> holder(
@@ -603,13 +675,16 @@ DWORD WINAPI ThreadMain(void* context) {
                                             EventCallback, 0, 0, WINEVENT_OUTOFCONTEXT);
         watcher.destroyed = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr,
                                            EventCallback, 0, 0, WINEVENT_OUTOFCONTEXT);
-        if (watcher.foreground && watcher.destroyed && !shared->stopping) {
+        watcher.poll_timer = SetTimer(nullptr, 0, 50, PollCallback);
+        if (watcher.foreground && watcher.destroyed && watcher.poll_timer && !shared->stopping) {
             watcher.OnForeground(GetForegroundWindow(), GetTickCount());
             if (shared->deadline) InterlockedExchange64(shared->deadline, 0);
             while (!shared->stopping && GetMessageW(&message, nullptr, 0, 0) > 0) {
                 TranslateMessage(&message); DispatchMessageW(&message);
             }
         }
+        if (watcher.poll_timer) KillTimer(nullptr, watcher.poll_timer);
+        watcher.CancelPending();
         if (watcher.destroyed) UnhookWinEvent(watcher.destroyed);
         if (watcher.foreground) UnhookWinEvent(watcher.foreground);
         watcher.ClearMarker();

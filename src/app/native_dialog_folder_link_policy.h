@@ -28,6 +28,8 @@ public:
     void OtherForeground() noexcept { Reset(); }
 
     void DialogForeground(const WindowIdentity& dialog) {
+        if ((phase_ == Phase::Dialog || phase_ == Phase::Returned) &&
+            dialog.valid() && dialog == dialog_) return;
         // Return to precisely the dialog that was active before Pulse.
         if (phase_ == Phase::Pulse && dialog.valid() && dialog == dialog_) {
             phase_ = Phase::Returned;
@@ -41,6 +43,7 @@ public:
     }
 
     void PulseForeground(const WindowIdentity& pulse, std::wstring folder) {
+        if (phase_ == Phase::Pulse && pulse.valid() && pulse == pulse_ && !folder.empty()) return;
         if (phase_ != Phase::Dialog || !pulse.valid() || folder.empty()) {
             Reset();
             return;
