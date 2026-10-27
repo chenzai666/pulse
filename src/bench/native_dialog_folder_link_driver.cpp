@@ -15,6 +15,8 @@
 
 bool RunFolderLinkSequence(HWND dialog, HDESK desktop, const std::wstring& first,
                            const std::wstring& second, const std::wstring& status, HWND initial_focus);
+bool RunFolderLinkFault(HWND dialog, HDESK desktop, const std::wstring& folder,
+                        const std::wstring& mapping_name, const std::wstring& marker, bool recover);
 
 namespace {
 struct ProbeControls {
@@ -114,7 +116,7 @@ bool RunRecovery(HWND dialog, DWORD thread, HDESK desktop, const std::wstring& t
 // Test-only driver. It can inspect only the exact fixture child and private
 // desktop specified by the parent; production builds omit the tested entry.
 int wmain(int argc, wchar_t** argv) {
-    if ((argc != 6 && argc != 7) || !std::wstring_view(argv[1]).starts_with(L"PulseFolderProbe_")) return 2;
+    if ((argc != 6 && argc != 7 && argc != 8) || !std::wstring_view(argv[1]).starts_with(L"PulseFolderProbe_")) return 2;
     wchar_t* end = nullptr;
     const auto raw = _wcstoui64(argv[2], &end, 10);
     if (!raw || !end || *end) return 2;
@@ -122,11 +124,14 @@ int wmain(int argc, wchar_t** argv) {
     const auto expected_pid = wcstoul(argv[3], &end, 10);
     if (!expected_pid || !end || *end) return 2;
     const bool stale = std::wstring_view(argv[5]) == L"stale";
+    const bool fault = std::wstring_view(argv[5]) == L"fault";
+    const bool fault_recover = std::wstring_view(argv[5]) == L"fault-recover";
     const bool recover = std::wstring_view(argv[5]) == L"recover";
     const bool twice = std::wstring_view(argv[5]) == L"twice";
     const bool expect_accept = std::wstring_view(argv[5]) == L"accept";
-    if (!stale && !recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
-    if ((twice && argc != 7) || (!twice && argc != 6)) return 2;
+    if (!fault && !fault_recover && !stale && !recover && !twice && !expect_accept && std::wstring_view(argv[5]) != L"reject") return 2;
+    if ((twice && argc != 7) || ((fault || fault_recover) && argc != 8) ||
+        (!twice && !fault && !fault_recover && argc != 6)) return 2;
     constexpr DWORD access = DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW |
         DESKTOP_ENUMERATE | DESKTOP_HOOKCONTROL;
     HDESK desktop = OpenDesktopW(argv[1], 0, FALSE, access);
@@ -159,7 +164,7 @@ int wmain(int argc, wchar_t** argv) {
     // its directory has changed. Each accept/recovery invocation represents
     // the user returning to this owned dialog: focus its known filename edit.
     // No product identity, focus, capture, or security check is relaxed.
-    const bool needs_focus = expect_accept || twice || recover;
+    const bool needs_focus = expect_accept || twice || recover || fault;
     DWORD candidate_pid = 0;
     const bool candidate_valid = valid && controls.focus_candidate &&
         IsChild(dialog, controls.focus_candidate) &&
@@ -182,7 +187,8 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
     bool result = false;
-    if (valid && recover) result = RunRecovery(dialog, target_thread, desktop, argv[4]);
+    if (valid && (fault || fault_recover)) result = RunFolderLinkFault(dialog, desktop, argv[4], argv[6], argv[7], fault_recover);
+    else if (valid && recover) result = RunRecovery(dialog, target_thread, desktop, argv[4]);
     else if (valid && twice) {
         const std::wstring first = argv[4];
         const auto slash = first.find_last_of(L"\\/");
@@ -192,7 +198,7 @@ int wmain(int argc, wchar_t** argv) {
         }
     } else if (valid) result = pulse::app::NativeDialogFolderLinkNavigateForTest(dialog, argv[4], desktop, true);
     CloseDesktop(desktop);
-    if (twice || recover) return result ? 0 : 1;
+    if (fault || fault_recover || twice || recover) return result ? 0 : 1;
     std::printf("issued=%d expected=%d\n", result ? 1 : 0, expect_accept ? 1 : 0);
     return result == expect_accept ? 0 : 1;
 }

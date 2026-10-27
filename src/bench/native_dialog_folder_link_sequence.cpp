@@ -77,3 +77,44 @@ bool RunFolderLinkSequence(HWND dialog, HDESK desktop, const std::wstring& first
     automation.Reset(); CoUninitialize();
     return first_issued && first_stage == 0 && reached && focus && second_issued && second_stage == 0;
 }
+
+// Cross-process fault harness. The caller exclusively owns the private
+// desktop, target dialog and named mapping, and terminates only this driver.
+// No test hooks or state are included in production builds.
+bool RunFolderLinkFault(HWND dialog, HDESK desktop, const std::wstring& folder,
+                        const std::wstring& mapping_name, const std::wstring& marker, bool recover) {
+    using namespace pulse::app;
+    if (!IsPrivateTestDesktop(desktop) || !mapping_name.starts_with(L"Local\\PulseFolderProbe_") ||
+        !marker.starts_with(L"Pulse.FolderLink.{") ||
+        (GetThreadDesktop(GetCurrentThreadId()) != desktop && !SetThreadDesktop(desktop))) return false;
+    GUID guid{};
+    if (FAILED(CLSIDFromString(marker.c_str() + 17, &guid))) return false;
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, mapping_name.c_str());
+    if (!mapping) return false;
+    auto* record = static_cast<RecoveryRecord*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(RecoveryRecord)));
+    if (!record) { CloseHandle(mapping); return false; }
+    WindowIdentity identity{};
+    bool ok = DialogIdentity(dialog, identity);
+    if (ok && recover) {
+        const LONG stage = InterlockedCompareExchange(&record->stage, 0, 0);
+        std::printf("fault_recovery_stage=%ld\n", stage);
+        ok = stage >= 1 && stage <= 6 && record->dialog == identity.window &&
+             record->pid == identity.process && record->thread == identity.thread && record->created == identity.process_created;
+        if (ok) RecoverInterrupted(marker, record, true);
+    } else if (ok) {
+        ok = !GetPropW(dialog, marker.c_str()) && SetPropW(dialog, marker.c_str(), reinterpret_cast<HANDLE>(1));
+        const HRESULT initialized = ok ? CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED) : E_FAIL;
+        if (ok && SUCCEEDED(initialized)) {
+            Microsoft::WRL::ComPtr<IUIAutomation> automation;
+            auto shared = std::make_shared<NativeDialogFolderLink::Shared>();
+            shared->recovery = record; shared->test_allow_nonforeground = true;
+            shared->marker = marker; shared->marked_window = dialog;
+            if (SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(&automation))) && automation)
+                Navigate(identity, folder, shared, automation.Get());
+            automation.Reset(); CoUninitialize();
+        } else ok = false;
+    }
+    UnmapViewOfFile(record); CloseHandle(mapping);
+    return ok;
+}

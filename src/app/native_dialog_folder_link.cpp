@@ -222,19 +222,17 @@ bool FocusIs(DWORD thread, HWND control) {
 bool Current(const WindowIdentity& dialog, const std::shared_ptr<NativeDialogFolderLink::Shared>& shared,
              DWORD input_tick) {
     HWND window = reinterpret_cast<HWND>(dialog.window);
-    bool foreground = GetForegroundWindow() == window;
-    bool idle = IdleSince(input_tick);
+    if (shared->stopping || !IsWindowVisible(window) || !IsWindowEnabled(window) ||
+        (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
+        (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||
+        (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
+        !ClassIs(window, L"#32770") || !SameIdentity(dialog) || !SameSecurity(dialog.process) ||
+        (!shared->marker.empty() && (shared->marked_window != window ||
+            GetPropW(window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1)))) return false;
 #ifdef PULSE_WITH_SELFTEST
-    if (shared->test_allow_nonforeground) { foreground = true; idle = true; }
+    if (shared->test_allow_nonforeground) return true;
 #endif
-    return !shared->stopping && foreground && IsWindowVisible(window) &&
-        (!shared->stop_event || WaitForSingleObject(shared->stop_event, 0) == WAIT_TIMEOUT) &&
-        (!shared->owner || WaitForSingleObject(shared->owner, 0) == WAIT_TIMEOUT) &&
-        (!shared->supervisor || WaitForSingleObject(shared->supervisor, 0) == WAIT_TIMEOUT) &&
-        IsWindowEnabled(window) && ClassIs(window, L"#32770") && SameIdentity(dialog) &&
-        SameSecurity(dialog.process) && idle &&
-        (shared->marker.empty() || (shared->marked_window == window &&
-            GetPropW(window, shared->marker.c_str()) == reinterpret_cast<HANDLE>(1)));
+    return !shared->stopping && GetForegroundWindow() == window && IdleSince(input_tick);
 }
 
 bool BlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
@@ -342,19 +340,26 @@ bool SamePhysicalFolder(const std::wstring& left, const std::wstring& right) {
 struct ReleaseToolbar {
     const WindowIdentity& dialog;
     const std::shared_ptr<NativeDialogFolderLink::Shared>& shared;
+    DWORD input_tick;
     HWND band;
     HWND toolbar;
     bool down_attempted = false;
     bool up_sent = false;
     ~ReleaseToolbar() {
-        if (!down_attempted || up_sent || !SameIdentity(dialog) || !SameSecurity(dialog.process) ||
+        HWND window = reinterpret_cast<HWND>(dialog.window);
+        if (!down_attempted || up_sent || !Current(dialog, shared, input_tick) ||
             shared->marker.empty() || shared->marked_window != reinterpret_cast<HWND>(dialog.window) ||
             GetPropW(shared->marked_window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1) ||
+            !IsChild(window, band) || !ClassIs(band, L"Address Band Root") ||
+            GetDlgCtrlID(band) != kAddressId || !SameThread(band, dialog) ||
             !IsWindow(toolbar) || !IsChild(band, toolbar) || !ClassIs(toolbar, L"ToolbarWindow32") ||
             GetDlgCtrlID(toolbar) != kToolbarId || !SameThread(toolbar, dialog)) return;
         GUITHREADINFO info{sizeof(info)};
         // Only release our down when this exact toolbar still owns capture.
-        if (GetGUIThreadInfo(dialog.thread, &info) && info.hwndCapture == toolbar) {
+        if (GetGUIThreadInfo(dialog.thread, &info) && info.hwndCapture == toolbar &&
+            Current(dialog, shared, input_tick) && IsChild(window, band) && IsChild(band, toolbar) &&
+            ClassIs(band, L"Address Band Root") && GetDlgCtrlID(band) == kAddressId && SameThread(band, dialog) &&
+            ClassIs(toolbar, L"ToolbarWindow32") && GetDlgCtrlID(toolbar) == kToolbarId && SameThread(toolbar, dialog)) {
             DWORD_PTR ignored = 0;
             // Release outside the client area so it cannot invoke a toolbar
             // item which has moved underneath the original blank point.
@@ -366,16 +371,24 @@ struct ReleaseToolbar {
 struct ReleaseReturn {
     const WindowIdentity& dialog;
     const std::shared_ptr<NativeDialogFolderLink::Shared>& shared;
+    DWORD input_tick;
     HWND band;
     HWND edit;
     bool attempted = false;
     bool released = false;
     ~ReleaseReturn() {
-        if (!attempted || released || !SameIdentity(dialog) || !SameSecurity(dialog.process) ||
+        HWND window = reinterpret_cast<HWND>(dialog.window);
+        if (!attempted || released || !Current(dialog, shared, input_tick) ||
             shared->marker.empty() || shared->marked_window != reinterpret_cast<HWND>(dialog.window) ||
             GetPropW(shared->marked_window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1) ||
+            !IsChild(window, band) || !ClassIs(band, L"Address Band Root") ||
+            GetDlgCtrlID(band) != kAddressId || !SameThread(band, dialog) ||
             !IsWindow(edit) || !IsChild(band, edit) || !ClassIs(edit, L"Edit") ||
             GetDlgCtrlID(edit) != kAddressId || !SameThread(edit, dialog) || !FocusIs(dialog.thread, edit)) return;
+        if (!Current(dialog, shared, input_tick) || !IsChild(window, band) || !IsChild(band, edit) ||
+            !ClassIs(band, L"Address Band Root") || GetDlgCtrlID(band) != kAddressId || !SameThread(band, dialog) ||
+            !ClassIs(edit, L"Edit") || GetDlgCtrlID(edit) != kAddressId || !SameThread(edit, dialog) ||
+            !FocusIs(dialog.thread, edit)) return;
         DWORD_PTR ignored = 0;
         SendTimed(edit, WM_KEYUP, VK_RETURN, 0, ignored);
     }
@@ -429,7 +442,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     RestoreFocus restore{dialog, shared, input.dwTime, controls.band, original_focus, original.Get()};
     DWORD_PTR ignored = 0;
     const LPARAM position = MAKELPARAM(point.x, point.y);
-    ReleaseToolbar release{dialog, shared, controls.band, check.toolbar};
+    ReleaseToolbar release{dialog, shared, input.dwTime, controls.band, check.toolbar};
     release.down_attempted = true;
     recovery.Publish(1);
     if (!SendTimed(check.toolbar, WM_LBUTTONDOWN, MK_LBUTTON, position, ignored)) return;
@@ -464,7 +477,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
         !FocusIs(dialog.thread, edit)) return;
     // Only the proven, focused Address Band edit receives Enter. No global
     // input and no WM_COMMAND / IDOK are ever sent by Pulse.
-    ReleaseReturn release_return{dialog, shared, controls.band, edit};
+    ReleaseReturn release_return{dialog, shared, input.dwTime, controls.band, edit};
     release_return.attempted = true;
     recovery.Publish(5);
     if (!SendTimed(edit, WM_KEYDOWN, VK_RETURN, 0, ignored)) return;
@@ -747,14 +760,18 @@ void RecoverInterrupted(const std::wstring& marker, RecoveryRecord* record, bool
 #endif
         return GetForegroundWindow() == window;
     };
-    if (!SameIdentity(identity) || !SameSecurity(identity.process) ||
-        !foreground() || !IsWindowVisible(window) || !IsWindowEnabled(window) ||
-        !IdleSince(record->input_tick) || GetPropW(window, marker.c_str()) != reinterpret_cast<HANDLE>(1) ||
-        !IsChild(window, band) || !ClassIs(band, L"Address Band Root") ||
-        GetDlgCtrlID(band) != kAddressId || !SameThread(band, identity)) return;
+    const auto valid_target = [&] {
+        return SameIdentity(identity) && SameSecurity(identity.process) && foreground() &&
+            IsWindowVisible(window) && IsWindowEnabled(window) && IdleSince(record->input_tick) &&
+            GetPropW(window, marker.c_str()) == reinterpret_cast<HANDLE>(1) &&
+            IsChild(window, band) && ClassIs(band, L"Address Band Root") &&
+            GetDlgCtrlID(band) == kAddressId && SameThread(band, identity);
+    };
+    if (!valid_target()) return;
     if (stage == 1 && IsChild(band, toolbar) && ClassIs(toolbar, L"ToolbarWindow32") &&
         GetDlgCtrlID(toolbar) == kToolbarId && SameThread(toolbar, identity)) {
-        if (foreground() && IdleSince(record->input_tick) && SameIdentity(identity)) {
+        if (valid_target() && IsChild(band, toolbar) && ClassIs(toolbar, L"ToolbarWindow32") &&
+            GetDlgCtrlID(toolbar) == kToolbarId && SameThread(toolbar, identity)) {
             DWORD_PTR ignored = 0;
             SendTimed(toolbar, WM_LBUTTONUP, 0, MAKELPARAM(0xffff, 0xffff), ignored);
         }
@@ -765,8 +782,8 @@ void RecoverInterrupted(const std::wstring& marker, RecoveryRecord* record, bool
         GetDlgCtrlID(edit) == kAddressId && SameThread(edit, identity) && FocusIs(identity.thread, edit)) {
         std::wstring current;
         if (ReadControl(edit, current) && current == record->attempted_text &&
-            foreground() && IdleSince(record->input_tick) &&
-            SameIdentity(identity) && FocusIs(identity.thread, edit)) {
+            valid_target() && IsChild(band, edit) && ClassIs(edit, L"Edit") &&
+            GetDlgCtrlID(edit) == kAddressId && SameThread(edit, identity) && FocusIs(identity.thread, edit)) {
             DWORD_PTR ignored = 0;
             SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(record->original_text), ignored);
         }
