@@ -109,15 +109,16 @@ void SyncShellWindows(AppState& s) {
         publish_folder = true;
 #endif
     app::PublishFolderSource(s.hwnd, source, publish_folder);
+    bool enable_folder_link = !s.isolatedTest && !s.shot.active && !s.menushot;
 #ifdef PULSE_WITH_SELFTEST
-    // The production integration is held back until the complete lifecycle
-    // and native-dialog end-to-end checks have passed.
-    if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0) {
+    if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0)
+        enable_folder_link = true;
+#endif
+    if (enable_folder_link) {
         auto& watcher = s.core.native_dialog_folder_link;
         if (watcher && watcher->IsStopping() && watcher->Stop()) watcher.reset();
         if (!watcher) watcher = std::make_unique<app::NativeDialogFolderLink>();
     }
-#endif
     SyncExplorerTakeover(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {
