@@ -49,17 +49,17 @@ using System.Runtime.InteropServices;
  [PreserveSig] int OnOverwrite(IFileDialog d, IShellItem s, out uint response);
 }
 [ComVisible(true), ClassInterface(ClassInterfaceType.None)] sealed class Events : IFileDialogEvents {
- readonly string status; int count=0;
+ readonly string status; int count=0; int folderChanges=0;
  public Events(string s) { status=s; }
  public void Write(IFileDialog d) {
   IShellItem item; string folder="", file=""; uint index=0;
   if(d.GetFolder(out item)>=0 && item!=null) { IntPtr p; if(item.GetDisplayName(0x80058000,out p)>=0 && p!=IntPtr.Zero) {folder=Marshal.PtrToStringUni(p);Marshal.FreeCoTaskMem(p);} Marshal.ReleaseComObject(item); }
   d.GetFileName(out file); d.GetFileTypeIndex(out index);
-  try {File.WriteAllText(status, folder+"\n"+(file??"")+"\n"+index+"\n"+count+"\n",Encoding.UTF8);} catch(IOException) {}
+  try {File.WriteAllText(status, folder+"\n"+(file??"")+"\n"+index+"\n"+count+"\n"+folderChanges+"\n",Encoding.UTF8);} catch(IOException) {}
  }
  public int OnFileOk(IFileDialog d) {count++;Write(d);return 1;}
  public int OnFolderChanging(IFileDialog d,IShellItem s){return 0;}
- public int OnFolderChange(IFileDialog d){Write(d);return 0;}
+ public int OnFolderChange(IFileDialog d){folderChanges++;Write(d);return 0;}
  public int OnSelectionChange(IFileDialog d){Write(d);return 0;}
  public int OnShareViolation(IFileDialog d,IShellItem s,out uint r){r=0;return 0;}
  public int OnTypeChange(IFileDialog d){Write(d);return 0;}
@@ -140,16 +140,35 @@ static class Probe {
   bool ok=false;
   if(dialog!=IntPtr.Zero){
    string status=Path.Combine(root,"status-"+mode+".txt");
-   string initial=""; DateTime initialDeadline=DateTime.UtcNow.AddSeconds(5);
-   while(DateTime.UtcNow<initialDeadline) { initial=Read(status); string[] ready=initial.Split('\n'); if(ready.Length>=4&&String.Equals(ready[0],Path.Combine(root,"start"),StringComparison.OrdinalIgnoreCase)&&(mode=="folder"||ready[1]=="verification-only.txt")) break; Thread.Sleep(50); }
+   string initial="", last=""; DateTime stableSince=DateTime.UtcNow; DateTime initialDeadline=DateTime.UtcNow.AddSeconds(5);
+   while(DateTime.UtcNow<initialDeadline) {
+    string candidate=Read(status); string[] ready=candidate.Split('\n');
+    bool complete=ready.Length>=5 && !String.IsNullOrEmpty(ready[4]) && String.Equals(ready[0],Path.Combine(root,"start"),StringComparison.OrdinalIgnoreCase) && (mode=="folder"||ready[1]=="verification-only.txt");
+    if(complete) {if(candidate!=last){last=candidate;stableSince=DateTime.UtcNow;} else if((DateTime.UtcNow-stableSince).TotalMilliseconds>=400){initial=candidate;break;}}
+    Thread.Sleep(50);
+   }
    string[] previous=initial.Split('\n'); string target=Path.Combine(root,"target");
    Console.WriteLine("initial="+initial.Replace(root,"<root>").Replace("\n","|"));
    // The driver links the production code and accepts only this fixture PID.
    string driver=Path.Combine(Path.GetDirectoryName(exe),"native-dialog-folder-link-driver.exe");
-   if(previous.Length>=4 && (mode=="folder"||previous[1]=="verification-only.txt") &&
+   if(previous.Length>=5 && (mode=="folder"||previous[1]=="verification-only.txt") &&
       (mode=="folder"||previous[2]=="2") && previous[3]=="0" && File.Exists(driver)) {
     bool rejected=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+Path.Combine(root,"missing")+"\" reject");
-    string unchanged=Read(status); rejected &= unchanged==initial;
+    // Periodic writes can briefly expose a truncated file; compare complete
+    // snapshots for a bounded interval, and track actual folder-change events
+    // so a transient unwanted navigation cannot hide behind a later snapshot.
+    bool observed=false; DateTime rejectUntil=DateTime.UtcNow.AddMilliseconds(750);
+    while(DateTime.UtcNow<rejectUntil) {
+     string[] unchanged=Read(status).Split('\n');
+     if(unchanged.Length>=5&&!String.IsNullOrEmpty(unchanged[4])) {
+      observed=true;
+      rejected &= String.Equals(unchanged[0],previous[0],StringComparison.OrdinalIgnoreCase) &&
+       (mode=="folder"||unchanged[1]==previous[1]) && unchanged[2]==previous[2] &&
+       unchanged[3]=="0" && unchanged[4]==previous[4];
+     }
+     Thread.Sleep(50);
+    }
+    rejected &= observed;
     bool issued=RunDriver(driver,"\""+desktopName+"\" "+dialog.ToInt64()+" "+proc.Id+" \""+target+"\" accept");
     DateTime until=DateTime.UtcNow.AddSeconds(5);
     while(DateTime.UtcNow<until) { string[] lines=Read(status).Split('\n');
@@ -158,7 +177,7 @@ static class Probe {
     bool unwritten=!File.Exists(Path.Combine(root,"start","verification-only.txt")) &&
       !File.Exists(Path.Combine(target,"verification-only.txt"));
     ok &= unwritten;
-    Console.WriteLine("invalid_rejected="+rejected+" navigation_issued="+issued+" fixture_file_absent="+unwritten);
+    Console.WriteLine("invalid_rejected="+rejected+" reject_snapshot_observed="+observed+" navigation_issued="+issued+" fixture_file_absent="+unwritten);
    }
    Console.WriteLine("final="+Read(status).Replace(root,"<root>").Replace("\n","|")); if(IsWindow(dialog))PostMessage(dialog,0x111,(IntPtr)2,IntPtr.Zero);
   }
