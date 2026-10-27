@@ -16,7 +16,7 @@ if ($text.Contains($marker)) {
 $customMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes('PulseCustomMainWindow'))
 if ($text.Contains($customMarker)) {
     foreach ($removed in @('--native-dialog-picker', 'Pulse.NativeDialogTakeover.Session.v1',
-        'Pulse.Picker.Listary.v1', 'Pulse.FolderSource.v1', 'integration_file_dialogs')) {
+        'Pulse.Picker.Listary.v1', 'integration_file_dialogs')) {
         $removedMarker = [Text.Encoding]::ASCII.GetString([Text.Encoding]::Unicode.GetBytes($removed))
         if ($text.Contains($removedMarker)) { throw "正式程序仍包含已移除的文件弹窗接管入口：$removed" }
     }

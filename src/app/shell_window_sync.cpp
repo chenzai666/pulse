@@ -5,6 +5,7 @@
 #include "app_navigation.h"
 #include "app_runtime.h"
 #include "app_state.h"
+#include "folder_source.h"
 #include "open_routing.h"
 #include "tray_reveal.h"
 #include "window_registry.h"
@@ -97,6 +98,12 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 } // namespace
 
 void SyncShellWindows(AppState& s) {
+    // Expose only the active physical folder to local folder integrations.
+    // Windows file dialogs continue to be handled by the operating system.
+    const app::Tab* active = ActiveTab(s);
+    std::wstring source = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
+    if (!app::IsShellWindowPath(source)) source.clear();
+    app::PublishFolderSource(s.hwnd, source, !s.isolatedTest && !s.shot.active && !s.menushot);
     SyncExplorerTakeover(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {

@@ -22,7 +22,7 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h', 'src/app/native_dialog_takeover.cpp',
     'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover_test.cpp', 'src/app/native_dialog_wire.h',
     'src/app/native_dialog_wire_test.cpp', 'src/app/native_file_dialog_adapter.cpp', 'src/app/native_file_dialog_adapter.h',
-    'src/app/folder_source.h', 'src/app/native_folder_follow.h', 'src/bench/native_folder_follow_test.cpp',
+    'src/app/folder_source.h', 'src/app/native_folder_follow.h', 'src/bench/native_folder_follow_test.cpp', 'src/bench/folder_source_test.cpp',
     'src/bench/native_dialog_fixture.cpp', 'src/bench/native_file_dialog_adapter_test.cpp',
     'src/app/explorer_window_takeover.cpp', 'src/app/explorer_takeover_guard.h',
     'src/bench/explorer_takeover_guard_test.cpp', 'src/bench/explorer_takeover_connection_test.cpp',
@@ -86,6 +86,10 @@ $selftestMode = if ($ReuseRemovalVerification) { 'OFF' } else { 'ON' }
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
+cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\folder_source_test.cpp" /Fe:"$taskBuild\folder-source-test.exe" /Fo:"$taskBuild\folder-source-test.obj" user32.lib
+if errorlevel 1 exit /b 1
+"$taskBuild\folder-source-test.exe"
+if errorlevel 1 exit /b 1
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
 cmake --build "$taskBuild" --parallel 4 --target pulse
