@@ -22,6 +22,10 @@ on:
         description: '设置源码未变时复用已通过的弹窗移除回归'
         type: boolean
         default: false
+      picker_build_only:
+        description: '仅构建弹窗修复正式版，界面验收由用户完成'
+        type: boolean
+        default: false
       home_widgets_only:
         description: 'file-ui 范围中仅验证主页和侧边栏设置'
         type: boolean
@@ -181,6 +185,7 @@ jobs:
     uses: ./.github/workflows/picker.yml
     with:
       reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
+      build_only: ${{ inputs.picker_build_only == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'
     uses: ./.github/workflows/status-center.yml
