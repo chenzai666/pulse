@@ -90,14 +90,15 @@ $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regre
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
+rem Pure transition regression has no windows, input or user configuration.
+cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_folder_link_policy_test.cpp" /Fe:"$taskBuild\native-dialog-folder-link-policy-test.exe" /Fo:"$taskBuild\native-dialog-folder-link-policy-test.obj"
+if errorlevel 1 exit /b 1
+"$taskBuild\native-dialog-folder-link-policy-test.exe" > "$galleryOutput\native-dialog-folder-link-policy.log" 2>&1
+if errorlevel 1 exit /b 1
 $skipRuntime
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\folder_source_test.cpp" /Fe:"$taskBuild\folder-source-test.exe" /Fo:"$taskBuild\folder-source-test.obj" user32.lib
 if errorlevel 1 exit /b 1
 "$taskBuild\folder-source-test.exe"
-if errorlevel 1 exit /b 1
-cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_folder_link_policy_test.cpp" /Fe:"$taskBuild\native-dialog-folder-link-policy-test.exe" /Fo:"$taskBuild\native-dialog-folder-link-policy-test.obj"
-if errorlevel 1 exit /b 1
-"$taskBuild\native-dialog-folder-link-policy-test.exe"
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 /WX /DPULSE_WITH_SELFTEST=1 "$taskRepo\src\bench\native_dialog_folder_link_driver.cpp" "$taskRepo\src\bench\native_dialog_folder_link_sequence.cpp" /Fe:"$taskBuild\native-dialog-folder-link-driver.exe" /Fo:"$taskBuild\\" /link user32.lib advapi32.lib ole32.lib oleaut32.lib uiautomationcore.lib uuid.lib
 if errorlevel 1 exit /b 1
@@ -112,7 +113,7 @@ if errorlevel 1 exit /b 1
 :compile_release
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse
+cmake --build "$taskBuild" --parallel 4 --target pulse pulse_native_folder_follow_test
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch

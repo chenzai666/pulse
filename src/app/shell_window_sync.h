@@ -12,6 +12,8 @@ namespace app { struct Tab; }
 // Pulse opens folders) and starts/stops the experimental Explorer window
 // takeover with its setting. Never in shot or test runs.
 void SyncShellWindows(AppState& s);
+// Publishes only the active folder; safe during activation before repainting.
+void PublishActiveFolderSource(AppState& s);
 // WM_DESTROY: revokes every registration, stops the takeover.
 void StopShellWindows(AppState& s);
 // WM_SHELL_SELECT: brings the pane forward and selects the item.

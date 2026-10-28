@@ -124,12 +124,14 @@ void FollowWithoutListary() {
     Pump(300);
     Check(follow.Poll().empty(), "source activation never navigates a background picker");
     foreground = windows.picker;
+    Pump(300);
     Check(follow.Poll() == L"C:\\isolated-fixture\\initial", "returning to this picker delivers the visited folder");
     Pump(300);
     Check(follow.Poll().empty(), "one-shot delivery preserves subsequent manual picker navigation");
     foreground = windows.source;
     Pump(300);
     foreground = windows.picker;
+    Pump(300);
     Check(follow.Poll() == L"C:\\isolated-fixture\\initial",
         "after manual picker navigation, reactivating the same source follows its unchanged folder once");
     Check(follow.Poll().empty(), "one source activation cannot repeatedly replace manual navigation");
@@ -142,7 +144,42 @@ void FollowWithoutListary() {
     foreground = windows.other;
     Check(follow.Poll().empty(), "unrelated foreground windows cannot consume or apply a source update");
     foreground = windows.picker;
+    Pump(300);
     Check(follow.Poll() == L"\\\\server\\share\\\u4e2d\u6587", "latest Unicode UNC visit supersedes earlier visits without probing the share");
+
+    foreground = windows.source;
+    PublishFolderSource(windows.source, L"C:\\isolated-fixture\\before-last-tab", true);
+    Pump(300);
+    PublishFolderSource(windows.source, L"C:\\isolated-fixture\\last-tab", true);
+    foreground = windows.picker;
+    Pump(300);
+    Check(follow.Poll() == L"C:\\isolated-fixture\\last-tab",
+        "worker rereads the final source directory after returning to the picker");
+
+    // Inject the WinEvent without actually activating hidden fixture windows.
+    // The source visit finishes before the next 125 ms polling sample.
+    foreground = windows.source;
+    PublishFolderSource(windows.source, L"C:\\isolated-fixture\\quick-switch", true);
+    NotifyWinEvent(EVENT_SYSTEM_FOREGROUND, windows.source, OBJID_WINDOW, CHILDID_SELF);
+    foreground = windows.picker;
+    Pump(300);
+    Check(follow.Poll() == L"C:\\isolated-fixture\\quick-switch",
+        "a completed source activation is captured even when no polling interval observed it");
+    NotifyWinEvent(EVENT_SYSTEM_FOREGROUND, windows.source, OBJID_WINDOW, CHILDID_SELF);
+    Pump(300);
+    Check(follow.Poll() == L"C:\\isolated-fixture\\quick-switch",
+        "a brief reactivation of the same source follows once after manual picker navigation");
+    Pump(300);
+    Check(follow.Poll().empty(), "event-driven reactivation still preserves one-shot delivery");
+
+    Windows second;
+    PublishFolderSource(second.source, L"C:\\isolated-fixture\\second-window", true);
+    foreground = second.source;
+    Pump(300);
+    foreground = windows.picker;
+    Pump(300);
+    Check(follow.Poll() == L"C:\\isolated-fixture\\second-window",
+        "activating another authenticated Pulse window replaces the prior source");
 
     foreground = windows.source;
     PublishFolderSource(windows.source, L"C:\\isolated-fixture\\queued", true);
@@ -150,12 +187,21 @@ void FollowWithoutListary() {
     PublishFolderSource(windows.source, L"shell:Home", true);
     Pump(300);
     foreground = windows.picker;
+    Pump(300);
     Check(follow.Poll().empty(), "virtual folder clears an earlier undelivered physical directory");
     foreground = windows.source;
     PublishFolderSource(windows.source, L"C:\\isolated-fixture\\queued", true);
     Pump(300);
     foreground = windows.picker;
+    Pump(300);
     Check(follow.Poll() == L"C:\\isolated-fixture\\queued", "physical directory can be followed again after a virtual page");
+
+    foreground = windows.source;
+    Pump(300);
+    PublishFolderSource(windows.source, L"shell:Home", true);
+    foreground = windows.picker;
+    Pump(300);
+    Check(follow.Poll().empty(), "returning to picker rereads a last-moment virtual tab and discards the queued path");
 
     foreground = windows.source;
     PublishFolderSource(windows.source, L"C:\\isolated-fixture\\revoked", true);

@@ -502,6 +502,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
 struct Watcher {
     std::shared_ptr<NativeDialogFolderLink::Shared> shared;
     folder_link::Transition transition;
+    folder_link::ForegroundEventOrder event_order;
     WindowIdentity last_dialog{}, pulse{};
     ComPtr<IUIAutomation> automation;
     HWINEVENTHOOK foreground = nullptr, destroyed = nullptr;
@@ -535,6 +536,12 @@ struct Watcher {
         }
         if (input.dwTime != idle_input) { CancelPending(); return; }
         if (now - idle_at < 150) return;
+        // The foreground event can precede the Shell address controls being
+        // created. Keep the same idle transition pending until they are ready;
+        // the existing deadline and input checks still cancel stale work.
+        Controls controls;
+        if (!FindBand(reinterpret_cast<HWND>(pending_dialog.window), controls) ||
+            !SameThread(controls.band, pending_dialog) || !SameThread(controls.toolbar, pending_dialog)) return;
         const WindowIdentity dialog = pending_dialog, source = pending_pulse;
         const std::wstring expected_folder = pending_folder;
         const DWORD verified_input = idle_input;
@@ -569,9 +576,10 @@ struct Watcher {
 
     void OnForeground(HWND window, DWORD event_time) {
         if (navigating) return; // Current() guards an in-flight navigation; preserve its watchdog.
-        // Out-of-context hooks may deliver an obsolete event after a newer
-        // foreground event. It must not reset the current valid transition.
-        if (window != GetForegroundWindow() || GetTickCount() - event_time > 500) return;
+        // A rapid Pulse visit can already be over when its callback arrives.
+        // Read recent events in order; only the actual foreground dialog may
+        // acquire a marker or enqueue navigation below.
+        if (!event_order.Accept(GetTickCount(), event_time)) return;
         struct Deadline {
             volatile LONG64* value;
             explicit Deadline(volatile LONG64* p) : value(p) {
@@ -594,13 +602,15 @@ struct Watcher {
             return;
         }
         if (!DialogIdentity(window, identity)) { CancelPending(); transition.OtherForeground(); return; }
+        if (window != GetForegroundWindow()) {
+            transition.DialogForeground(identity);
+            return;
+        }
         if (identity == pending_dialog) return;
         if (!(identity == last_dialog) || shared->marked_window != window) {
             ClearMarker();
-            Controls controls;
-            if (!FindBand(window, controls) || !SameThread(controls.band, identity) ||
-                !SameThread(controls.toolbar, identity) || shared->marker.empty() ||
-                !SameIdentity(identity) ||
+            if (shared->marker.empty() ||
+                window != GetForegroundWindow() || !SameIdentity(identity) ||
                 (shared->stop_event && WaitForSingleObject(shared->stop_event, 0) != WAIT_TIMEOUT) ||
                 (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
                 (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||

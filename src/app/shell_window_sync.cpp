@@ -115,7 +115,7 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 
 } // namespace
 
-void SyncShellWindows(AppState& s) {
+void PublishActiveFolderSource(AppState& s) {
     // Publish the active physical folder for both custom and native dialogs.
     const app::Tab* active = ActiveTab(s);
     std::wstring source = active ? path::StripExtendedPathPrefix(active->current_path) : L"";
@@ -126,6 +126,10 @@ void SyncShellWindows(AppState& s) {
         publish_folder = true;
 #endif
     app::PublishFolderSource(s.hwnd, source, publish_folder);
+}
+
+void SyncShellWindows(AppState& s) {
+    PublishActiveFolderSource(s);
     bool enable_folder_link = !s.isolatedTest && !s.shot.active && !s.menushot;
 #ifdef PULSE_WITH_SELFTEST
     if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_NATIVE_FOLDER_LINK", nullptr, 0) > 0)

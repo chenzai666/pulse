@@ -1300,6 +1300,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_ACTIVATE:
+        // A tab/navigation change can precede WM_PAINT. Publish it before
+        // another window's picker reads the folder during the switch.
+        if (s) PublishActiveFolderSource(*s);
         if (s && LOWORD(wParam) == WA_INACTIVE) {
             if (s->tabDropPending || s->tabDragPending || s->tabDragging)
                 diagnostics::runtime::Event("tab_drag_deactivate", {{"preview", s->tabDropPending},
