@@ -16,12 +16,13 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'scripts/build_picker_ci.ps1', 'scripts/build_tab_drag_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1',
     'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'scripts/verify_dialog_removal_evidence.py', 'scripts/publish_picker_release.ps1', 'docs/custom-edition.md',
     'CMakeLists.txt', 'integrations/NativeDialogs/README.md',
-    'src/app/app_commands.cpp', 'src/app/app_core.h', 'src/app/app_main.cpp', 'src/app/app_runtime.cpp',
+    'src/app/app_commands.cpp', 'src/app/app_core.h', 'src/app/app_main.cpp', 'src/app/app_messages.h', 'src/app/app_runtime.cpp',
     'src/app/app_prefs.cpp', 'src/app/app_prefs.h', 'src/app/settings_controller.cpp', 'src/app/settings_controller.h',
     'src/app/settings_flow_test.cpp', 'src/app/selftest_1b2.cpp', 'src/app/shell_window_sync.cpp', 'src/app/shell_window_sync.h',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h', 'src/app/native_dialog_takeover.cpp',
     'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover_test.cpp', 'src/app/native_dialog_wire.h',
     'src/app/native_dialog_wire_test.cpp', 'src/app/native_file_dialog_adapter.cpp', 'src/app/native_file_dialog_adapter.h',
+    'src/app/native_dialog_submission_policy.h', 'src/bench/native_dialog_submission_policy_test.cpp',
     'src/app/folder_source.h', 'src/app/native_folder_follow.h', 'src/bench/native_folder_follow_test.cpp', 'src/bench/folder_source_test.cpp',
     'src/app/native_dialog_folder_link.h', 'src/app/native_dialog_folder_link.cpp', 'src/app/native_dialog_folder_link_policy.h',
     'src/bench/native_dialog_folder_link_policy_test.cpp', 'src/bench/native_dialog_folder_link_driver.cpp', 'src/bench/native_dialog_folder_link_sequence.cpp', 'src/bench/native_dialog_folder_link_lifecycle_test.cpp',
@@ -30,6 +31,7 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/app/explorer_window_takeover.cpp', 'src/app/explorer_takeover_guard.h',
     'src/bench/explorer_takeover_guard_test.cpp', 'src/bench/explorer_takeover_connection_test.cpp',
     'src/ui/folder_picker_dialog.cpp', 'src/ui/folder_picker_dialog.h', 'src/bench/file_picker_dialog_test.cpp',
+    'src/ui/folder_picker_listary_protocol.h', 'src/bench/folder_picker_listary_protocol_test.cpp',
     'src/ui/ui_renderer.cpp', 'src/ui/ui_renderer.h', 'src/ui/ui_renderer_internal.h', 'src/ui/ui_hit_test.cpp',
     'src/ui/ui_settings_core.cpp', 'src/ui/settings_layout_sections.h')
 $changed = @(& git diff --name-only $baseCommit HEAD)
@@ -94,6 +96,14 @@ rem Pure transition regression has no windows, input or user configuration.
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_folder_link_policy_test.cpp" /Fe:"$taskBuild\native-dialog-folder-link-policy-test.exe" /Fo:"$taskBuild\native-dialog-folder-link-policy-test.obj"
 if errorlevel 1 exit /b 1
 "$taskBuild\native-dialog-folder-link-policy-test.exe" > "$galleryOutput\native-dialog-folder-link-policy.log" 2>&1
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /utf-8 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_submission_policy_test.cpp" /Fe:"$taskBuild\native-dialog-submission-policy-test.exe" /Fo:"$taskBuild\native-dialog-submission-policy-test.obj"
+if errorlevel 1 exit /b 1
+"$taskBuild\native-dialog-submission-policy-test.exe" > "$galleryOutput\native-dialog-submission-policy.log" 2>&1
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /utf-8 /EHsc /W4 /WX "$taskRepo\src\bench\folder_picker_listary_protocol_test.cpp" /Fe:"$taskBuild\picker-listary-protocol-test.exe" /Fo:"$taskBuild\picker-listary-protocol-test.obj"
+if errorlevel 1 exit /b 1
+"$taskBuild\picker-listary-protocol-test.exe" > "$galleryOutput\picker-listary-protocol.log" 2>&1
 if errorlevel 1 exit /b 1
 $skipRuntime
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\folder_source_test.cpp" /Fe:"$taskBuild\folder-source-test.exe" /Fo:"$taskBuild\folder-source-test.obj" user32.lib

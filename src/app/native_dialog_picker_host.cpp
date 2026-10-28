@@ -8,11 +8,17 @@
 
 #include <limits>
 #include <mutex>
+#include <condition_variable>
+#include <optional>
+#include <thread>
+#include <cstring>
+#include <utility>
 #include <ole2.h>
 #include <d2d1helper.h>
 #include <tlhelp32.h>
 
 namespace pulse::app {
+bool PackNativeDialogPickerResult(bool picked, const ui::FilePickerResult& result, ipc::PayloadWriter& payload);
 namespace {
 class OwnedHandle {
 public:
@@ -187,6 +193,121 @@ private:
     bool closing_ = false, owner_started_ = false, owner_enabled_ = false;
     bool recovered_ = false;
 };
+
+class SubmissionBridge {
+public:
+    SubmissionBridge(HANDLE input, HANDLE output, HANDLE parent, HANDLE cancelled)
+        : input_(input), output_(output), parent_(parent), cancelled_(cancelled),
+          stopped_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
+        if (stopped_.get()) worker_ = std::thread([this] { Run(); });
+    }
+    ~SubmissionBridge() { Stop(); }
+    bool Begin(bool picked, const ui::FilePickerResult& result = {}) {
+        try {
+            std::lock_guard lock(mutex_);
+            if (!worker_.joinable() || busy_ || Stopped()) return false;
+            queued_ = result;
+            picked_ = picked;
+            busy_ = true;
+            queued_ready_ = true;
+            changed_.notify_one();
+            return true;
+        } catch (...) { return false; }
+    }
+    std::optional<ui::PickerSubmitReply> Poll() {
+        std::lock_guard lock(mutex_);
+        if (!reply_) return {};
+        busy_ = false;
+        return std::exchange(reply_, {});
+    }
+    void Stop() {
+        if (stopped_.get()) SetEvent(stopped_.get());
+        changed_.notify_one();
+        if (worker_.joinable()) {
+            CancelSynchronousIo(worker_.native_handle());
+            worker_.join();
+        }
+    }
+private:
+    bool Stopped() const {
+        return !stopped_.get() || WaitForSingleObject(stopped_.get(), 0) != WAIT_TIMEOUT ||
+            WaitForSingleObject(parent_, 0) != WAIT_TIMEOUT || WaitForSingleObject(cancelled_, 0) != WAIT_TIMEOUT;
+    }
+    ui::PickerSubmitReply Exchange(bool picked, const ui::FilePickerResult& result) {
+        ipc::PayloadWriter request;
+        if (!PackNativeDialogPickerResult(picked, result, request))
+            return {false, true, L"选择结果过长或格式无效，请调整后重试。"};
+        const uint64_t transaction = ++next_transaction_;
+        request.PutU64(transaction);
+        if (!dialog_wire::Write(output_, dialog_wire::Submit, request))
+            return {false, false, L"与原程序的提交连接已中断，请取消后重新发起。"};
+        const ULONGLONG deadline = GetTickCount64() + 20000;
+        std::vector<uint8_t> bytes;
+        while (!Stopped() && GetTickCount64() < deadline) {
+            if (bytes.size() >= sizeof(dialog_wire::Header)) {
+                dialog_wire::Header header{};
+                memcpy(&header, bytes.data(), sizeof(header));
+                if (header.magic != dialog_wire::kMagic || header.type != dialog_wire::SubmitReply ||
+                    header.size < 20 || header.size > 16384) break;
+                if (bytes.size() >= sizeof(header) + header.size) {
+                    ipc::PayloadReader reader(bytes.data() + sizeof(header), header.size);
+                    uint32_t accepted = 0, retry = 0;
+                    uint64_t returned_transaction = 0;
+                    ui::PickerSubmitReply reply;
+                    if (!reader.GetU64(returned_transaction) || !reader.GetU32(accepted) || accepted > 1 || !reader.GetU32(retry) || retry > 1 ||
+                        !reader.GetString(reply.error) || !dialog_wire::TextValid(reply.error) || reader.remaining()) break;
+                    if (returned_transaction != transaction) {
+                        if (returned_transaction > transaction) break;
+                        bytes.erase(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(sizeof(header) + header.size));
+                        continue;
+                    }
+                    reply.accepted = accepted != 0;
+                    reply.retry_allowed = retry != 0;
+                    return reply;
+                }
+            }
+            DWORD available = 0;
+            if (!PeekNamedPipe(input_, nullptr, 0, nullptr, &available, nullptr)) break;
+            if (available) {
+                if (available > 16384 + sizeof(dialog_wire::Header) - bytes.size()) break;
+                const size_t before = bytes.size();
+                bytes.resize(before + available);
+                DWORD read = 0;
+                if (!ReadFile(input_, bytes.data() + before, available, &read, nullptr) || !read) break;
+                bytes.resize(before + read);
+            } else WaitForSingleObject(stopped_.get(), 25);
+        }
+        return {false, false, L"原程序未确认操作完成。为避免重复保存，已暂停提交；请取消后重新发起。"};
+    }
+    void Run() noexcept {
+        for (;;) {
+            ui::FilePickerResult result;
+            bool picked = false;
+            {
+                std::unique_lock lock(mutex_);
+                changed_.wait(lock, [&] { return queued_ready_ || Stopped(); });
+                if (Stopped()) return;
+                result = std::move(queued_);
+                picked = picked_;
+                queued_ready_ = false;
+            }
+            ui::PickerSubmitReply reply;
+            try { reply = Exchange(picked, result); }
+            catch (...) { reply = {false, false, L"提交处理失败，请取消后重新发起。"}; }
+            std::lock_guard lock(mutex_);
+            reply_ = std::move(reply);
+        }
+    }
+    HANDLE input_, output_, parent_, cancelled_;
+    OwnedHandle stopped_;
+    std::thread worker_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    ui::FilePickerResult queued_;
+    std::optional<ui::PickerSubmitReply> reply_;
+    bool busy_ = false, picked_ = false, queued_ready_ = false;
+    uint64_t next_transaction_ = 0;
+};
 }
 
 bool PackNativeDialogPickerResult(bool picked, const ui::FilePickerResult& result, ipc::PayloadWriter& payload) {
@@ -256,6 +377,14 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
     NativeFolderFollower follow(parent.get(), request.parent);
     if (follow.Start()) spec.poll_directory = [&] { return follow.Poll(); };
     spec.on_directory_changed = [&](const std::wstring& path) { history.Visit(path); };
+    spec.listary_integration = true;
+    spec.initial_submit_error = request.blocked_reason;
+    spec.submit_disabled = !request.blocked_reason.empty();
+    SubmissionBridge submissions(input, output, parent.get(), cancelled);
+    spec.begin_submit = [&](const ui::FilePickerResult& selection) { return submissions.Begin(true, selection); };
+    spec.begin_cancel = [&] { return submissions.Begin(false); };
+    spec.poll_submit = [&] { return submissions.Poll(); };
+    spec.should_close = [&] { return lifetime.Closing(); };
     spec.filename = request.source.filename;
     spec.filters = request.source.filters;
     spec.filter_index = request.source.filter_index;
@@ -286,6 +415,7 @@ int RunNativeDialogPicker(HANDLE input, HANDLE output, HANDLE cancelled) {
         return 1;
     }
     lifetime.PickerFinished();
+    submissions.Stop();
 #ifdef PULSE_WITH_SELFTEST
     // Reproduce a scheduler/history-write pause after the helper re-enables its owner.
     // The parent's polling loop can disable that owner again before receiving Result.

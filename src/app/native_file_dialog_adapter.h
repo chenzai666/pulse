@@ -38,7 +38,7 @@ bool NativeDialogStillMatches(const NativeFileDialog& dialog);
 // true 仅表示已向原生对话框发送确认请求；宿主仍负责路径和覆盖校验。
 bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
     const std::vector<std::wstring>& paths, size_t filter_index, std::wstring& reason,
-    const std::function<bool()>& cancelled = {});
+    const std::function<bool()>& cancelled = {}, bool* confirmation_attempted = nullptr);
 bool CancelNativeDialog(const NativeFileDialog& dialog, std::wstring& reason,
     const std::function<bool()>& cancelled = {});
 

@@ -532,7 +532,7 @@ bool SelectionText(const NativeFileDialog& dialog, const std::vector<std::wstrin
 }
 
 bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
-    std::wstring& reason, const std::function<bool()>& cancelled = {}) {
+    std::wstring& reason, const std::function<bool()>& cancelled = {}, bool* confirmation_attempted = nullptr) {
     if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
         (identifier != IDOK && identifier != IDCANCEL) ||
         GetDlgItem(dialog.window, identifier) != button || GetDlgCtrlID(button) != identifier ||
@@ -549,10 +549,14 @@ bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
         if (Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason) ||
             GetDlgItem(dialog.window, identifier) != button || !IsWindowEnabled(button)) return false;
         if (invoke) {
+            if (confirmation_attempted) *confirmation_attempted = true;
             if (SUCCEEDED(invoke->Invoke())) return true;
             return Fail(reason, L"原生按钮调用失败；不重复触发可能已执行的请求。");
         }
-        if (PostMessageW(button, BM_CLICK, 0, 0)) return true;
+        if (PostMessageW(button, BM_CLICK, 0, 0)) {
+            if (confirmation_attempted) *confirmation_attempted = true;
+            return true;
+        }
         return Fail(reason, L"无法向原生对话框发送按钮请求。");
     }
     const HWND parent = GetParent(button);
@@ -565,7 +569,10 @@ bool InvokeButton(const NativeFileDialog& dialog, HWND button, int identifier,
     // BM_CLICK (including UIA's Button provider) may do nothing when the dialog
     // is inactive. Route its single normal notification to the verified actual
     // parent; a modern dialog's command sink can be below the top-level HWND.
-    if (PostMessageW(parent, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button))) return true;
+    if (PostMessageW(parent, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button))) {
+        if (confirmation_attempted) *confirmation_attempted = true;
+        return true;
+    }
     return Fail(reason, L"无法向原生对话框发送按钮请求。");
 }
 
@@ -660,8 +667,9 @@ bool NativeDialogStillMatches(const NativeFileDialog& dialog) {
 
 bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
     const std::vector<std::wstring>& paths, size_t filter_index, std::wstring& reason,
-    const std::function<bool()>& cancelled) {
+    const std::function<bool()>& cancelled, bool* confirmation_attempted) {
     reason.clear();
+    if (confirmation_attempted) *confirmation_attempted = false;
     if (Cancelled(cancelled, reason)) return false;
     NativeFileDialog current;
     if (!InspectNativeFileDialog(dialog.window, current, reason)) return false;
@@ -689,19 +697,30 @@ bool CommitNativeDialogSelection(const NativeFileDialog& dialog,
     if (prepared.filter_index != filter_index) return Fail(reason, L"回填后原生文件类型选中项发生变化。");
     if (!IsWindowEnabled(current.confirm_window)) return Fail(reason, L"回填后原生确认按钮不可用。");
     if (Cancelled(cancelled, reason)) return false;
-    return InvokeButton(current, current.confirm_window, IDOK, reason, cancelled);
+    return InvokeButton(current, current.confirm_window, IDOK, reason, cancelled, confirmation_attempted);
 }
 
 bool CancelNativeDialog(const NativeFileDialog& dialog, std::wstring& reason,
     const std::function<bool()>& cancelled) {
     reason.clear();
     if (Cancelled(cancelled, reason)) return false;
-    NativeFileDialog current;
-    if (!InspectNativeFileDialog(dialog.window, current, reason)) return false;
-    if (!SameIdentity(dialog, current)) return Fail(reason, L"原生对话框身份已改变；未发送取消请求。");
-    HWND cancel = GetDlgItem(current.window, IDCANCEL);
+    // Cancelling an already verified file dialog does not need readable filters
+    // or a supported mode. Requiring a fresh full Inspect here strands the very
+    // unsupported dialogs for which cancellation is the only safe operation.
+    if (!IdentityBeforeMutation(dialog, reason)) return false;
+    HWND cancel = GetDlgItem(dialog.window, IDCANCEL);
     if (ClassName(cancel) != L"Button" || !IsWindowEnabled(cancel)) return Fail(reason, L"原生取消按钮不可用。");
-    return InvokeButton(current, cancel, IDCANCEL, reason, cancelled);
+    const HWND parent = GetParent(cancel);
+    DWORD process = 0;
+    if (!parent || (parent != dialog.window && !IsChild(dialog.window, parent)) ||
+        GetWindowThreadProcessId(parent, &process) != dialog.window_thread_id || process != dialog.process_id ||
+        GetWindowThreadProcessId(cancel, &process) != dialog.window_thread_id || process != dialog.process_id ||
+        GetDlgCtrlID(cancel) != IDCANCEL || Cancelled(cancelled, reason) || !IdentityBeforeMutation(dialog, reason))
+        return Fail(reason, L"原生取消按钮的命令窗口身份发生变化。");
+    // A single cancel notification works while the source is behind Pulse.
+    // Never fall back to an affirmative command or resend a save request.
+    return PostMessageW(parent, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), reinterpret_cast<LPARAM>(cancel)) != FALSE ||
+        Fail(reason, L"无法向原生对话框发送取消请求。");
 }
 
 } // namespace pulse::app

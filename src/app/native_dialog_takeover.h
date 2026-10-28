@@ -12,7 +12,8 @@ struct NativeDialogAppearance {
 
 class NativeDialogTakeover {
 public:
-    explicit NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop = nullptr, std::wstring desktop_name = {});
+    explicit NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop = nullptr,
+        std::wstring desktop_name = {}, std::function<void()> failure = {});
     ~NativeDialogTakeover();
     void UpdateAppearance(NativeDialogAppearance appearance);
     void Stop();

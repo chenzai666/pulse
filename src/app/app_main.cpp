@@ -1439,6 +1439,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) RunDetachedTabMove(*s, reinterpret_cast<HWND>(wParam), static_cast<size_t>(lParam));
         return 0;
 
+    case WM_NATIVE_DIALOG_FAILURE:
+        if (s && s->appPrefs.integration_enabled && s->appPrefs.integration_file_dialogs) {
+            RevealWindow(*s);
+            s->notification_toast.Show(hwnd,
+                l10n::Pick(L"文件选择窗口", L"File picker"),
+                l10n::Pick(L"Pulse 未能完成文件窗口操作。请在设置中关闭“文件选择窗口”接管，恢复原版窗口。",
+                           L"Pulse could not complete the file dialog operation. Turn off file dialog takeover in Settings to restore the Windows dialog."));
+        }
+        return 0;
+
     case WM_SHELL_SELECT: {
         std::unique_ptr<app::ShellSelectRequest> request(reinterpret_cast<app::ShellSelectRequest*>(lParam));
         if (s && request) HandleShellSelect(*s, *request);
@@ -3199,7 +3209,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     const bool host_created = state.core.host.Create(hInstance,
         [&state](HWND host, UINT message, WPARAM wParam, LPARAM lParam) -> std::optional<LRESULT> {
             AppState* const target = state.core.windows.MostRecent();
-            if (app::IsHostRoutedMessage(message))
+            if (message == WM_NATIVE_DIALOG_FAILURE || app::IsHostRoutedMessage(message))
                 return target ? SendMessageW(target->hwnd, message, wParam, lParam) : 0;
             if (const auto kind = app::ClassifySystemBroadcast(message, wParam, lParam);
                 kind != app::SystemBroadcast::None) {

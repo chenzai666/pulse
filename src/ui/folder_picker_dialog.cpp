@@ -4,6 +4,7 @@
 
 #include "address_search_layout.h"
 #include "folder_picker_loader.h"
+#include "folder_picker_listary_protocol.h"
 #include "folder_picker_operations.h"
 #include "folder_picker_view.h"
 #include "fluent_menu.h"
@@ -44,6 +45,7 @@ constexpr UINT_PTR kLoadTimer = 1;
 constexpr UINT_PTR kSearchTimer = 2;
 constexpr UINT_PTR kMotionTimer = 3;
 constexpr UINT_PTR kDirectoryPollTimer = 4;
+constexpr UINT_PTR kSubmitPollTimer = 5;
 constexpr int kPathEditId = 101;
 constexpr int kFilenameEditId = 102;
 constexpr int kSearchEditId = 103;
@@ -309,6 +311,8 @@ public:
         dark_ = dark;
         accent_ = accent;
         spec_ = spec;
+        submit_blocked_ = spec.submit_disabled;
+        chrome_.notice = spec.initial_submit_error;
         mode_ = spec.mode;
         mode_index_ = mode_ == PickerMode::Save ? 3 : mode_ == PickerMode::Image ? 1 : mode_ == PickerMode::File ? 2 : 0;
         allow_multiselect_ = spec.allow_multiselect && mode_ != PickerMode::Folder && mode_ != PickerMode::Save;
@@ -391,7 +395,7 @@ public:
         else SetFocus(hwnd_);
         PresentEdits();
         if (spec_.on_ready) spec_.on_ready(hwnd_);
-        if (spec_.poll_directory) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
+        if (spec_.poll_directory || spec_.should_close) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
 
         MSG message{};
         while (!done_) {
@@ -432,6 +436,7 @@ private:
     // loads. Typed, remembered and history paths wait for their listing.
     void Navigate(std::wstring path, bool push_history, std::wstring select_after = {},
                   bool verified = false) {
+        if (SubmissionLocked()) return;
         EndColumnResize(true);
         const bool moved = !SamePickerPath(path, current_);
         if (push_history && moved) history_.Navigate(current_);
@@ -657,7 +662,7 @@ private:
     }
 
     void ValidateNames(std::vector<std::wstring> names) {
-        if (!loader_ || validating_ || waiting_ || names.empty()) return;
+        if (SubmissionLocked() || !loader_ || validating_ || waiting_ || names.empty()) return;
         if (!allow_multiselect_ && names.size() > 1) {
             chrome_.notice = l10n::Pick(L"此处只能选择一个文件。", L"Select one file here.");
             Invalidate();
@@ -672,7 +677,7 @@ private:
     }
 
     void SubmitSelection() {
-        if (validating_) return;
+        if (SubmissionLocked() || validating_) return;
         // Read the current edit so commit cannot validate a stale cached name.
         if (mode_ != PickerMode::Folder && filename_edit_ && ReadEdit(filename_edit_) != filename_text_) {
             InputChanged(filename_edit_);
@@ -691,7 +696,7 @@ private:
     }
 
     void OnValidation(std::unique_ptr<PickerValidation> validation) {
-        if (!validation || validation->generation != generation_ || !validating_) return;
+        if (SubmissionLocked() || !validation || validation->generation != generation_ || !validating_) return;
         validating_ = false;
         chrome_.notice.clear();
         if (validation->error != ERROR_SUCCESS) {
@@ -717,7 +722,63 @@ private:
             FocusList();
             return;
         }
-        result_ = std::move(validation->paths);
+        if (spec_.begin_submit) {
+            FilePickerResult picked{std::move(validation->paths), options_.filter_index};
+            if (!spec_.poll_submit || !spec_.begin_submit(picked)) {
+                chrome_.notice = l10n::Pick(L"未能发送选择，请重试。", L"Could not send the selection. Try again.");
+                UpdateChosen();
+                Invalidate();
+                return;
+            }
+            pending_submit_ = std::move(picked);
+            submitting_ = true;
+            chrome_.notice = l10n::Pick(L"正在等待应用接受选择…", L"Waiting for the application to accept the selection…");
+            SetSubmitInteraction();
+            SetTimer(hwnd_, kSubmitPollTimer, 100, nullptr);
+            Invalidate();
+            return;
+        }
+        CompleteSelection(std::move(validation->paths));
+    }
+
+    bool SubmissionLocked() const { return submitting_ || submit_blocked_; }
+
+    void SetSubmitInteraction() {
+        menu_.Dismiss();
+        EndColumnResize(true);
+        for (HWND edit : {path_edit_, filename_edit_, search_edit_})
+            if (edit) EnableWindow(edit, !SubmissionLocked());
+        if (SubmissionLocked()) {
+            focus_ = kPickCancel;
+            SetFocus(hwnd_);
+        }
+        UpdateChosen();
+    }
+
+    void PollSubmit() {
+        if (!submitting_ || done_ || !spec_.poll_submit) return;
+        auto reply = spec_.poll_submit();
+        if (!reply) return;
+        KillTimer(hwnd_, kSubmitPollTimer);
+        submitting_ = false;
+        if (reply->accepted) {
+            if (pending_cancel_) ForceCancel();
+            else CompleteSelection(std::move(pending_submit_.paths));
+            return;
+        }
+        pending_cancel_ = false;
+        pending_submit_ = {};
+        // An uncertain earlier Save stays blocked even if a later Cancel can be retried.
+        submit_blocked_ = submit_blocked_ || !reply->retry_allowed;
+        chrome_.notice = !reply->error.empty() ? std::move(reply->error)
+            : l10n::Pick(L"应用未接受选择，请重试。", L"The application did not accept the selection. Try again.");
+        if (submit_blocked_) chrome_.notice += l10n::Pick(L" 请取消后重新打开。", L" Cancel and open the dialog again.");
+        SetSubmitInteraction();
+        Invalidate();
+    }
+
+    void CompleteSelection(std::vector<std::wstring> paths) {
+        result_ = std::move(paths);
         g_last_folder[mode_index_] = current_.empty() ? PickerParent(result_.front()) : current_;
         g_last_view[mode_index_] = view_mode_;
         done_ = true;
@@ -725,7 +786,26 @@ private:
     }
 
     void Cancel() {
-        if (operating_) return;
+        if (operating_ || submitting_) return;
+        if (validating_) { ++generation_; validating_ = false; }
+        if (spec_.begin_cancel) {
+            if (!spec_.poll_submit || !spec_.begin_cancel()) {
+                chrome_.notice = l10n::Pick(L"未能发送取消，请重试。", L"Could not send cancellation. Try again.");
+                Invalidate();
+                return;
+            }
+            pending_cancel_ = true;
+            submitting_ = true;
+            chrome_.notice = l10n::Pick(L"正在等待应用取消…", L"Waiting for the application to cancel…");
+            SetSubmitInteraction();
+            SetTimer(hwnd_, kSubmitPollTimer, 100, nullptr);
+            Invalidate();
+            return;
+        }
+        ForceCancel();
+    }
+
+    void ForceCancel() {
         result_.clear();
         done_ = true;
         PostMessageW(hwnd_, WM_NULL, 0, 0);
@@ -738,6 +818,7 @@ private:
         KillTimer(hwnd_, kSearchTimer);
         KillTimer(hwnd_, kMotionTimer);
         KillTimer(hwnd_, kDirectoryPollTimer);
+        KillTimer(hwnd_, kSubmitPollTimer);
         // Stop the loader first: after this no listing can be posted, so the
         // ones already queued are all that must be freed.
         loader_.reset();
@@ -852,7 +933,7 @@ private:
         vm_.breadcrumb_hover = vm_.hover_region == static_cast<int>(HitTestResult::BreadcrumbSegment)
                                    ? vm_.hover_control_index : -1;
 
-        chrome_.primary_enabled = !waiting_ && !validating_ && !chosen_.empty();
+        chrome_.primary_enabled = !SubmissionLocked() && !waiting_ && !validating_ && !chosen_.empty();
         chrome_.filename_focused = focus_ == kPickFilename;
         chrome_.focus = focus_;
     }
@@ -944,6 +1025,7 @@ private:
                 reinterpret_cast<LPARAM>(l10n::Pick(L"输入文件名，或从上方选择", L"Type a name, or pick one above")));
         }
         search_edit_ = MakeEdit(kSearchEditId, L"");
+        if (SubmissionLocked()) SetSubmitInteraction();
         if (search_edit_) SendMessageW(search_edit_, EM_SETCUEBANNER, TRUE,
             reinterpret_cast<LPARAM>(l10n::Pick(L"搜索当前文件夹", L"Search this folder")));
         if (path_edit_) ShowWindow(path_edit_, SW_HIDE);
@@ -1074,7 +1156,7 @@ private:
     }
 
     void InputChanged(HWND edit) {
-        if (setting_edits_) return;
+        if (setting_edits_ || SubmissionLocked()) return;
         chrome_.pressed = kPickNone;
         if (validating_) { ++generation_; validating_ = false; }
         chrome_.notice.clear();
@@ -1719,6 +1801,7 @@ private:
     // ---- focus and keys ----------------------------------------------------
 
     std::vector<int> FocusOrder() const {
+        if (SubmissionLocked()) return {kPickCancel};
         std::vector<int> order = {kPickAddress, kPickSearch, kPickList};
         if (filename_edit_) {
             if (IsWindowEnabled(filename_edit_)) order.push_back(kPickFilename);
@@ -1747,6 +1830,7 @@ private:
 
     void Activate(int id) {
         if (id == kPickClose || id == kPickCancel) Cancel();
+        else if (SubmissionLocked()) return;
         else if (id == kPickPrimary) SubmitSelection();
         else if (id == kPickFilename) FocusFilename();
         else if (id == kPickFilter) ShowFilterMenu();
@@ -1772,6 +1856,10 @@ private:
     }
 
     bool HandleKey(WPARAM key) {
+        if (SubmissionLocked()) {
+            if (key == VK_ESCAPE || ((key == VK_RETURN || key == VK_SPACE) && focus_ == kPickCancel)) Cancel();
+            return true;
+        }
         const bool ctrl = KeyDown(VK_CONTROL);
         const bool shift = KeyDown(VK_SHIFT);
         const int count = static_cast<int>(entries_.size());
@@ -2015,8 +2103,36 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wparam, LPARAM lparam) {
+        if (SubmissionLocked()) {
+            if (message == WM_SYSKEYDOWN || message == WM_CHAR || message == WM_RBUTTONUP ||
+                message == WM_XBUTTONUP || message == WM_MOUSEWHEEL) return 0;
+            if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) {
+                const int chrome = HitAt(lparam).chrome;
+                if (chrome != kPickCancel && chrome != kPickClose) return 0;
+            }
+        }
         switch (message) {
+        case WM_COPYDATA: {
+            if (!spec_.listary_integration || SubmissionLocked() || done_ || !loader_ ||
+                waiting_ || validating_ || operating_) return FALSE;
+            const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+            if (!data) return FALSE;
+            auto request = ParsePickerListaryRequest(data->dwData, wparam, data->lpData, data->cbData);
+            if (!request) return FALSE;
+            if (request->file && mode_ != PickerMode::Folder) SetFilename(request->path);
+            // Plugin results prepare the selection; the user's Pick/Save action commits it.
+            validation_navigation_only_ = true;
+            validating_ = true;
+            PickerOptions all = options_;
+            all.filters.clear();
+            loader_->Validate(++generation_, current_, {std::move(request->path)}, PickerMode::File, all);
+            UpdateChosen();
+            Invalidate();
+            return TRUE;
+        }
         case WM_CREATE:
+            if (spec_.listary_integration)
+                SetPropW(hwnd_, kPickerListaryMarker, reinterpret_cast<HANDLE>(1));
             scale_ = static_cast<float>(pulse::compat::WindowDpi(hwnd_)) / 96.0f;
             backdrop_enabled_ = ApplyBackdrop(hwnd_, dark_);
             if (!compositor_.Init(hwnd_)) return -1;
@@ -2096,15 +2212,17 @@ private:
             if (address_editing_ && GetFocus() != path_edit_) EndAddressEdit(false);
             return 0;
         case WM_TIMER:
+            if (wparam == kSubmitPollTimer) { PollSubmit(); return 0; }
             if (wparam == kDirectoryPollTimer) {
-                if (!done_ && !validating_ && !operating_ && !waiting_ && !address_editing_ &&
+                if (spec_.should_close && spec_.should_close()) { ForceCancel(); return 0; }
+                if (!SubmissionLocked() && !done_ && !validating_ && !operating_ && !waiting_ && !address_editing_ &&
                     spec_.poll_directory) {
                     std::wstring path = spec_.poll_directory();
                     if (!path.empty() && !SamePickerPath(path, current_)) Navigate(std::move(path), true);
                 }
                 return 0;
             }
-            if (wparam == kSearchTimer) { ApplySearchNow(); return 0; }
+            if (wparam == kSearchTimer) { if (!SubmissionLocked()) ApplySearchNow(); return 0; }
             if (wparam == kMotionTimer) { Invalidate(); return 0; }
             if (wparam == kLoadTimer) {
                 KillTimer(hwnd_, kLoadTimer);
@@ -2258,6 +2376,8 @@ private:
         case WM_DESTROY:
             EndColumnResize(true);
             RemovePropW(hwnd_, L"Pulse.PickerTestColumns");
+            RemovePropW(hwnd_, kPickerListaryMarker);
+            KillTimer(hwnd_, kSubmitPollTimer);
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);
             renderer_.SetIconNotifyWindow(nullptr);
@@ -2326,6 +2446,10 @@ private:
     bool searching_ = false;
     bool allow_multiselect_ = false;
     bool validation_navigation_only_ = false;
+    bool submitting_ = false;
+    bool pending_cancel_ = false;
+    bool submit_blocked_ = false;
+    FilePickerResult pending_submit_;
     bool setting_edits_ = false;
     bool dragging_scrollbar_ = false;
     int column_resize_index_ = -1;

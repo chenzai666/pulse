@@ -60,5 +60,6 @@ constexpr UINT WM_FILE_CONVERSION_EVENT = WM_APP + 90; // lParam: owned conversi
 constexpr UINT WM_FILE_CONVERSION_CANCEL = WM_APP + 91;
 constexpr UINT WM_FILE_CONVERSION_OPEN_OUTPUT = WM_APP + 92;
 constexpr UINT WM_FILE_CONVERSION_CHOOSE = WM_APP + 93;
+constexpr UINT WM_NATIVE_DIALOG_FAILURE = WM_APP + 94; // payload-free recovery notice
 
 }  // namespace pulse

@@ -9,7 +9,7 @@ namespace pulse::app::dialog_wire {
 inline constexpr wchar_t kSessionProperty[] = L"Pulse.NativeDialogTakeover.Session.v1";
 constexpr uint32_t kMagic = 0x44475050;
 constexpr size_t kLimit = 1024 * 1024;
-enum Type : uint32_t { Request = 1, Ready = 2, Result = 3 };
+enum Type : uint32_t { Request = 1, Ready = 2, Result = 3, Submit = 4, SubmitReply = 5 };
 struct Header { uint32_t magic = kMagic, type = 0, size = 0; };
 static_assert(sizeof(Header) == 12);
 struct RequestData {
@@ -24,6 +24,7 @@ struct RequestData {
     COLORREF original_color_key = 0;
     BYTE original_alpha = 255;
     DWORD original_layered_flags = LWA_ALPHA;
+    std::wstring blocked_reason;
 };
 inline bool TextValid(const std::wstring& text) {
     return text.size() <= 32768 && text.find(L'\0') == std::wstring::npos;
@@ -65,7 +66,7 @@ inline bool ReadExact(HANDLE pipe, void* buffer, DWORD size) {
 }
 inline bool Read(HANDLE pipe, Header& header, std::vector<uint8_t>& payload) {
     if (!ReadExact(pipe, &header, sizeof(header)) || header.magic != kMagic || !header.size || header.size > kLimit ||
-        header.type < Request || header.type > Result) return false;
+        header.type < Request || header.type > SubmitReply) return false;
     payload.resize(header.size);
     return ReadExact(pipe, payload.data(), header.size);
 }
@@ -73,6 +74,7 @@ inline bool PackRequest(const RequestData& data, ipc::PayloadWriter& out) {
     const auto& source = data.source;
     const auto& style = data.appearance.style;
     if (!out.data().empty() || !source.window || !source.process_id || !data.parent || !RecoveryValid(data) ||
+        !TextValid(data.blocked_reason) || data.blocked_reason.size() > 4096 ||
         static_cast<uint32_t>(source.kind) > 2 || !TextValid(source.title) || !TextValid(source.initial_path) ||
         !TextValid(source.filename) || source.filters.size() > 64 ||
         (source.filters.empty() ? source.filter_index != 0 : source.filter_index >= source.filters.size()) ||
@@ -101,6 +103,7 @@ inline bool PackRequest(const RequestData& data, ipc::PayloadWriter& out) {
     out.PutString(data.recovery_marker); out.PutU64(data.recovery_tag);
     out.PutU32((data.original_layered ? 1u : 0u) | (data.original_enabled ? 2u : 0u));
     out.PutU32(data.original_color_key); out.PutU32(data.original_alpha); out.PutU32(data.original_layered_flags);
+    out.PutString(data.blocked_reason);
     return out.data().size() <= kLimit;
 }
 inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) {
@@ -140,7 +143,9 @@ inline bool UnpackRequest(const std::vector<uint8_t>& bytes, RequestData& data) 
         recovery_tag > (std::numeric_limits<uintptr_t>::max)() ||
         !in.GetU32(recovery_flags) || recovery_flags > 3 || !get_dword(data.original_color_key) ||
         !in.GetU32(alpha) || alpha > 255 || !get_dword(data.original_layered_flags) ||
-        (data.original_layered_flags & ~(LWA_ALPHA | LWA_COLORKEY)) || in.remaining()) return false;
+        (data.original_layered_flags & ~(LWA_ALPHA | LWA_COLORKEY)) ||
+        !in.GetString(data.blocked_reason) || !TextValid(data.blocked_reason) || data.blocked_reason.size() > 4096 ||
+        in.remaining()) return false;
     data.parent_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(parent_handle));
     data.recovery_tag = static_cast<uintptr_t>(recovery_tag);
     data.original_layered = (recovery_flags & 1) != 0;

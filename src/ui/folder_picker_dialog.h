@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,17 @@ struct PickerPlace {
     std::wstring glyph;
 };
 
+struct FilePickerResult {
+    std::vector<std::wstring> paths;
+    size_t filter_index = 0;
+};
+
+struct PickerSubmitReply {
+    bool accepted = false;
+    bool retry_allowed = true;
+    std::wstring error;
+};
+
 struct FolderPickerSpec {
     PickerMode mode = PickerMode::Folder;
     std::wstring title;         // empty: "Choose a folder" / "Choose background image" / "Open" / "Save"
@@ -35,6 +47,13 @@ struct FolderPickerSpec {
     // Nonblocking, one-shot directory updates supplied by the caller.
     std::function<std::wstring()> poll_directory;
     bool listary_integration = false;
+    // Callbacks are nonblocking. begin_* false means the action was never sent.
+    std::function<bool(const FilePickerResult&)> begin_submit;
+    std::function<bool()> begin_cancel;
+    std::function<std::optional<PickerSubmitReply>()> poll_submit;
+    std::function<bool()> should_close;
+    std::wstring initial_submit_error;
+    bool submit_disabled = false;
     std::vector<PickerFilter> filters;
     size_t filter_index = 0;
     std::wstring filename;
@@ -51,11 +70,6 @@ struct FolderPickerSpec {
     bool thumbnail_badges = true;
     uint32_t details_columns = 0;         // 0: the renderer's default columns
     std::vector<PickerPlace> places;      // extra quick-access rows, shown first
-};
-
-struct FilePickerResult {
-    std::vector<std::wstring> paths;
-    size_t filter_index = 0;
 };
 
 // Initialize l10n with the resource-bearing module and the user's language

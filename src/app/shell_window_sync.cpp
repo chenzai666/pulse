@@ -67,7 +67,13 @@ void SyncNativeDialogs(AppState& s, bool enabled) {
     style.list_size_bar = s.appPrefs.list_size_bar; style.thumbnail_badges = s.appPrefs.list_thumbnail_badges;
     style.details_columns = s.appPrefs.details_columns;
     if (s.core.native_dialog_takeover) s.core.native_dialog_takeover->UpdateAppearance(std::move(appearance));
-    else s.core.native_dialog_takeover = std::make_unique<app::NativeDialogTakeover>(std::move(appearance));
+    else {
+        const HWND notify = ServiceWindow(s);
+        s.core.native_dialog_takeover = std::make_unique<app::NativeDialogTakeover>(
+            std::move(appearance), nullptr, std::wstring{}, [notify] {
+                PostMessageW(notify, WM_NATIVE_DIALOG_FAILURE, 0, 0);
+            });
+    }
 }
 
 // Explorer held the foreground; the takeover request arrives while it still

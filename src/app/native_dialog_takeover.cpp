@@ -1,5 +1,6 @@
 #include "native_dialog_takeover.h"
 #include "native_dialog_wire.h"
+#include "native_dialog_submission_policy.h"
 #include "../common/command_line.h"
 #include "../common/runtime_log.h"
 #include <atomic>
@@ -43,6 +44,9 @@ struct Session {
     std::atomic<DWORD> picker_pid = 0;
     std::atomic<bool> done = false;
     std::atomic<bool> invalidated = false, presented = false;
+    std::atomic<bool> submitting = false, failure_reported = false;
+    std::atomic<bool> terminal_failure = false;
+    std::atomic<bool> source_completed = false;
     std::atomic<ULONGLONG> retry_after = 0;
     Handle cancelled, worker;
     mutable std::mutex owner_mutex;
@@ -182,7 +186,7 @@ constexpr UINT kDestroyedMessage = WM_APP + 174;
 constexpr UINT_PTR kSweepTimer = 1;
 constexpr unsigned kMaximumAttempts = 3;
 bool RetryAllowed(const Session& prior, unsigned attempts, ULONGLONG now) {
-    return prior.done && !prior.presented && attempts < kMaximumAttempts && now >= prior.retry_after;
+    return prior.done && !prior.presented && !prior.terminal_failure && attempts < kMaximumAttempts && now >= prior.retry_after;
 }
 thread_local NativeDialogTakeover::Shared* watcher = nullptr;
 std::wstring Executable() {
@@ -213,6 +217,7 @@ struct NativeDialogTakeover::Shared {
     HDESK desktop = nullptr;
     std::wstring desktop_name;
     std::vector<std::shared_ptr<Session>> sessions;
+    std::function<void()> failure;
 };
 
 namespace {
@@ -224,15 +229,78 @@ struct CommitPopup {
     uint64_t window = 0;
     uint32_t kind = 0, buttons = 0;
 };
+bool SourceClosed(const Session& session) {
+    DWORD process = 0;
+    return !IsWindow(session.source) ||
+        GetWindowThreadProcessId(session.source, &process) != session.source_thread || process != session.source_pid ||
+        !IsWindowVisible(session.source);
+}
+bool DismissNativeValidation(const std::shared_ptr<Session>& session) {
+    if (!session->SameWindow()) return false;
+    const HWND popup = GetWindow(session->source, GW_ENABLEDPOPUP);
+    DWORD process = 0;
+    wchar_t klass[64]{};
+    if (!popup || popup == session->source || popup == session->picker.load() ||
+        GetWindow(popup, GW_OWNER) != session->source || !IsWindowVisible(popup) ||
+        GetWindowThreadProcessId(popup, &process) != session->source_thread || process != session->source_pid ||
+        !GetClassNameW(popup, klass, ARRAYSIZE(klass)) ||
+        (wcscmp(klass, L"#32770") != 0 && wcscmp(klass, L"TaskDialog") != 0)) return false;
+    for (const int identifier : {IDCANCEL, IDNO}) {
+        const HWND button = GetDlgItem(popup, identifier);
+        const HWND parent = button ? GetParent(button) : nullptr;
+        wchar_t name[32]{};
+        DWORD button_process = 0, parent_process = 0;
+        if (!button || !parent || (parent != popup && !IsChild(popup, parent)) ||
+            !IsWindowVisible(button) || !IsWindowEnabled(button) ||
+            !GetClassNameW(button, name, ARRAYSIZE(name)) || wcscmp(name, L"Button") != 0 ||
+            GetWindowThreadProcessId(button, &button_process) != session->source_thread || button_process != session->source_pid ||
+            GetWindowThreadProcessId(parent, &parent_process) != session->source_thread || parent_process != session->source_pid) continue;
+        return PostMessageW(parent, WM_COMMAND, MAKEWPARAM(identifier, BN_CLICKED), reinterpret_cast<LPARAM>(button)) != FALSE;
+    }
+    // WM_CLOSE follows the host's normal cancellation semantics. Never invoke
+    // OK/Yes/Save or infer acceptance from the popup's text.
+    return PostMessageW(popup, WM_CLOSE, 0, 0) != FALSE;
+}
+
+bool CancelKnownSource(const std::shared_ptr<NativeDialogTakeover::Shared>& shared,
+    const std::shared_ptr<Session>& session, const NativeFileDialog& source, std::wstring& reason) {
+    if (!shared->active || !CanSubmit(*session)) return false;
+    if (!IsWindowEnabled(source.window)) {
+        if (DismissNativeValidation(session)) {
+            const ULONGLONG deadline = GetTickCount64() + 500;
+            while (session->SameWindow() && !IsWindowEnabled(source.window) && GetTickCount64() < deadline)
+                Sleep(20);
+        }
+        if (!session->SameWindow()) return true;
+        // Only our own modal disable may be released. An outstanding host popup
+        // retains its modality and must be closed through its negative action.
+        const HWND popup = GetWindow(source.window, GW_ENABLEDPOPUP);
+        if (popup && popup != source.window && popup != session->picker.load() && IsWindowVisible(popup)) {
+            reason = L"原程序仍在处理校验窗口。请关闭文件弹窗接管以恢复原程序并处理该校验。";
+            return false;
+        }
+        EnableWindow(source.window, TRUE);
+    }
+    const auto cancelled = [&] { return !shared->active || !CanSubmit(*session); };
+    if (!CancelNativeDialog(source, reason, cancelled)) return false;
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    while (shared->active && session->SameWindow() && IsWindowVisible(source.window) && GetTickCount64() < deadline)
+        Sleep(20);
+    if (!session->SameWindow() || !IsWindowVisible(source.window)) return true;
+    reason = L"原程序尚未关闭文件选择窗口。请关闭文件弹窗接管以恢复原程序；本次没有再次发送保存。";
+    return false;
+}
+
 CommitCompletion AwaitNativeCompletion(const std::shared_ptr<NativeDialogTakeover::Shared>& shared,
     const std::shared_ptr<Session>& session, CommitPopup& validation) {
-    const ULONGLONG deadline = GetTickCount64() + 3000;
+    const ULONGLONG deadline = GetTickCount64() + 8000;
     HWND pending_popup = nullptr;
     DWORD pending_thread = 0;
     ULONGLONG popup_since = 0;
     do {
         if (Cancelled(shared, *session)) return CommitCompletion::Cancelled;
-        if (!session->SameWindow() || !IsWindowVisible(session->source)) return CommitCompletion::Closed;
+        if (SourceClosed(*session)) return CommitCompletion::Closed;
+        if (!session->SameWindow()) return CommitCompletion::SubmissionFailed;
         const HWND popup = GetWindow(session->source, GW_ENABLEDPOPUP);
         DWORD pid = 0;
         const DWORD thread = popup ? GetWindowThreadProcessId(popup, &pid) : 0;
@@ -257,6 +325,7 @@ CommitCompletion AwaitNativeCompletion(const std::shared_ptr<NativeDialogTakeove
                         reinterpret_cast<CommitPopup*>(context)->buttons |= 1u << id;
                     return TRUE;
                 }, reinterpret_cast<LPARAM>(&validation));
+                DismissNativeValidation(session);
                 return CommitCompletion::NativeValidation;
             }
         } else {
@@ -272,15 +341,32 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     if (FAILED(initialized)) { session->done = true; return; }
     struct ComGuard { ~ComGuard() { CoUninitialize(); } } com;
     struct RestoreGuard {
+        std::shared_ptr<NativeDialogTakeover::Shared> shared;
         std::shared_ptr<Session> session;
         ~RestoreGuard() {
-            session->Restore();
+            if (shared->active && !session->source_completed && session->IsConcealed() && session->SameWindow()) {
+                NativeFileDialog source;
+                source.window = session->source;
+                source.process_id = session->source_pid;
+                source.window_thread_id = session->source_thread;
+                source.process_created = session->source_created;
+                source.filename_window = session->source_filename;
+                source.confirm_window = session->source_confirm;
+                std::wstring reason;
+                if (!CancelKnownSource(shared, session, source, reason) && session->SameWindow()) {
+                    session->terminal_failure = true;
+                    session->Conceal(true);
+                    if (!session->failure_reported.exchange(true) && shared->failure) {
+                        try { shared->failure(); } catch (...) {}
+                    }
+                } else session->Restore();
+            } else session->Restore();
             session->retry_after = GetTickCount64() + 500;
             diagnostics::runtime::Event("native_dialog_attempt_finished", {{"pid", session->source_pid},
                 {"presented", session->presented ? 1u : 0u}, {"invalidated", session->invalidated ? 1u : 0u}});
             session->done = true;
         }
-    } restore{session};
+    } restore{shared, session};
     NativeFileDialog source;
     std::wstring reason;
     bool identified = false;
@@ -297,6 +383,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
             if (CanConcealNativeFileDialog(session->source, early, reason)) {
                 session->source_filename = early.filename_window;
                 session->source_confirm = early.confirm_window;
+                source = early;
                 if (!session->BindIdentity()) return;
                 session->Conceal(false);
             }
@@ -307,7 +394,12 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
         }
         WaitForSingleObject(session->cancelled.value, 10);
     } while (GetTickCount64() < identify_deadline);
-    if (!identified || Cancelled(shared, *session)) return;
+    if (Cancelled(shared, *session)) return;
+    std::wstring blocked_reason;
+    if (!identified) {
+        if (!session->IsConcealed() || !CanSubmit(*session)) return;
+        blocked_reason = L"无法安全读取原程序的文件选择模式或文件类型，请取消本次操作。";
+    }
     if (source.process_id != session->source_pid || source.window_thread_id != session->source_thread ||
         CompareFileTime(&source.process_created, &session->source_created) != 0 || !session->SameSource()) return;
     session->source_filename = source.filename_window; session->source_confirm = source.confirm_window;
@@ -316,6 +408,7 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     if (!session->IsConcealed()) return;
     dialog_wire::RequestData request;
     request.source = source; request.parent = GetCurrentProcessId();
+    request.blocked_reason = blocked_reason;
     Handle parent_process;
     parent_process.Reset(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, TRUE, request.parent));
     FILETIME parent_exited{}, parent_kernel{}, parent_user{};
@@ -370,10 +463,11 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
     }
     const ULONGLONG started = GetTickCount64();
     std::vector<uint8_t> buffer;
-    bool ready = false, received = false, picked = false;
-    size_t filter_index = 0;
-    std::vector<std::wstring> paths;
-    while (!Cancelled(shared, *session) && session->SameSource()) {
+    bool ready = false, completed = false;
+    uint64_t last_transaction = 0;
+    ULONGLONG completion_deadline = 0;
+    NativeSubmissionPolicy submission_policy;
+    while (!Cancelled(shared, *session) && (session->SameSource() || session->submitting)) {
         if (buffer.size() >= sizeof(dialog_wire::Header)) {
             dialog_wire::Header header{}; memcpy(&header, buffer.data(), sizeof(header));
             if (header.magic != dialog_wire::kMagic || !header.size || header.size > dialog_wire::kLimit) break;
@@ -406,8 +500,10 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
                         session->presented = true;
                         ready = true; consumed = true;
                     }
-                } else if (header.type == dialog_wire::Result && ready) {
+                } else if (header.type == dialog_wire::Submit && ready && !completed) {
                     uint32_t selected = 0, index = 0, count = 0;
+                    uint64_t transaction = 0;
+                    std::vector<std::wstring> paths;
                     if (!in.GetU32(selected) || selected > 1 || !in.GetU32(index) || !in.GetU32(count) || count > 256 ||
                         (source.filters.empty() ? index != 0 : index >= source.filters.size()) ||
                         (count > 1 && (source.kind != NativeDialogKind::Open || !source.allow_multiselect))) break;
@@ -417,8 +513,76 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
                         if (!in.GetString(path) || !dialog_wire::TextValid(path) || path.empty()) { valid = false; break; }
                         paths.push_back(std::move(path));
                     }
-                    if (!valid || in.remaining() || (selected ? paths.empty() : !paths.empty())) break;
-                    picked = selected != 0; filter_index = index; received = true; break;
+                    if (!valid || !in.GetU64(transaction) || !transaction || transaction <= last_transaction ||
+                        in.remaining() || (selected ? paths.empty() : !paths.empty())) break;
+                    last_transaction = transaction;
+                    bool posted = false, submitted = false;
+                    CommitCompletion completion = CommitCompletion::SubmissionFailed;
+                    NativeSubmissionDecision decision;
+                    reason.clear();
+                    CommitPopup validation;
+                    if (!submission_policy.Begin(selected == 0)) {
+                        reason = L"上次请求的结果尚未确定，为避免重复操作，请取消本次文件选择。";
+                    } else {
+                        session->submitting = true;
+                        if (!selected) {
+                            submitted = SourceClosed(*session) ||
+                                CancelKnownSource(shared, session, source, reason);
+                            posted = submitted;
+                            completion = submitted ? CommitCompletion::Closed : CommitCompletion::SubmissionFailed;
+                        } else if (!blocked_reason.empty()) {
+                            reason = blocked_reason;
+                        } else if (CanSubmit(*session)) {
+                            // The picker stays open. Enable only for the bounded
+                            // adapter transaction; never restore opacity here.
+                            EnableWindow(source.window, TRUE);
+                            const auto cancelled = [&] { return Cancelled(shared, *session) || !CanSubmit(*session); };
+                            submitted = CommitNativeDialogSelection(source, paths, index, reason, cancelled, &posted);
+                            if (submitted || posted) completion = AwaitNativeCompletion(shared, session, validation);
+                        } else {
+                            reason = L"原程序的文件选择窗口已改变，请取消后重新发起。";
+                        }
+                        NativeSubmissionOutcome outcome = NativeSubmissionOutcome::Rejected;
+                        if (completion == CommitCompletion::Closed) outcome = NativeSubmissionOutcome::Closed;
+                        else if (completion == CommitCompletion::NativeValidation) outcome = NativeSubmissionOutcome::Validation;
+                        else if (completion == CommitCompletion::TimedOut) outcome = NativeSubmissionOutcome::TimedOut;
+                        else if (completion == CommitCompletion::Cancelled) outcome = NativeSubmissionOutcome::Cancelled;
+                        else if (!blocked_reason.empty()) outcome = NativeSubmissionOutcome::Validation;
+                        decision = submission_policy.Complete(outcome, posted);
+                    }
+                    if (completion == CommitCompletion::NativeValidation)
+                        reason = L"原程序要求额外校验，本次未自动确认覆盖或保存。请取消后重新发起；如校验仍未关闭，请关闭文件弹窗接管恢复原程序。";
+                    else if (completion == CommitCompletion::TimedOut)
+                        reason = L"原程序未确认操作完成。为避免重复保存，已暂停提交；请取消后重新发起。";
+                    if (!decision.accepted && reason.empty()) reason = L"原程序未接受本次操作，请取消后重新发起。";
+                    diagnostics::runtime::Event("native_dialog_commit", {{"pid", source.process_id},
+                        {"kind", static_cast<uint64_t>(source.kind)}, {"picked", selected},
+                        {"submitted", submitted ? 1u : 0u}, {"confirmation_attempted", posted ? 1u : 0u},
+                        {"completion", static_cast<uint64_t>(completion)}, {"retry_allowed", decision.retry_allowed ? 1u : 0u},
+                        {"popup", validation.window}, {"popup_kind", validation.kind}, {"popup_buttons", validation.buttons}},
+                        decision.accepted ? diagnostics::runtime::Level::Info : diagnostics::runtime::Level::Warning);
+                    ipc::PayloadWriter reply;
+                    reply.PutU64(transaction);
+                    reply.PutU32(decision.accepted ? 1u : 0u);
+                    reply.PutU32(decision.retry_allowed ? 1u : 0u);
+                    reply.PutString(decision.accepted ? std::wstring() : reason);
+                    // Completion belongs to the native operation, even if the
+                    // helper closes its reply pipe before receiving the ack.
+                    if (decision.accepted) session->source_completed = true;
+                    if (!dialog_wire::Write(input_write.value, dialog_wire::SubmitReply, reply)) break;
+                    completed = decision.accepted;
+                    if (completed) {
+                        completion_deadline = GetTickCount64() + 3000;
+                    }
+                    else {
+                        session->submitting = posted;
+                        session->Conceal(true);
+                    }
+                    consumed = true;
+                } else if (header.type == dialog_wire::Result && ready) {
+                    // The helper may finish only after SubmitReply or explicit
+                    // shutdown. This final frame never sends another native command.
+                    break;
                 } else break;
                 if (consumed) {
                     buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(sizeof(header) + header.size));
@@ -438,43 +602,30 @@ void RunSession(const std::shared_ptr<NativeDialogTakeover::Shared>& shared, con
             continue;
         }
         if (!available && WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0) break;
-        if (ready) session->Conceal(true);
+        if (ready && !completed) session->Conceal(true);
         if (!ready && GetTickCount64() - started > 15000) break;
+        if (completed && GetTickCount64() >= completion_deadline) break;
         WaitForSingleObject(session->cancelled.value, 25);
     }
-    if (received && !Cancelled(shared, *session) && session->SameSource()) {
-        // Inspect rejects disabled dialogs. The polling conceal can disable the source
-        // after the helper enabled it, so restore that state before validating the handoff.
-        EnableWindow(session->source, TRUE);
-        if (NativeDialogStillMatches(source)) {
-            const auto cancelled = [&] { return Cancelled(shared, *session) || !CanSubmit(*session); };
-            const bool submitted = picked ? CommitNativeDialogSelection(source, paths, filter_index, reason, cancelled)
-                : !cancelled() && CancelNativeDialog(source, reason, cancelled);
-            // Posting the button notification precedes the native modal loop handling it.
-            // Keep the source concealed through that handoff; never send a second confirmation.
-            CommitPopup validation;
-            const auto completion = submitted ? AwaitNativeCompletion(shared, session, validation)
-                : CommitCompletion::SubmissionFailed;
-            diagnostics::runtime::Event("native_dialog_commit", {{"pid", source.process_id},
-                {"kind", static_cast<uint64_t>(source.kind)}, {"picked", picked ? 1u : 0u},
-                {"submitted", submitted ? 1u : 0u}, {"completion", static_cast<uint64_t>(completion)},
-                {"popup", validation.window}, {"popup_kind", validation.kind}, {"popup_buttons", validation.buttons}},
-                !submitted || completion == CommitCompletion::TimedOut ? diagnostics::runtime::Level::Warning : diagnostics::runtime::Level::Info);
-        } else {
-            diagnostics::runtime::Event("native_dialog_handoff_rejected", {{"pid", source.process_id}},
-                diagnostics::runtime::Level::Warning);
-        }
-    }
-    session->Restore();
-    // 关闭接管仅关闭我们自己的 picker；原生对话框不提交、不取消。
-    session->Cancel();
+    // Only the guard chooses safe cancellation versus explicit shutdown recovery.
+    // Never expose a still-live source merely because the helper finished or failed.
+    session->Cancel(false);
 }
 
 struct Work { std::shared_ptr<NativeDialogTakeover::Shared> shared; std::shared_ptr<Session> session; };
 DWORD WINAPI SessionThread(void* raw) {
     std::unique_ptr<Work> work(static_cast<Work*>(raw));
     try { RunSession(work->shared, work->session); }
-    catch (...) { work->session->Cancel(); work->session->done = true; }
+    catch (...) {
+        work->session->Cancel(false);
+        if (work->shared->active && work->session->IsConcealed() && work->session->SameWindow()) {
+            work->session->terminal_failure = true;
+            if (!work->session->failure_reported.exchange(true) && work->shared->failure) {
+                try { work->shared->failure(); } catch (...) {}
+            }
+        } else work->session->Restore();
+        work->session->done = true;
+    }
     return 0;
 }
 void CALLBACK OnWindow(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD event_tick) {
@@ -485,7 +636,7 @@ void CALLBACK OnWindow(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LON
         for (const auto& session : watcher->sessions) {
             if (DestroyApplies(*session, window, event_time)) {
                 session->invalidated = true;
-                session->Cancel(false);
+                if (!session->submitting) session->Cancel(false);
             }
         }
         PostThreadMessageW(watcher->thread, kDestroyedMessage, event_tick, reinterpret_cast<LPARAM>(window));
@@ -703,7 +854,9 @@ uint32_t NativeDialogTakeoverGenerationRegression() {
     return passed;
 }
 
-NativeDialogTakeover::NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop, std::wstring desktop_name) : shared_(std::make_shared<Shared>()) {
+NativeDialogTakeover::NativeDialogTakeover(NativeDialogAppearance appearance, HDESK desktop, std::wstring desktop_name,
+    std::function<void()> failure) : shared_(std::make_shared<Shared>()) {
+    shared_->failure = std::move(failure);
     shared_->appearance = std::move(appearance);
     shared_->desktop = desktop; shared_->desktop_name = std::move(desktop_name);
     auto* holder = new std::shared_ptr<Shared>(shared_);
