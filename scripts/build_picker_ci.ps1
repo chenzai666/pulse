@@ -18,7 +18,7 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'CMakeLists.txt', 'integrations/NativeDialogs/README.md',
     'src/app/app_commands.cpp', 'src/app/app_core.h', 'src/app/app_main.cpp', 'src/app/app_runtime.cpp',
     'src/app/app_prefs.cpp', 'src/app/app_prefs.h', 'src/app/settings_controller.cpp', 'src/app/settings_controller.h',
-    'src/app/settings_flow_test.cpp', 'src/app/selftest_1b2.cpp', 'src/app/shell_window_sync.cpp',
+    'src/app/settings_flow_test.cpp', 'src/app/selftest_1b2.cpp', 'src/app/shell_window_sync.cpp', 'src/app/shell_window_sync.h',
     'src/app/native_dialog_picker_host.cpp', 'src/app/native_dialog_history.h', 'src/app/native_dialog_takeover.cpp',
     'src/app/native_dialog_takeover.h', 'src/app/native_dialog_takeover_test.cpp', 'src/app/native_dialog_wire.h',
     'src/app/native_dialog_wire_test.cpp', 'src/app/native_file_dialog_adapter.cpp', 'src/app/native_file_dialog_adapter.h',
