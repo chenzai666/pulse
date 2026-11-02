@@ -30,6 +30,10 @@ on:
         description: '仅运行回收站隔离与加载取消回归'
         type: boolean
         default: false
+      operation_progress_validation:
+        description: '只验证文件操作进度呈现，不执行删除'
+        type: boolean
+        default: false
       picker_publish_release:
         description: '构建完成后发布 v1.0.53 最新弹窗修复安装包'
         type: boolean
@@ -198,6 +202,7 @@ jobs:
       reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
       build_only: ${{ inputs.picker_build_only == true }}
       recycle_validation: ${{ inputs.recycle_validation == true }}
+      operation_progress_validation: ${{ inputs.operation_progress_validation == true }}
       publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'

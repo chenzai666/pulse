@@ -38,9 +38,11 @@ void OpsManager::RunAuthorizedTransfer(const OpRequest& req, uint64_t task_id) {
         if (!remote.last_error.empty()) detailed_error = remote.last_error;
         SetStatus([&](OpStatus& status) {
             const auto completed_ops = status.completed_ops;
+            const auto started_tick_ms = status.started_tick_ms;
             auto source_label = std::move(status.source_label);
             auto destination_label = std::move(status.destination_label);
             status = remote;
+            status.started_tick_ms = started_tick_ms;
             status.type = req.type;
             status.source_label = std::move(source_label);
             status.destination_label = std::move(destination_label);

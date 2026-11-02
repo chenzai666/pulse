@@ -141,7 +141,8 @@ void DrawEllipsizedText(Compositor& compositor, IDWriteTextFormat* format,
 }
 
 void DrawSpeedGraph(ID2D1DeviceContext* dc, const D2D1_RECT_F& plot,
-                    const std::deque<double>& history, D2D1_COLOR_F accent, float scale) {
+                    const std::deque<double>& history, double max_speed,
+                    D2D1_COLOR_F accent, float scale) {
     if (!dc) return;
     ComPtr<ID2D1SolidColorBrush> grid;
     D2D1_COLOR_F grid_color = accent;
@@ -154,7 +155,6 @@ void DrawSpeedGraph(ID2D1DeviceContext* dc, const D2D1_RECT_F& plot,
     }
     if (history.size() < 2) return;
 
-    const double max_speed = (std::max)(1.0, *std::max_element(history.begin(), history.end()));
     const float left = plot.left;
     const float right = plot.right;
     const float top = plot.top + ScaleDip(scale, 6.0f);
@@ -226,7 +226,7 @@ std::wstring ParentName(const std::wstring& path) {
     return LeafName(copy.substr(0, slash));
 }
 
-// Speed comes in one of two units: bytes for copy/move/empty-recycle, items for
+// Speed comes in one of two units: bytes for copy/move, items for
 // delete/restore. Formatting in one place keeps the current readout and the peak
 // label in step with whichever unit the task actually tracks.
 std::wstring FormatSpeedText(ops::OpSpeedBasis basis, double value) {
@@ -696,11 +696,21 @@ void FileOperationWindow::Update(const ops::OpStatus& status) {
     has_held_status_ = false;
     if (status.authorization_retrying && !status_.authorization_retrying) retry_shown_tick_ = now;
     const bool was_active = status_.active;
+    const auto old_basis = status_.speed_basis;
     if (new_task || status.authorization != status_.authorization) pressed_ = 0;
     status_ = ops::PresentOperationStatus(status);
-    if (new_task) {
+    if (!std::isfinite(status_.percent)) status_.percent = -1.0f;
+    if ((status_.speed_basis == ops::OpSpeedBasis::Bytes &&
+         (!std::isfinite(status_.bytes_per_second) || status_.bytes_per_second < 0.0 ||
+          !std::isfinite(status_.peak_bytes_per_second) || status_.peak_bytes_per_second < 0.0)) ||
+        (status_.speed_basis == ops::OpSpeedBasis::Items &&
+         (!std::isfinite(status_.items_per_second) || status_.items_per_second < 0.0 ||
+          !std::isfinite(status_.peak_items_per_second) || status_.peak_items_per_second < 0.0)))
+        status_.speed_basis = ops::OpSpeedBasis::None;
+    if (new_task || old_basis != status_.speed_basis) {
         speed_history_.clear();
         speed_sample_tick_ = 0;
+        graph_scale_ = 1.0;
     }
     if (!hwnd_) return;
     if (status_.authorization != ops::AuthorizationState::None) {
@@ -722,6 +732,7 @@ void FileOperationWindow::Update(const ops::OpStatus& status) {
 void FileOperationWindow::Show(bool activate) {
     if (!hwnd_) return;
     const bool was_visible = IsWindowVisible(hwnd_) != FALSE;
+    if (was_visible && !activate) return;
     if (!positioned_) {
         RECT rect{};
         GetWindowRect(hwnd_, &rect);
@@ -758,7 +769,7 @@ void FileOperationWindow::ResizeForDetails(bool preserve_center) {
     const int height = static_cast<int>((detailed_ ? kDetailedH : kCollapsedH) * scale_);
     const int y = preserve_center ? rect.top - (height - old_height) / 2 : rect.top;
     SetWindowPos(hwnd_, nullptr, rect.left, y, width, height,
-                 SWP_NOZORDER | SWP_NOOWNERZORDER);
+                 SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
 }
 
 int FileOperationWindow::HitTestControl(float x, float y) const {
@@ -931,8 +942,8 @@ void FileOperationWindow::Render() {
     const auto track = Rect(scale_, kPadX, 98, dip_w - kPadX * 2.0f, 10);
     painter_.FillRoundedRect(track, ScaleDip(scale_, 5.0f),
         dark_ ? HexColor(0xFFFFFF, 0.10f) : HexColor(0x000000, 0.10f));
-    const bool indeterminate = requesting || (emptying && status_.active && !failed && !completed
-        && status_.percent < 0.0f);
+    const bool indeterminate = requesting || (status_.active && !failed && !completed &&
+        !paused && !waiting && status_.percent < 0.0f);
     if (indeterminate) {
         fluent::ProgressSpec bar;
         bar.bounds = track;
@@ -966,9 +977,35 @@ void FileOperationWindow::Render() {
         painter_.DrawGlyph(L"\xEA18", Rect(scale_, 30, 150, 22, 22), theme.accent);
         DrawEllipsizedText(compositor_, compositor_.SmallFormat(),
             Rect(scale_, 62, 124, dip_w - 94, 72), explanation, theme.text, true);
+    } else if (emptying) {
+        const std::wstring state = failed ? l10n::Get(l10n::StringId::OpIncomplete)
+            : completed ? l10n::Get(l10n::StringId::OpCompleted)
+            : l10n::Get(l10n::StringId::OpEmptying);
+        painter_.DrawText(l10n::Pick(L"状态", L"Status"), Rect(scale_, 32, 124, 136, 14),
+                          compositor_.SmallFormat(), theme.text_secondary);
+        painter_.DrawText(state, Rect(scale_, 32, 140, 200, 22),
+                          compositor_.SmallFormat(), failed ? theme.danger : theme.text);
+        if (status_.active && status_.started_tick_ms != 0) {
+            const ULONGLONG now = GetTickCount64();
+            const uint64_t elapsed = now >= status_.started_tick_ms
+                ? (now - status_.started_tick_ms) / 1000 : 0;
+            painter_.DrawText(l10n::Pick(L"已用时间", L"Elapsed"), Rect(scale_, 240, 124, 136, 14),
+                              compositor_.SmallFormat(), theme.text_secondary);
+            const std::wstring duration = elapsed == 0
+                ? L"0" + l10n::Get(l10n::StringId::OpSeconds) : FormatDuration(elapsed);
+            painter_.DrawText(duration, Rect(scale_, 240, 140, 180, 22),
+                              compositor_.SmallFormat(), theme.text);
+        }
     } else {
         const bool byte_basis = status_.speed_basis == ops::OpSpeedBasis::Bytes;
-        const std::wstring time_text = failed ? l10n::Get(l10n::StringId::OpIncomplete).c_str()
+        const bool elapsed_only = status_.active && !paused && !waiting &&
+            status_.percent < 0 && status_.started_tick_ms != 0;
+        const ULONGLONG elapsed_now = GetTickCount64();
+        const uint64_t elapsed_seconds = elapsed_now >= status_.started_tick_ms
+            ? (elapsed_now - status_.started_tick_ms) / 1000 : 0;
+        const std::wstring time_text = elapsed_only ? (elapsed_seconds == 0
+                ? L"0" + l10n::Get(l10n::StringId::OpSeconds) : FormatDuration(elapsed_seconds))
+            : failed ? l10n::Get(l10n::StringId::OpIncomplete).c_str()
             : completed ? l10n::Get(l10n::StringId::OpCompleted).c_str()
             : paused ? l10n::Get(l10n::StringId::OpPaused).c_str()
             : waiting ? l10n::Get(l10n::StringId::OpWaiting).c_str()
@@ -998,7 +1035,8 @@ void FileOperationWindow::Render() {
             : live_speed <= 0.0 ? l10n::Get(l10n::StringId::OpEstimating).c_str()
             : FormatSpeedText(status_.speed_basis, live_speed);
         const D2D1_COLOR_F time_color = failed ? theme.danger : theme.text;
-        painter_.DrawText(l10n::Get(l10n::StringId::OpRemainingTime).c_str(), Rect(scale_, 32, 124, 120, 14),
+        painter_.DrawText(elapsed_only ? l10n::Pick(L"已用时间", L"Elapsed")
+                                      : l10n::Get(l10n::StringId::OpRemainingTime).c_str(), Rect(scale_, 32, 124, 120, 14),
                           compositor_.SmallFormat(), theme.text_secondary);
         painter_.DrawText(l10n::Get(l10n::StringId::OpRemainingItems).c_str(), Rect(scale_, 176, 124, 140, 14),
                           compositor_.SmallFormat(), theme.text_secondary);
@@ -1017,21 +1055,30 @@ void FileOperationWindow::Render() {
         painter_.FillRoundedRect(card, ScaleDip(scale_, 12.0f),
             dark_ ? HexColor(0x000000, 0.30f) : HexColor(0x000000, 0.05f));
         painter_.StrokeRoundedRect(card, ScaleDip(scale_, 12.0f), theme.stroke_card);
-        painter_.DrawGlyph(L"\xE8F1", Rect(scale_, 30, 188, 14, 14), sky);
-        painter_.DrawText(l10n::Get(l10n::StringId::OpSpeedHistory).c_str(), Rect(scale_, 48, 186, 220, 18),
-                          compositor_.SmallFormat(), theme.text_secondary);
-        const double peak_speed = status_.speed_basis == ops::OpSpeedBasis::Items
-            ? status_.peak_items_per_second : status_.peak_bytes_per_second;
-        const std::wstring peak = l10n::Get(l10n::StringId::OpPeak).c_str() +
-            FormatSpeedText(status_.speed_basis == ops::OpSpeedBasis::None
-                ? ops::OpSpeedBasis::Bytes : status_.speed_basis, peak_speed);
-        painter_.DrawText(peak, Rect(scale_, 280, 186, 156, 18),
-                          compositor_.SmallFormat(), theme.text_secondary,
-                          fluent::HorizontalAlignment::Right);
-        const auto plot = Rect(scale_, 30, 208, dip_w - kPadX * 2.0f - 20.0f, 100);
-        painter_.FillRoundedRect(plot, ScaleDip(scale_, 8.0f),
-            dark_ ? HexColor(0x0F172A, 0.60f) : HexColor(0xFFFFFF, 0.50f));
-        DrawSpeedGraph(compositor_.Dc(), plot, speed_history_, sky, scale_);
+        if (emptying || status_.speed_basis == ops::OpSpeedBasis::None) {
+            const std::wstring unavailable = emptying
+                ? l10n::Pick(L"清空期间无法获取速度和剩余时间", L"Speed and remaining time are unavailable while emptying")
+                : l10n::Pick(L"速度数据不可用", L"Speed data is unavailable");
+            painter_.DrawText(unavailable,
+                              Rect(scale_, 32, 208, dip_w - kPadX * 2.0f - 24.0f, 72),
+                              compositor_.SmallFormat(), theme.text_secondary);
+        } else {
+            painter_.DrawGlyph(L"\xE8F1", Rect(scale_, 30, 188, 14, 14), sky);
+            painter_.DrawText(l10n::Get(l10n::StringId::OpSpeedHistory).c_str(), Rect(scale_, 48, 186, 220, 18),
+                              compositor_.SmallFormat(), theme.text_secondary);
+            const double peak_speed = status_.speed_basis == ops::OpSpeedBasis::Items
+                ? status_.peak_items_per_second : status_.peak_bytes_per_second;
+            const std::wstring peak = l10n::Get(l10n::StringId::OpPeak).c_str() +
+                FormatSpeedText(status_.speed_basis == ops::OpSpeedBasis::None
+                    ? ops::OpSpeedBasis::Bytes : status_.speed_basis, peak_speed);
+            painter_.DrawText(peak, Rect(scale_, 280, 186, 156, 18),
+                              compositor_.SmallFormat(), theme.text_secondary,
+                              fluent::HorizontalAlignment::Right);
+            const auto plot = Rect(scale_, 30, 208, dip_w - kPadX * 2.0f - 20.0f, 100);
+            painter_.FillRoundedRect(plot, ScaleDip(scale_, 8.0f),
+                dark_ ? HexColor(0x0F172A, 0.60f) : HexColor(0xFFFFFF, 0.50f));
+            DrawSpeedGraph(compositor_.Dc(), plot, speed_history_, graph_scale_, sky, scale_);
+        }
     }
 
     painter_.FillRoundedRect(D2D1::RectF(0, height - ScaleDip(scale_, kFooterH), width,
@@ -1163,11 +1210,11 @@ LRESULT FileOperationWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM l
                 return 0;
             }
             const ULONGLONG now = GetTickCount64();
-            if (speed_sample_tick_ == 0 || now - speed_sample_tick_ >= 250) {
+            if (status_.type != ops::OpType::EmptyRecycle && status_.speed_basis != ops::OpSpeedBasis::None &&
+                (speed_sample_tick_ == 0 || now - speed_sample_tick_ >= 250)) {
                 speed_sample_tick_ = now;
                 const bool running = status_.phase == ops::OpPhase::Running;
-                // Sample whichever unit this task tracks: byte transfers and
-                // empty-recycle feed the byte rate, delete and restore the item rate.
+                // Sample whichever unit this task tracks.
                 double sample = 0.0;
                 if (running) {
                     if (status_.speed_basis == ops::OpSpeedBasis::Bytes)
@@ -1176,6 +1223,7 @@ LRESULT FileOperationWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM l
                         sample = status_.items_per_second;
                 }
                 speed_history_.push_back((std::max)(0.0, sample));
+                graph_scale_ = (std::max)(graph_scale_, (std::max)(0.0, sample));
                 while (speed_history_.size() > 120) speed_history_.pop_front();
             }
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1243,7 +1291,11 @@ LRESULT FileOperationWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM l
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         BeginPaint(hwnd_, &paint);
-        Render();
+        if (!rendering_) {
+            rendering_ = true;
+            Render();
+            rendering_ = false;
+        }
         EndPaint(hwnd_, &paint);
         return 0;
     }

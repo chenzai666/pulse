@@ -113,9 +113,9 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
                 status.authorization_retrying = false;
                 status.current_item = item.empty() ? source : item;
                 status.completed_items = completed.size();
-                status.percent = req.sources.empty() ? 0.0f :
-                    static_cast<float>((completed.size() + skipped + (percent < 0 ? 0 : percent / 100.0)) *
-                                       100.0 / req.sources.size());
+                // Shell callbacks may restart their work units while processing a
+                // single source. They do not establish total task progress.
+                status.percent = -1.0f;
                 update_rate(status);
             });
         };

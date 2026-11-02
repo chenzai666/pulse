@@ -52,6 +52,8 @@ private:
     ops::OpStatus status_;
     std::deque<double> speed_history_;
     ULONGLONG speed_sample_tick_ = 0;
+    double graph_scale_ = 1.0;
+    bool rendering_ = false;
     bool dark_ = false;
     bool backdrop_enabled_ = false;
     bool detailed_ = false;

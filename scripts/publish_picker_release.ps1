@@ -69,8 +69,27 @@ if($recycle){
 安装包 SHA-256：$hash。来源记录见 provenance.json。
 "@|Set-Content -LiteralPath $notes -Encoding utf8
 }
-$tag='custom-v1.0.53-'+$(if($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
-$releaseTitle=if($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗修复'}
+$progress=$env:PULSE_PROGRESS_VALIDATION -eq 'true'
+if($progress){
+@"
+# Pulse 定制版 v1.0.53 · 文件操作进度修复
+
+源码提交：$commit。支持覆盖安装和自定义路径，保留配置、索引及增强包。
+
+- 清空回收站不再重复查询整个回收站来估算百分比，也不等待额外轮询线程退出。
+- 删除、永久删除及恢复缺少可靠百分比的阶段显示不定进度和已用时间，保留已确认的项目数量。
+- 保留复制、移动的实际字节进度；未知或无效数据不会显示成假 0% 和速度曲线。
+- 速度图量程在任务内保持稳定，详情收放和后台更新避免窗口抢焦点或重复置顶。
+
+本次只运行进度呈现的无界面检查，没有执行真实删除、清空或恢复操作。
+
+构建记录：https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID
+
+安装包 SHA-256：$hash。来源记录见 provenance.json。
+"@|Set-Content -LiteralPath $notes -Encoding utf8
+}
+$tag='custom-v1.0.53-'+$(if($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
+$releaseTitle=if($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
 & gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes

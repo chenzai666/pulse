@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -13,6 +13,9 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 
 # 仅允许主程序与撤回功能的源码变化，完整组件使用固定清单逐文件核验。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml',
+    'src/ops/ops_manager.cpp', 'src/ops/ops_manager.h', 'src/ops/ops_manager_authorized_delete.cpp',
+    'src/ops/ops_manager_shell_transfer.cpp', 'src/ops/operation_presentation.h', 'src/bench/ops_test_main.cpp',
+    'src/bench/operation_presentation_test.cpp', 'src/ui/file_operation_dialog.cpp', 'src/ui/file_operation_dialog.h',
     'src/app/app_state.h', 'src/app/app_navigation.cpp', 'src/app/app_worker.cpp', 'src/app/app_worker.h',
     'src/fs/fs_recycle.cpp', 'src/fs/fs_recycle.h', 'src/bench/recycle_metadata_test.cpp',
     'src/bench/worker_enum_cancel_test.cpp', 'src/bench/virtual_worker_consumers_test.cpp',
@@ -90,8 +93,8 @@ $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
 $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
-$recycleOnly = if ($RecycleValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
-$targets = if ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
+$recycleOnly = if ($RecycleValidation -or $OperationProgressValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
+$targets = if ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
@@ -134,6 +137,10 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
+if ($OperationProgressValidation) {
+    & (Join-Path $taskBuild 'pulse_operation_presentation_test.exe') *> (Join-Path $galleryOutput 'operation-progress.log')
+    if ($LASTEXITCODE) { throw '操作进度定向回归失败' }
+}
 if ($RecycleValidation) {
     New-Item -ItemType Directory -Path (Join-Path $taskRepo 'bench_data') -Force | Out-Null
     foreach ($case in @('pulse_recycle_metadata_test', 'pulse_worker_enum_cancel_test', 'pulse_virtual_worker_consumers_test')) {

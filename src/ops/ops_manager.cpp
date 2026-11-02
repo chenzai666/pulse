@@ -1985,6 +1985,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         st.type = req.type;
         st.task_id = task_id;
         st.phase = OpPhase::Scanning;
+        st.started_tick_ms = GetTickCount64();
         st.percent = -1.0f;
         st.summary = l10n::IsChinese()
             ? std::wstring(l10n::Cn(L"正在准备")) + OpVerb(req.type) + L"…"
@@ -2814,6 +2815,7 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         st.type = req.type;
         st.task_id = task_id;
         st.phase = OpPhase::Running;
+        st.started_tick_ms = GetTickCount64();
         st.percent = 0.0f;
         st.summary = Describe(req);
         st.last_error.clear();
@@ -2831,7 +2833,9 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         st.items_per_second = st.peak_items_per_second = 0.0;
         st.speed_basis = SpeedBasisFor(req.type);
         st.eta_seconds = 0;
-        if (req.type == OpType::EmptyRecycle) st.percent = -1.0f;
+        if (req.type == OpType::EmptyRecycle || req.type == OpType::RestoreRecycle ||
+            req.type == OpType::RecycleDelete || req.type == OpType::RealDelete)
+            st.percent = -1.0f;
     });
 
     DuplicateCleanupGuard duplicate_guard;
@@ -2850,7 +2854,7 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
             });
             return;
         }
-        SetStatus([](OpStatus& st) { st.phase = OpPhase::Running; st.percent = 0.0f; });
+        SetStatus([](OpStatus& st) { st.phase = OpPhase::Running; st.percent = -1.0f; });
     }
 
 #ifndef PULSE_ELEVATED_HOST
@@ -2860,63 +2864,14 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
     }
 #endif
     if (req.type == OpType::EmptyRecycle) {
-        SHQUERYRBINFO start{};
-        start.cbSize = sizeof(start);
-        const bool have_start = SUCCEEDED(SHQueryRecycleBinW(nullptr, &start))
-            && start.i64NumItems >= 0;
-        const int64_t start_items = have_start ? start.i64NumItems : 0;
-        const int64_t start_bytes = have_start ? start.i64Size : 0;
-        SetStatus([&](OpStatus& st) {
+        SetStatus([](OpStatus& st) {
             st.current_item = OpVerb(OpType::EmptyRecycle);
             st.summary = st.current_item;
-            st.total_items = start_items > 0 ? static_cast<uint64_t>(start_items) : 0;
-            st.total_bytes = start_bytes > 0 ? static_cast<uint64_t>(start_bytes) : 0;
-            st.percent = have_start && start_items > 0 ? 0.0f : -1.0f;
         });
-
-        // The poller sees recycled bytes actually shrink, so empty-recycle reports a byte
-        // speed like a transfer does instead of leaving the graph flat.
-        TransferRateEstimator recycle_rate;
-        recycle_rate.Reset(GetTickCount64(), 0);
-
-        std::atomic<bool> emptying{true};
-        std::thread poller([&] {
-            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-            while (emptying.load(std::memory_order_relaxed) && !stopping_.load()) {
-                SHQUERYRBINFO now{};
-                now.cbSize = sizeof(now);
-                if (SUCCEEDED(SHQueryRecycleBinW(nullptr, &now)) && have_start && start_items > 0) {
-                    const int64_t left = (std::max)(int64_t{0}, now.i64NumItems);
-                    const int64_t done_items = (std::max)(int64_t{0}, start_items - left);
-                    const int64_t left_bytes = (std::max)(int64_t{0}, now.i64Size);
-                    const int64_t done_bytes = (std::max)(int64_t{0}, start_bytes - left_bytes);
-                    SetStatus([&](OpStatus& st) {
-                        if (!st.active || st.type != OpType::EmptyRecycle) return;
-                        st.completed_items = static_cast<uint64_t>(done_items);
-                        st.total_items = static_cast<uint64_t>(start_items);
-                        st.transferred_bytes = static_cast<uint64_t>(done_bytes);
-                        st.total_bytes = static_cast<uint64_t>((std::max)(start_bytes, int64_t{0}));
-                        st.percent = 100.0f * static_cast<float>(done_items)
-                            / static_cast<float>(start_items);
-                        st.current_item = OpVerb(OpType::EmptyRecycle);
-                        const ULONGLONG now_tick = GetTickCount64();
-                        recycle_rate.Observe(now_tick, st.transferred_bytes, st.total_bytes);
-                        st.bytes_per_second = recycle_rate.speed();
-                        st.peak_bytes_per_second = (std::max)(st.peak_bytes_per_second,
-                                                              st.bytes_per_second);
-                        st.eta_seconds = recycle_rate.eta_seconds();
-                    });
-                }
-                for (int i = 0; i < 8 && emptying.load(std::memory_order_relaxed); ++i)
-                    Sleep(50);
-            }
-            CoUninitialize();
-        });
-
+        // SHEmptyRecycleBinW provides no progress callback. Repeated shell queries can
+        // block completion and their counts can change for unrelated reasons.
         const HRESULT hr = SHEmptyRecycleBinW(nullptr, nullptr,
             SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND);
-        emptying.store(false, std::memory_order_relaxed);
-        if (poller.joinable()) poller.join();
 
         SetStatus([&](OpStatus& st) {
             st.active = false;

@@ -267,7 +267,7 @@ static void CheckDeleteProgress(const std::wstring& srcDir)
 {
     Check(ops::SpeedBasisFor(ops::OpType::Copy) == ops::OpSpeedBasis::Bytes &&
           ops::SpeedBasisFor(ops::OpType::Move) == ops::OpSpeedBasis::Bytes &&
-          ops::SpeedBasisFor(ops::OpType::EmptyRecycle) == ops::OpSpeedBasis::Bytes &&
+          ops::SpeedBasisFor(ops::OpType::EmptyRecycle) == ops::OpSpeedBasis::None &&
           ops::SpeedBasisFor(ops::OpType::RecycleDelete) == ops::OpSpeedBasis::Items &&
           ops::SpeedBasisFor(ops::OpType::RealDelete) == ops::OpSpeedBasis::Items &&
           ops::SpeedBasisFor(ops::OpType::RestoreRecycle) == ops::OpSpeedBasis::Items &&

@@ -39,15 +39,13 @@ enum class ConflictChoice { Cancel, Replace, Skip, KeepBoth };
 enum class AuthorizationState { None, Requesting, ActionRequired };
 enum class AuthorizationChoice { Cancel, Retry, Skip };
 // Every task reports speed in exactly one unit; the transfer dialog labels the history
-// graph, the current speed and the peak from it. Empty-recycle counts as bytes because
-// its poller tracks recycled bytes.
+// graph, the current speed and the peak from it.
 enum class OpSpeedBasis { None, Bytes, Items };
 
 inline OpSpeedBasis SpeedBasisFor(OpType type) {
     switch (type) {
     case OpType::Copy:
-    case OpType::Move:
-    case OpType::EmptyRecycle: return OpSpeedBasis::Bytes;
+    case OpType::Move: return OpSpeedBasis::Bytes;
     case OpType::RecycleDelete:
     case OpType::RealDelete:
     case OpType::RestoreRecycle: return OpSpeedBasis::Items;
@@ -108,6 +106,7 @@ struct OpStatus {
     OpType type = OpType::Copy;
     OpPhase phase = OpPhase::Completed;
     uint64_t task_id = 0;
+    uint64_t started_tick_ms = 0; // GetTickCount64 at task start; zero before start
     float percent = -1.0f;    // <0 = nothing to show
     std::wstring summary;     // one-line status-bar text
     std::wstring last_error;
