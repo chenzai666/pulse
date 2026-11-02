@@ -135,6 +135,7 @@ exit /b %errorlevel%
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
 if ($RecycleValidation) {
+    New-Item -ItemType Directory -Path (Join-Path $taskRepo 'bench_data') -Force | Out-Null
     foreach ($case in @('pulse_recycle_metadata_test', 'pulse_worker_enum_cancel_test', 'pulse_virtual_worker_consumers_test')) {
         & (Join-Path $taskBuild ($case + '.exe')) *> (Join-Path $galleryOutput ($case + '.log'))
         if ($LASTEXITCODE) { throw "回收站定向回归失败：$case" }
