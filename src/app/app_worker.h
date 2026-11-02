@@ -44,6 +44,7 @@ struct WorkResult {
     fs::DirectoryIdentity identity;
     std::wstring git_root;
     bool cancelled = false;
+    bool partial = false;
     bool error = false;
     bool bitlocker_locked = false; // error: the drive is a locked BitLocker volume
     double enum_ms = 0.0;

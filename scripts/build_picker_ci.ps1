@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification, [switch]$BuildOnly)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -13,6 +13,9 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 
 # 仅允许主程序与撤回功能的源码变化，完整组件使用固定清单逐文件核验。
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml',
+    'src/app/app_state.h', 'src/app/app_navigation.cpp', 'src/app/app_worker.cpp', 'src/app/app_worker.h',
+    'src/fs/fs_recycle.cpp', 'src/fs/fs_recycle.h', 'src/bench/recycle_metadata_test.cpp',
+    'src/bench/worker_enum_cancel_test.cpp', 'src/bench/virtual_worker_consumers_test.cpp',
     'scripts/build_picker_ci.ps1', 'scripts/build_tab_drag_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1',
     'scripts/package_custom.ps1', 'scripts/check_release_payload.ps1', 'scripts/verify_dialog_removal_evidence.py', 'scripts/publish_picker_release.ps1', 'docs/custom-edition.md',
     'CMakeLists.txt', 'integrations/NativeDialogs/README.md',
@@ -87,11 +90,14 @@ $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
 $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
+$recycleOnly = if ($RecycleValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
+$targets = if ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
 if errorlevel 1 exit /b 1
 chcp 65001 >nul
+$recycleOnly
 rem Pure transition regression has no windows, input or user configuration.
 cl /nologo /std:c++20 /EHsc /W4 /WX "$taskRepo\src\bench\native_dialog_folder_link_policy_test.cpp" /Fe:"$taskBuild\native-dialog-folder-link-policy-test.exe" /Fo:"$taskBuild\native-dialog-folder-link-policy-test.obj"
 if errorlevel 1 exit /b 1
@@ -123,11 +129,17 @@ if errorlevel 1 exit /b 1
 :compile_release
 cmake -S "$taskRepo" -B "$taskBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPULSE_CUSTOM_EDITION=ON -DPULSE_WITH_SELFTEST=$selftestMode -DPULSE_WITH_LUMATEXT=ON -DCMAKE_PREFIX_PATH="$sdkRoot" -DPULSE_UPDATE_MANIFEST_URL= -DPULSE_UPDATE_PUBLIC_KEY_HEX=
 if errorlevel 1 exit /b 1
-cmake --build "$taskBuild" --parallel 4 --target pulse pulse_native_folder_follow_test
+cmake --build "$taskBuild" --parallel 4 --target $targets
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
+if ($RecycleValidation) {
+    foreach ($case in @('pulse_recycle_metadata_test', 'pulse_worker_enum_cancel_test', 'pulse_virtual_worker_consumers_test')) {
+        & (Join-Path $taskBuild ($case + '.exe')) *> (Join-Path $galleryOutput ($case + '.log'))
+        if ($LASTEXITCODE) { throw "回收站定向回归失败：$case" }
+    }
+}
 if (-not $ReuseRemovalVerification -and -not $BuildOnly) {
 $env:PULSE_TEST_SETTINGS_FLOW = Join-Path $galleryOutput 'settings-integration.log'
 $env:PULSE_TEST_SETTINGS_INTEGRATION = '1'

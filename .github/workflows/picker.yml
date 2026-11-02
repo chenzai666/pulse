@@ -10,12 +10,18 @@ on:
         description: '发布最新 v1.0.53 弹窗修复安装包'
         type: boolean
         default: false
+      recycle_validation:
+        type: boolean
+        default: false
       reuse_removal_verification:
         description: '设置及选择器源码未变时复用已通过的移除回归'
         type: boolean
         default: false
   workflow_call:
     inputs:
+      recycle_validation:
+        type: boolean
+        default: false
       build_only:
         type: boolean
         default: false
@@ -41,13 +47,14 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true')
+        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true') -RecycleValidation:('${{ inputs.recycle_validation }}' -eq 'true')
       - name: 制作并发布最新弹窗修复安装包
         if: inputs.publish_release == true
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           PICKER_USER_VALIDATION: ${{ inputs.build_only }}
+          PULSE_RECYCLE_VALIDATION: ${{ inputs.recycle_validation }}
         run: ./scripts/publish_picker_release.ps1
       - uses: actions/upload-artifact@v4
         if: inputs.publish_release == true && success()

@@ -2,6 +2,7 @@
 #pragma once
 #include "fs_enum.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,9 +28,12 @@ bool QueryRecycleBinInfo(RecycleBinInfo& out);
 bool ReadRecycleIndex(const std::wstring& index_path, RecycleItem& out);
 std::wstring RecycleIndexPath(const std::wstring& content_path);
 // Append live items belonging to the current user under one $Recycle.Bin root.
-// Missing directories are empty; access/enumeration failures return false.
-bool EnumerateRecycleBinAtRoot(const std::wstring& recycle_root, std::vector<DirEntry>& out);
-void EnumerateRecycleBin(std::vector<DirEntry>& out, RecycleBinInfo* info = nullptr);
+// Missing directories are empty; cancellation or access/enumeration failures return false.
+bool EnumerateRecycleBinAtRoot(const std::wstring& recycle_root, std::vector<DirEntry>& out,
+                               const std::function<bool()>& cancelled = {});
+void EnumerateRecycleBin(std::vector<DirEntry>& out, RecycleBinInfo* info = nullptr,
+                         const std::function<bool()>& cancelled = {},
+                         const std::function<void(const std::vector<DirEntry>&, const RecycleBinInfo&)>& progress = {});
 
 inline bool IsRecycleViewPath(const std::wstring& path) {
     return path == L"pulse:recycle";

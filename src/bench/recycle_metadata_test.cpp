@@ -2,6 +2,8 @@
 // Never call RestoreOneFromRecycle here: its legacy lookup scans the real bin.
 #include "../shell_host/main.cpp"
 #include "../fs/fs_recycle.h"
+#include "../common/current_user_security.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -53,6 +55,41 @@ std::string ReadText(const files::path& path) {
 struct Pair {
     files::path index, content, target;
 };
+void RunEnumerationCases(const files::path& root) {
+    const auto sid = pulse::CurrentUserSidString();
+    if (sid.empty()) throw std::runtime_error("current SID unavailable");
+    const auto bin = root / L"fixture-bin";
+    const auto sid_dir = bin / sid;
+    files::create_directory(bin);
+    files::create_directory(sid_dir);
+    const auto target = root / L"dest" / L"listing.txt";
+    auto zero_size = Record(2, target.wstring());
+    Put(zero_size, 8, 0, 8);
+    WriteBytes(sid_dir / L"$Ifile.txt", zero_size);
+    WriteText(sid_dir / L"$Rfile.txt", kBody);
+    WriteBytes(sid_dir / L"$Idir", Record(2, (root / L"dest" / L"folder").wstring()));
+    files::create_directory(sid_dir / L"$Rdir");
+    WriteBytes(sid_dir / L"$Iorphan", Record(2, (root / L"dest" / L"orphan").wstring()));
+
+    std::vector<pulse::fs::DirEntry> entries;
+    Check(pulse::fs::EnumerateRecycleBinAtRoot(bin.wstring(), entries),
+          "isolated SID directory enumeration succeeds");
+    const auto file = std::find_if(entries.begin(), entries.end(), [](const auto& entry) {
+        return entry.name == L"listing.txt";
+    });
+    const auto dir = std::find_if(entries.begin(), entries.end(), [](const auto& entry) {
+        return entry.name == L"folder";
+    });
+    Check(entries.size() == 2 && file != entries.end() && !file->is_dir &&
+          file->size == sizeof(kBody) - 1,
+          "enumeration excludes orphan indexes and uses payload size for a zero-size record");
+    Check(dir != entries.end() && dir->is_dir,
+          "enumeration retains directory payload attributes without descending into it");
+    entries.clear();
+    unsigned polls = 0;
+    Check(!pulse::fs::EnumerateRecycleBinAtRoot(bin.wstring(), entries, [&] { return ++polls >= 3; }) &&
+          polls == 3 && entries.empty(), "enumeration stops during directory scanning on cancellation");
+}
 Pair MakePair(const files::path& root, const std::wstring& stem, unsigned version,
               const std::wstring& leaf, bool content = true) {
     Pair pair{root / (L"$I" + stem), root / (L"$R" + stem), root / L"dest" / leaf};
@@ -132,6 +169,7 @@ void RunMalformedMatrix(const files::path& root) {
 
 void RunCases(const files::path& root) {
     files::create_directory(root / L"dest");
+    RunEnumerationCases(root);
     const auto bad = MakePair(root, L"truncated", 2, L"photo.jpg");
     auto bytes = Record(2, bad.target.wstring());
     // Drop .jpg plus NUL, leaving another valid name in the same owned folder.

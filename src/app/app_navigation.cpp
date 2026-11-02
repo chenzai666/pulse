@@ -1306,6 +1306,11 @@ static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool ag
         any = true;
 
         const bool focusedTab = (&pane == s.pane);
+            if (fs::IsRecycleViewPath(res.path) && tab->applied_generation == res.generation &&
+                tab->snapshot && tab->snapshot_path == res.path &&
+                (tab->pending_selection_revision == UINT64_MAX ||
+                 tab->pending_selection_revision != tab->selection_revision))
+                app::CapturePendingListingSelection(*tab);
             auto selection_restore = app::TakeListingSelection(*tab, res.path);
             auto& pendingNames = selection_restore.names;
             auto& pendingFocus = selection_restore.focus;
@@ -1356,7 +1361,7 @@ static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool ag
             tab->SetSnapshot(listing);
             tab->git_root = res.git_root;
             tab->loading = false;
-            tab->pending_generation = 0;
+            if (!res.partial) tab->pending_generation = 0;
             tab->applied_generation = res.generation;
             tab->net_readonly = false;
             tab->banner_title.clear();
@@ -1365,6 +1370,8 @@ static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool ag
             if (virtual_kind == L"recycle" || fs::IsRecycleViewPath(res.path)) {
                 ApplyQueriedRecycleInfo(s, res.recycle_info);
                 ApplyRecycleOccupancy(s);
+                if (res.partial)
+                    tab->banner_message += l10n::Pick(L" · 正在继续加载…", L" · Loading remaining items…");
             }
 
             std::optional<app::CreateRenameSelection> createRename;
@@ -1407,12 +1414,19 @@ static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool ag
             if (!startedRename) {
                 app::RestoreListingSelection(*tab, selection_restore, &pane, &s.places);
             }
+            if (res.partial && !selection_restore.names.empty()) {
+                tab->pending_selected_names = selection_restore.names;
+                tab->pending_selected_name = selection_restore.focus;
+                tab->pending_ensure_selection_visible = selection_restore.ensure_visible;
+                tab->pending_selection_revision = tab->selection_revision;
+            }
             if (focusedTab && ensurePendingVisible && tab->selected_index >= 0) {
                 EnsureRowVisible(s, *tab, tab->selected_index);
                 s.scrollTargetY = tab->scroll_y;
                 s.scrollAnimating = false;
             }
-            CompleteExplorerNavigation(*tab, res.generation, !res.cancelled && res.snapshot != nullptr);
+            if (!res.partial)
+                CompleteExplorerNavigation(*tab, res.generation, !res.cancelled && res.snapshot != nullptr);
     });
     if (again) RefreshPath(s, res.path);
     if (!any) return false;

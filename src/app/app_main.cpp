@@ -123,6 +123,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "shell32.lib")
@@ -219,6 +220,18 @@ static bool IndexStatusVisible(AppState& s) {
 }
 
 void Render(AppState& s) {
+    // Shell image-list COM calls can pump WM_PAINT while a frame is drawing.
+    // Defer that paint instead of nesting Direct2D draws and window stacks.
+    if (s.rendering_frame) { s.repaint_after_frame = true; return; }
+    s.rendering_frame = true;
+    struct FrameGuard {
+        AppState& state;
+        ~FrameGuard() {
+            state.rendering_frame = false;
+            if (std::exchange(state.repaint_after_frame, false) && state.hwnd)
+                InvalidateRect(state.hwnd, nullptr, FALSE);
+        }
+    } frame_guard{s};
     auto t0 = std::chrono::steady_clock::now();
 
     if (s.compositor.NeedsRecovery()) {

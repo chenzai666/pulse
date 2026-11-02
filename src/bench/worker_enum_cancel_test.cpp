@@ -2,6 +2,7 @@
 #include <cstdio>
 static HANDLE blocked, release_io, delivered;
 static std::atomic<int> block_count{0}, callbacks{0};
+static HANDLE recycle_blocked, recycle_release;
 namespace pulse::fs {
 bool IsVirtualPath(const std::wstring& p) { return p.starts_with(L"pulse:"); }
 bool IsUncPath(const std::wstring& p) { return p.starts_with(L"\\\\"); }
@@ -13,7 +14,20 @@ void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>&, const 
         WaitForSingleObject(release_io, INFINITE);
     }
 }
-void EnumerateRecycleBin(std::vector<DirEntry>&, RecycleBinInfo*) {}
+void EnumerateRecycleBin(std::vector<DirEntry>& out, RecycleBinInfo* info,
+                         const std::function<bool()>& cancelled,
+                         const std::function<void(const std::vector<DirEntry>&, const RecycleBinInfo&)>& progress) {
+    info->valid = true;
+    for (int i = 0; i < 300 && !cancelled(); ++i) {
+        out.emplace_back();
+        ++info->items;
+        progress(out, *info);
+        if (i == 127) {
+            SetEvent(recycle_blocked);
+            WaitForSingleObject(recycle_release, INFINITE);
+        }
+    }
+}
 bool QueryDirectoryIdentity(const std::wstring&, DirectoryIdentity&) { return true; }
 NetSnapshotWrite BeginNetSnapshotWrite(const std::wstring&) { return {}; }
 bool SaveNetSnapshot(const NetSnapshotWrite&, const SnapshotPtr&) { return true; }
@@ -43,6 +57,25 @@ int main() {
     blocked = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     release_io = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     delivered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    recycle_blocked = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    recycle_release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    {
+        std::atomic<int> partials{0}, finals{0};
+        std::atomic<size_t> first_size{0};
+        app::WorkerPool worker;
+        worker.Start([&](app::WorkResult result) {
+            if (result.partial) {
+                if (++partials == 1) first_size = result.snapshot->size();
+            } else ++finals;
+        });
+        const auto generation = worker.Refresh(L"pulse:recycle", ui::SortColumn::Name, ui::SortDirection::Asc);
+        Check(WaitForSingleObject(recycle_blocked, 2000) == WAIT_OBJECT_0, "recycle fixture reaches enumeration barrier");
+        Check(partials == 2 && first_size == 64, "recycle delivers geometric snapshots before enumeration completes");
+        worker.CancelGeneration(generation);
+        SetEvent(recycle_release);
+        worker.Stop();
+        Check(finals == 0 && partials == 2, "cancelled recycle enumeration publishes no late result");
+    }
     {
         app::WorkerPool worker;
         worker.Start([](app::WorkResult) { ++callbacks; SetEvent(delivered); });
@@ -79,5 +112,6 @@ int main() {
     SetEvent(release_io);
     Check(Drained() && callbacks == 1, "concurrent late results discarded and reclaimed");
     CloseHandle(blocked); CloseHandle(release_io); CloseHandle(delivered);
+    CloseHandle(recycle_blocked); CloseHandle(recycle_release);
     return failures ? 1 : 0;
 }

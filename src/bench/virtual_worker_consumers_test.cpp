@@ -29,7 +29,8 @@ bool IsVirtualPath(const std::wstring& p) { return p.starts_with(L"pulse:"); }
 bool IsUncPath(const std::wstring& p) { return p.starts_with(L"\\\\"); }
 DWORD ReadReparseTag(const std::wstring&) { return 0; }
 void EnumerateDirectory(const std::wstring&, std::vector<DirEntry>&, const std::atomic_bool*) {}
-void EnumerateRecycleBin(std::vector<DirEntry>&, RecycleBinInfo*) {}
+void EnumerateRecycleBin(std::vector<DirEntry>&, RecycleBinInfo*, const std::function<bool()>&,
+                         const std::function<void(const std::vector<DirEntry>&, const RecycleBinInfo&)>&) {}
 bool QueryDirectoryIdentity(const std::wstring&, DirectoryIdentity&) { return true; }
 NetSnapshotWrite BeginNetSnapshotWrite(const std::wstring&) { return {}; }
 bool SaveNetSnapshot(const NetSnapshotWrite&, const SnapshotPtr&) { return true; }

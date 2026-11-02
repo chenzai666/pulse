@@ -205,9 +205,26 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
         }
     } else if (fs::IsRecycleViewPath(item.path)) {
         try {
-            fs::EnumerateRecycleBin(*entries, &res.recycle_info);
+            size_t next_snapshot = 64;
+            fs::EnumerateRecycleBin(*entries, &res.recycle_info, cancelled,
+                [&](const std::vector<fs::DirEntry>& current, const fs::RecycleBinInfo& info) {
+                    if (current.size() < next_snapshot || cancelled()) return;
+                    WorkResult partial;
+                    partial.path = item.path;
+                    partial.generation = item.generation;
+                    partial.partial = true;
+                    partial.recycle_info = info;
+                    partial.snapshot = std::make_shared<std::vector<fs::DirEntry>>(current);
+                    next_snapshot = current.size() * 2;
+                    if (!cancelled() && callback_) callback_(std::move(partial));
+                });
+            if (cancelled()) {
+                res.cancelled = true;
+                return res;
+            }
         } catch (...) {
-            res.error = true;
+            res.cancelled = cancelled();
+            res.error = !res.cancelled;
             res.snapshot = nullptr;
             return res;
         }

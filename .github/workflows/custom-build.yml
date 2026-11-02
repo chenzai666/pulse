@@ -26,6 +26,10 @@ on:
         description: '仅构建弹窗修复正式版，界面验收由用户完成'
         type: boolean
         default: false
+      recycle_validation:
+        description: '仅运行回收站隔离与加载取消回归'
+        type: boolean
+        default: false
       picker_publish_release:
         description: '构建完成后发布 v1.0.53 最新弹窗修复安装包'
         type: boolean
@@ -193,6 +197,7 @@ jobs:
     with:
       reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
       build_only: ${{ inputs.picker_build_only == true }}
+      recycle_validation: ${{ inputs.recycle_validation == true }}
       publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'

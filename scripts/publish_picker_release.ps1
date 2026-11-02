@@ -50,10 +50,30 @@ $notes=Join-Path $output 'release-notes.md'
 
 安装包 SHA-256：``$hash``。安装包未签名；对应源码和许可证随安装包保留，来源记录见 provenance.json。
 "@|Set-Content -LiteralPath $notes -Encoding utf8
-$tag='custom-v1.0.53-dialogs-'+$commit.Substring(0,9)
+$recycle=$env:PULSE_RECYCLE_VALIDATION -eq 'true'
+if($recycle){
+@"
+# Pulse 定制版 v1.0.53 · 回收站修复
+
+源码提交：$commit。支持自定义路径和覆盖安装，保留配置、索引和增强包。
+
+- 回收站先显示已读出的文件，后台继续加载，完成后按当前规则排序。
+- 一次批量读取载荷属性，省去逐项查询；完整枚举不再重复调用 Shell 统计。
+- 切换位置或刷新时取消旧任务，加载期间保留用户选择。
+- 防止 Shell 图标 COM 调用期间重入绘制，修复转储中已定位的 UI 线程栈溢出路径。
+
+本次运行隔离回收站元数据、渐进加载和取消回归；不读取或修改用户真实回收站。实际界面验收由用户完成。
+
+构建记录：https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID
+
+安装包 SHA-256：$hash。来源记录见 provenance.json。
+"@|Set-Content -LiteralPath $notes -Encoding utf8
+}
+$tag='custom-v1.0.53-'+$(if($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
+$releaseTitle=if($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
-& gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title 'Pulse 定制版 v1.0.53 · 弹窗修复' --notes-file $notes
+& gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes
 if($LASTEXITCODE){throw '上传 Release 草稿失败'}
 $release=& gh release view $tag --repo $repository --json assets
 if($LASTEXITCODE){throw '无法核实上传资产'}
