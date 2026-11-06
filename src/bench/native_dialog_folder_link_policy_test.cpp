@@ -50,6 +50,37 @@ int main() {
     Check(!WaitForAddressEditor([&] { return ++probes == 2 ? AddressEditorState::Cancelled : AddressEditorState::Pending; },
           [&] { ++pauses; }) && probes == 2 && pauses == 1, "new user input or changed identity cancels editor wait");
     Transition t;
+    t.DialogForeground(dialog, 100);
+    t.InterveningForeground(110); // Taskbar while switching away from dialog.
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.InterveningForeground(200); // Taskbar preview or another application.
+    t.InterveningForeground(250);
+    t.DialogForeground(dialog, 300);
+    Check(t.Consume(dialog, pulse_window, L"C:\\final", 300),
+          "return through taskbar or application preserves exact observed dialog");
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.InterveningForeground(200);
+    t.DialogForeground(dialog, 300);
+    Check(!t.Consume(dialog, pulse_window, L"C:\\final", 300),
+          "unknown first dialog is not armed across intervening applications");
+    t.DialogForeground(dialog, 100);
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.InterveningForeground(200);
+    t.DialogForeground(WindowIdentity{13, 23, 33, 43}, 300);
+    Check(!t.Consume(WindowIdentity{13, 23, 33, 43}, pulse_window, L"C:\\final", 300),
+          "intervening windows never redirect pending folder into another dialog");
+    t.DialogForeground(dialog, 100);
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.InterveningForeground(200);
+    t.DialogForeground(dialog, 30201);
+    Check(!t.Consume(dialog, pulse_window, L"C:\\final", 30201),
+          "pending folder expires thirty seconds after leaving Pulse");
+    t.DialogForeground(dialog, 100);
+    t.PulseForeground(pulse_window, L"C:\\initial");
+    t.InterveningForeground(600000); // Browsing Pulse itself has no time limit.
+    t.DialogForeground(dialog, 600100);
+    Check(t.Consume(dialog, pulse_window, L"C:\\final", 600100),
+          "long Pulse browsing still follows on prompt return to original dialog");
     ForegroundEventOrder order;
     if (order.Accept(1200, 1000)) t.DialogForeground(dialog);
     if (order.Accept(1200, 1100)) t.PulseForeground(pulse_window, L"C:\\initial");

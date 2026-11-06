@@ -171,7 +171,9 @@ bool PulseFolder(HWND window, DWORD owner_pid, WindowIdentity& identity, std::ws
 }
 
 bool DialogIdentity(HWND window, WindowIdentity& identity) {
-    return ClassIs(window, L"#32770") && IsWindowVisible(window) && IsWindowEnabled(window) &&
+    // A real foreground event can precede visibility and enabled state during
+    // dialog creation. Observe its identity now; Current() gates all mutation.
+    return ClassIs(window, L"#32770") &&
         Identity(window, identity) && identity.process != GetCurrentProcessId() && SameSecurity(identity.process);
 }
 
@@ -695,9 +697,17 @@ struct Watcher {
             transition.PulseForeground(identity, std::move(folder));
             return;
         }
-        if (!DialogIdentity(window, identity)) { CancelPending(); transition.OtherForeground(); return; }
+        DWORD candidate_pid = 0;
+        GetWindowThreadProcessId(window, &candidate_pid);
+        if (candidate_pid == shared->owner_pid && ClassIs(window, L"PulseCustomMainWindow")) {
+            // A virtual page or revoked source is not an intervening app.
+            CancelPending(); transition.OtherForeground(); pulse = {}; return;
+        }
+        if (!DialogIdentity(window, identity)) {
+            CancelPending(); transition.InterveningForeground(GetTickCount64()); return;
+        }
         if (window != GetForegroundWindow()) {
-            transition.DialogForeground(identity);
+            transition.DialogForeground(identity, GetTickCount64());
             return;
         }
         if (identity == pending_dialog) return;
@@ -721,18 +731,18 @@ struct Watcher {
         } else if (GetPropW(window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1)) {
             transition.OtherForeground(); shared->marked_window = nullptr; last_dialog = {}; return;
         }
-        transition.DialogForeground(identity);
+        transition.DialogForeground(identity, GetTickCount64());
         WindowIdentity current_pulse{};
         if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), shared->owner_pid, current_pulse, folder)) {
-            if (transition.Consume(identity, current_pulse, folder)) {
+            if (transition.Consume(identity, current_pulse, folder, GetTickCount64())) {
                 pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
                 queued_at = GetTickCount64(); idle_at = 0; idle_input = 0;
             }
-        }
+        } else transition.OtherForeground();
         last_dialog = identity;
         // Preserve this dialog as the beginning of the next transition even
         // after an attempted navigation consumed the preceding sequence.
-        transition.DialogForeground(identity);
+        transition.DialogForeground(identity, GetTickCount64());
     }
     void OnDestroy(HWND window) {
         if (reinterpret_cast<uintptr_t>(window) == last_dialog.window ||

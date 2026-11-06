@@ -73,13 +73,26 @@ class Transition {
 public:
     void OtherForeground() noexcept { Reset(); }
 
-    void DialogForeground(const WindowIdentity& dialog) {
+    // Taskbar previews and other application windows may sit between Pulse
+    // and the already observed dialog. Retain only that exact return target.
+    // A first, unknown dialog still requires the direct Pulse transition.
+    void InterveningForeground(uint64_t now = 0) noexcept {
+        if (phase_ == Phase::Dialog && dialog_.valid()) return;
+        if (phase_ == Phase::Pulse && dialog_.valid()) {
+            if (!pulse_departed_at_) pulse_departed_at_ = now;
+            return;
+        }
+        Reset();
+    }
+
+    void DialogForeground(const WindowIdentity& dialog, uint64_t now = 0) {
         if ((phase_ == Phase::Dialog || phase_ == Phase::Returned) &&
             dialog.valid() && dialog == dialog_) return;
         // A dialog may open for the first time after Pulse was foreground.
         // Once an existing dialog was observed, return only to that identity.
         if (phase_ == Phase::Pulse && dialog.valid() && (!dialog_.valid() || dialog == dialog_)) {
             dialog_ = dialog;
+            if (!pulse_departed_at_) pulse_departed_at_ = now;
             phase_ = Phase::Returned;
             return;
         }
@@ -91,22 +104,27 @@ public:
     }
 
     void PulseForeground(const WindowIdentity& pulse, std::wstring folder) {
-        if (phase_ == Phase::Pulse && pulse.valid() && pulse == pulse_ && !folder.empty()) return;
+        if (phase_ == Phase::Pulse && pulse.valid() && pulse == pulse_ && !folder.empty()) {
+            pulse_departed_at_ = 0;
+            return;
+        }
         if ((phase_ != Phase::Empty && phase_ != Phase::Dialog) || !pulse.valid() || folder.empty()) {
             Reset();
             return;
         }
         pulse_ = pulse;
         initial_folder_ = std::move(folder);
+        pulse_departed_at_ = 0;
         phase_ = Phase::Pulse;
     }
 
     // Consumed once, including on failure; callers should resolve and check
     // the final folder before returning to this function.
     bool Consume(const WindowIdentity& dialog, const WindowIdentity& pulse,
-                 std::wstring_view final_folder) noexcept {
+                 std::wstring_view final_folder, uint64_t now = 0) noexcept {
         const bool eligible = phase_ == Phase::Returned && dialog.valid() && pulse.valid() &&
-            dialog == dialog_ && pulse == pulse_ && !final_folder.empty();
+            dialog == dialog_ && pulse == pulse_ && !final_folder.empty() &&
+            (!pulse_departed_at_ || (now >= pulse_departed_at_ && now - pulse_departed_at_ <= 30000));
         Reset();
         return eligible;
     }
@@ -120,12 +138,14 @@ private:
         dialog_ = {};
         pulse_ = {};
         initial_folder_.clear();
+        pulse_departed_at_ = 0;
     }
 
     Phase phase_ = Phase::Empty;
     WindowIdentity dialog_{};
     WindowIdentity pulse_{};
     std::wstring initial_folder_;
+    uint64_t pulse_departed_at_ = 0;
 };
 
 } // namespace pulse::app::folder_link
