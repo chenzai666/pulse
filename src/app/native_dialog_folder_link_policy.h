@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -8,6 +9,18 @@
 namespace pulse::app::folder_link {
 
 enum class AddressEditorState { Pending, Ready, Cancelled };
+
+// A generic UIA pane may still expose a native toolbar through MSAA. Require
+// the intended point and both neighbouring samples to hit the toolbar itself.
+template<class HitSelf>
+bool RightToolbarBlankPoint(int width, int height, HitSelf hit_self, int& x, int& y) {
+    if (width < 32 || height < 10 || width > 0xffff || height > 0xffff) return false;
+    const int candidate_x = width - 16, candidate_y = height / 2;
+    for (int offset : {-12, 0, 12})
+        if (!hit_self(candidate_x + offset, candidate_y)) return false;
+    x = candidate_x; y = candidate_y;
+    return true;
+}
 
 // Shell creates its address editor asynchronously after the toolbar click.
 // Keep the wait bounded and revalidate input/identity on every probe.

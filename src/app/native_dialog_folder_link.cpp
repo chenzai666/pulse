@@ -5,10 +5,12 @@
 // WIN32_LEAN_AND_MEAN omits COM declarations from windows.h. Include COM
 // explicitly before the generated UI Automation interface declarations.
 #include <objbase.h>
+#include <oleacc.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
 #include <atomic>
 #include <algorithm>
+#include <climits>
 #include <initializer_list>
 #include <memory>
 #include <string>
@@ -236,7 +238,7 @@ bool Current(const WindowIdentity& dialog, const std::shared_ptr<NativeDialogFol
     return !shared->stopping && GetForegroundWindow() == window && IdleSince(input_tick);
 }
 
-bool BlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
+bool UiaBlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
     ComPtr<IUIAutomationElement> element;
     if (!automation || FAILED(automation->ElementFromHandle(toolbar, &element)) || !element) return false;
     RECT bounds{};
@@ -277,6 +279,79 @@ bool BlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
         point.x < 0 || point.y < 0 || point.x >= client.right || point.y >= client.bottom ||
         point.x > 0xffff || point.y > 0xffff) return false;
     return true;
+}
+
+bool MsaaBlankPoint(HWND toolbar, POINT& point) {
+    // Load only the system DLL. This helper also serves test drivers which
+    // intentionally do not link an additional accessibility import library.
+    struct Module {
+        HMODULE handle = LoadLibraryExW(L"oleacc.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        ~Module() { if (handle) FreeLibrary(handle); }
+    } module;
+    using FromWindow = HRESULT (WINAPI*)(HWND, DWORD, REFIID, void**);
+    using GetChildren = HRESULT (WINAPI*)(IAccessible*, LONG, LONG, VARIANT*, LONG*);
+    const auto from_window = module.handle ? reinterpret_cast<FromWindow>(
+        GetProcAddress(module.handle, "AccessibleObjectFromWindow")) : nullptr;
+    const auto get_children = module.handle ? reinterpret_cast<GetChildren>(
+        GetProcAddress(module.handle, "AccessibleChildren")) : nullptr;
+    ComPtr<IAccessible> accessible;
+    if (!from_window || !get_children || FAILED(from_window(toolbar, static_cast<DWORD>(OBJID_CLIENT),
+            IID_PPV_ARGS(&accessible))) || !accessible) return false;
+    VARIANT self{}; self.vt = VT_I4; self.lVal = CHILDID_SELF;
+    VARIANT role{};
+    const HRESULT role_result = accessible->get_accRole(self, &role);
+    const bool toolbar_role = SUCCEEDED(role_result) && role.vt == VT_I4 && role.lVal == ROLE_SYSTEM_TOOLBAR;
+    VariantClear(&role);
+    LONG children = 0, left = 0, top = 0, width = 0, height = 0;
+    RECT bounds{}, client{};
+    if (!toolbar_role || FAILED(accessible->get_accChildCount(&children)) || children < 1 || children > 256 ||
+        FAILED(accessible->accLocation(&left, &top, &width, &height, self)) ||
+        !GetWindowRect(toolbar, &bounds) || !GetClientRect(toolbar, &client) ||
+        left != bounds.left || top != bounds.top || width != bounds.right - bounds.left ||
+        height != bounds.bottom - bounds.top) return false;
+    struct ChildVariants {
+        std::vector<VARIANT> values;
+        ~ChildVariants() { for (auto& value : values) VariantClear(&value); }
+    } items{std::vector<VARIANT>(static_cast<size_t>(children))};
+    LONG obtained = 0;
+    if (FAILED(get_children(accessible.Get(), 0, children, items.values.data(), &obtained)) ||
+        obtained != children) return false;
+    std::vector<RECT> child_bounds;
+    for (auto& child : items.values) {
+        ComPtr<IAccessible> object;
+        IAccessible* owner = accessible.Get();
+        VARIANT id = self;
+        if (child.vt == VT_I4 && child.lVal != CHILDID_SELF) id = child;
+        else if (child.vt == VT_DISPATCH && child.pdispVal && SUCCEEDED(child.pdispVal->QueryInterface(IID_PPV_ARGS(&object))))
+            owner = object.Get();
+        else return false;
+        LONG x = 0, y = 0, w = 0, h = 0;
+        if (FAILED(owner->accLocation(&x, &y, &w, &h, id))) return false;
+        if (w > 0 && h > 0) {
+            const int64_t right = static_cast<int64_t>(x) + w, bottom = static_cast<int64_t>(y) + h;
+            if (right > LONG_MAX || bottom > LONG_MAX) return false;
+            child_bounds.push_back({x, y, static_cast<LONG>(right), static_cast<LONG>(bottom)});
+        }
+    }
+    LONG current_children = 0;
+    if (FAILED(accessible->get_accChildCount(&current_children)) || current_children != children) return false;
+    int x = 0, y = 0;
+    if (!folder_link::RightToolbarBlankPoint(client.right, client.bottom, [&](int px, int py) {
+        POINT screen{px, py};
+        if (!ClientToScreen(toolbar, &screen)) return false;
+        for (const auto& child : child_bounds) if (PtInRect(&child, screen)) return false;
+        VARIANT hit{};
+        const HRESULT result = accessible->accHitTest(screen.x, screen.y, &hit);
+        const bool blank = SUCCEEDED(result) && hit.vt == VT_I4 && hit.lVal == CHILDID_SELF;
+        VariantClear(&hit);
+        return blank;
+    }, x, y)) return false;
+    point = {x, y};
+    return true;
+}
+
+bool BlankPoint(IUIAutomation* automation, HWND toolbar, POINT& point) {
+    return UiaBlankPoint(automation, toolbar, point) || MsaaBlankPoint(toolbar, point);
 }
 
 bool SendTimed(HWND window, UINT message, WPARAM wp, LPARAM lp, DWORD_PTR& result) {

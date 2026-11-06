@@ -25,6 +25,16 @@ void Arm(Transition& transition) {
 }
 
 int main() {
+    using pulse::app::folder_link::RightToolbarBlankPoint;
+    int x = -1, y = -1;
+    Check(RightToolbarBlankPoint(503, 35, [](int, int) { return true; }, x, y) && x == 487 && y == 17,
+          "generic UIA pane can use verified native toolbar blank area");
+    Check(!RightToolbarBlankPoint(503, 35, [](int px, int) { return px != 487; }, x, y),
+          "toolbar child at intended click point is rejected");
+    Check(!RightToolbarBlankPoint(503, 35, [](int px, int) { return px != 499; }, x, y),
+          "toolbar child neighbouring intended click point is rejected");
+    Check(!RightToolbarBlankPoint(20, 35, [](int, int) { return true; }, x, y),
+          "narrow toolbar has no safe fallback click point");
     using pulse::app::folder_link::AddressEditorState;
     using pulse::app::folder_link::WaitForAddressEditor;
     int probes = 0, pauses = 0;
