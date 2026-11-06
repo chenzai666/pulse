@@ -25,6 +25,20 @@ void Arm(Transition& transition) {
 }
 
 int main() {
+    using pulse::app::folder_link::AddressEditorState;
+    using pulse::app::folder_link::WaitForAddressEditor;
+    int probes = 0, pauses = 0;
+    Check(WaitForAddressEditor([&] { ++probes; return AddressEditorState::Ready; }, [&] { ++pauses; }) &&
+          probes == 1 && pauses == 0, "ready address editor does not wait");
+    probes = pauses = 0;
+    Check(WaitForAddressEditor([&] { return ++probes == 4 ? AddressEditorState::Ready : AddressEditorState::Pending; },
+          [&] { ++pauses; }) && probes == 4 && pauses == 3, "asynchronously created editor is awaited");
+    probes = pauses = 0;
+    Check(!WaitForAddressEditor([&] { ++probes; return AddressEditorState::Pending; }, [&] { ++pauses; }) &&
+          probes == 26 && pauses == 25, "unavailable editor has a bounded wait");
+    probes = pauses = 0;
+    Check(!WaitForAddressEditor([&] { return ++probes == 2 ? AddressEditorState::Cancelled : AddressEditorState::Pending; },
+          [&] { ++pauses; }) && probes == 2 && pauses == 1, "new user input or changed identity cancels editor wait");
     Transition t;
     ForegroundEventOrder order;
     if (order.Accept(1200, 1000)) t.DialogForeground(dialog);

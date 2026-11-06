@@ -39,6 +39,8 @@ $notes=Join-Path $output 'release-notes.md'
 - 恢复改进后的标准打开、保存和文件夹选择适配；保存提交到原窗口后先等待原软件确认，不立即重新显示原窗口。
 - Pulse 弹窗直接跟随 Pulse 主窗口目录，无需安装 Listary；地址正在编辑时保留用户输入。
 - 修复快速切换标签或窗口时漏掉最终目录的联动；原版弹窗模式支持首次进入弹窗，并在地址控件初始化完成后处理联动。
+- 原版弹窗点击地址栏后，有时限地等待编辑框创建；期间检测到新输入或窗口变化便停止，避免覆盖用户输入。
+- 原版地址编辑框未就绪且尚未写入路径时正常清理操作标记，避免一次失败让后续目录联动助手退出。
 - 打开、保存和取消改为等待原应用确认后才关闭 Pulse 窗口；失败保留 Pulse 提示，结果不明确时禁止重复提交。
 - 恢复已安装的 Listary 弹窗插件兼容协议；其搜索结果只导航或填名，Pulse 搜索和目录联动仍独立可用。
 - 设置里关闭“文件选择窗口”接管后使用 Windows 原版弹窗。Listary 的原版弹窗搜索框由 Listary 自身提供。
@@ -89,7 +91,7 @@ if($progress){
 "@|Set-Content -LiteralPath $notes -Encoding utf8
 }
 $tag='custom-v1.0.53-'+$(if($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
-$releaseTitle=if($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗修复'}
+$releaseTitle=if($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
 & gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes

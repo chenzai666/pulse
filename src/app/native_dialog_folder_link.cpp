@@ -456,9 +456,27 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     if (!SendTimed(check.toolbar, WM_LBUTTONUP, 0, position, ignored)) return;
     release.up_sent = true;
     recovery.Publish(2);
-    if (!Current(dialog, shared, input.dwTime) || !FindBand(window, check, false) || check.band != controls.band ||
-        check.edits != 1 || !SameThread(check.edit, dialog) || !IsWindowEnabled(check.edit) ||
-        !FocusIs(dialog.thread, check.edit)) return;
+    // Mouse-up succeeded and no address text has changed. An editor which
+    // never appears is a normal rejected attempt, not interrupted mutation.
+    // Clear this stage on return so it cannot retire the helper permanently.
+    recovery.complete = true;
+    const ULONGLONG editor_deadline = GetTickCount64() + 500;
+    const bool editor_ready = folder_link::WaitForAddressEditor([&] {
+        if (GetTickCount64() > editor_deadline || !Current(dialog, shared, input.dwTime))
+            return folder_link::AddressEditorState::Cancelled;
+        if (!FindBand(window, check, false) || check.band != controls.band ||
+            !SameThread(check.band, dialog)) return folder_link::AddressEditorState::Cancelled;
+        GUITHREADINFO current{sizeof(current)};
+        if (!GetGUIThreadInfo(dialog.thread, &current) || current.hwndCapture ||
+            (current.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE)))
+            return folder_link::AddressEditorState::Cancelled;
+        if (check.edits == 1 && SameThread(check.edit, dialog) && IsWindowEnabled(check.edit) &&
+            current.hwndFocus == check.edit) return folder_link::AddressEditorState::Ready;
+        if (current.hwndFocus && current.hwndFocus != original_focus && current.hwndFocus != controls.band &&
+            !IsChild(controls.band, current.hwndFocus)) return folder_link::AddressEditorState::Cancelled;
+        return folder_link::AddressEditorState::Pending;
+    }, [] { Sleep(20); });
+    if (!editor_ready) { TraceFolderLink(L"address_editor_not_ready"); return; }
     HWND edit = check.edit;
     RestoreAddress restore_address{dialog, shared, input.dwTime, controls.band, edit, folder};
     if (!ReadControl(edit, restore_address.previous) || !Current(dialog, shared, input.dwTime) ||
@@ -469,6 +487,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
         if (wcscpy_s(r->original_text, restore_address.previous.c_str()) ||
             wcscpy_s(r->attempted_text, folder.c_str())) return;
     }
+    recovery.complete = false; // From here a failed write may need recovery.
     recovery.Publish(3);
     if (!SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(folder.c_str()), ignored) || !ignored) return;
     restore_address.changed = true;

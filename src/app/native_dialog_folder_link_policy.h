@@ -7,6 +7,21 @@
 
 namespace pulse::app::folder_link {
 
+enum class AddressEditorState { Pending, Ready, Cancelled };
+
+// Shell creates its address editor asynchronously after the toolbar click.
+// Keep the wait bounded and revalidate input/identity on every probe.
+template<class Probe, class Pause>
+bool WaitForAddressEditor(Probe probe, Pause pause) {
+    for (int attempt = 0; attempt <= 25; ++attempt) {
+        const auto state = probe();
+        if (state == AddressEditorState::Ready) return true;
+        if (state == AddressEditorState::Cancelled || attempt == 25) return false;
+        pause();
+    }
+    return false;
+}
+
 // A handle alone is not an identity: both Windows and process IDs can be
 // reused. Obtain the creation time from the process handle, not its PID.
 struct WindowIdentity {
