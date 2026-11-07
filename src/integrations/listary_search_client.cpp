@@ -97,7 +97,95 @@ ListarySearchResult TransportError(const std::atomic<bool>& cancelled, ULONGLONG
     return Error(error == ERROR_WINHTTP_TIMEOUT ? ListarySearchError::Timeout : ListarySearchError::Unavailable);
 }
 
+bool SimpleNameQuery(std::wstring_view query) {
+    if (query.empty() || query.size() > kMaximumQuery || query.front() == L'-') return false;
+    std::vector<WORD> character_types(query.size());
+    if (!GetStringTypeW(CT_CTYPE1, query.data(), static_cast<int>(query.size()), character_types.data()))
+        return false;
+    bool has_name = false;
+    for (size_t i = 0; i < query.size(); ++i) {
+        const auto c = query[i];
+        if (character_types[i] & (C1_SPACE | C1_CNTRL)) return false;
+        if (c < 128 && !((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+            (c >= L'0' && c <= L'9') || c == L'.' || c == L'-' || c == L'_')) return false;
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            if (++i >= query.size() || query[i] < 0xDC00 || query[i] > 0xDFFF) return false;
+        } else if (c >= 0xDC00 && c <= 0xDFFF) return false;
+        if (c != L'.' && c != L'-' && c != L'_') has_name = true;
+    }
+    return has_name;
+}
+
+bool EqualName(std::wstring_view left, std::wstring_view right) {
+    return left.size() == right.size() && (left.empty() ||
+        CompareStringOrdinal(left.data(), static_cast<int>(left.size()),
+            right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL);
+}
+
+std::wstring_view Leaf(std::wstring_view path) {
+    const auto slash = path.find_last_of(L"\\/");
+    return slash == path.npos ? path : path.substr(slash + 1);
+}
+
+bool ProgramResult(const ListarySearchItem& item) {
+    if (item.directory) return false;
+    const auto name = item.path.empty() ? std::wstring_view(item.name) : Leaf(item.path);
+    const auto dot = name.find_last_of(L'.');
+    if (dot == name.npos) return false;
+    const auto extension = name.substr(dot);
+    for (const auto* candidate : {L".exe", L".com", L".bat", L".cmd", L".lnk", L".appref-ms", L".msc"})
+        if (EqualName(extension, candidate)) return true;
+    return false;
+}
+
+unsigned MatchTier(std::wstring_view query, const ListarySearchItem& item) {
+    const auto name = item.name.empty() ? Leaf(item.path) : std::wstring_view(item.name);
+    if (name.size() > 32767) return 0;
+    if (EqualName(name, query)) return 4;
+    if (!item.directory && query.find(L'.') == query.npos) {
+        const auto dot = name.find_last_of(L'.');
+        if (dot != name.npos && EqualName(name.substr(0, dot), query)) return 4;
+    }
+    if (query.size() <= name.size()) {
+        if (EqualName(name.substr(0, query.size()), query)) return 3;
+        if (FindStringOrdinal(FIND_FROMSTART, name.data(), static_cast<int>(name.size()),
+            query.data(), static_cast<int>(query.size()), TRUE) >= 0) return 2;
+    }
+    size_t matched = 0;
+    for (size_t i = 0; i < name.size() && matched < query.size(); ++i) {
+        size_t units = 1;
+        if (query[matched] >= 0xD800 && query[matched] <= 0xDBFF) units = 2;
+        if (i + units <= name.size() && EqualName(name.substr(i, units), query.substr(matched, units))) {
+            matched += units;
+            i += units - 1;
+        }
+    }
+    return matched == query.size() ? 1 : 0;
+}
+
 } // namespace
+
+void RankListarySearchResults(const std::wstring& query, std::vector<ListarySearchItem>& items) {
+    if (!SimpleNameQuery(query) || items.size() < 2) return;
+    // No Shell lookup: extensions provide a bounded preference, not execution
+    // or shortcut-target resolution. Unmatched programs receive no preference.
+    struct RankedItem { unsigned rank; size_t index; };
+    std::vector<RankedItem> ranked;
+    ranked.reserve(items.size());
+    for (size_t i = 0; i < items.size(); ++i) {
+        const auto& item = items[i];
+        const auto tier = MatchTier(query, item);
+        const unsigned rank = tier * 2 + (tier && ProgramResult(item) ? 1u : 0u);
+        ranked.push_back({rank, i});
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [](const auto& left, const auto& right) {
+        return left.rank > right.rank;
+    });
+    std::vector<ListarySearchItem> sorted;
+    sorted.reserve(items.size());
+    for (const auto& entry : ranked) sorted.push_back(std::move(items[entry.index]));
+    items.swap(sorted);
+}
 
 namespace detail {
 
@@ -273,6 +361,7 @@ ListarySearchResult SearchListary(const ListarySearchConfig& config, const std::
     stopped = Interrupted(cancelled, deadline);
     if (stopped != ListarySearchError::None) return Error(stopped);
     auto result = detail::ParseListarySearchResponse(response, folders_only);
+    if (result.error == ListarySearchError::None) RankListarySearchResults(query, result.items);
     stopped = Interrupted(cancelled, deadline);
     return stopped == ListarySearchError::None ? result : Error(stopped);
 }

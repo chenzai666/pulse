@@ -1412,7 +1412,8 @@ private:
         chrome_.filter_turn = filter_motion_from_ +
             ((filter_open_ ? 1.0f : 0.0f) - filter_motion_from_) * motion::EaseOutCubic(filter_t);
         DrawPickerChrome(compositor_, painter_, theme, chrome_, chrome_layout_, hc);
-        if (listary_search_) listary_search_->Draw(compositor_, painter_, theme, !SubmissionLocked());
+        if (listary_search_) listary_search_->Draw(compositor_, painter_, theme, !SubmissionLocked(),
+                                                  renderer_.Caches().icons);
         const HRESULT end_hr = dc->EndDraw();
         if (end_hr == D2DERR_RECREATE_TARGET || end_hr == DXGI_ERROR_DEVICE_REMOVED ||
             end_hr == DXGI_ERROR_DEVICE_RESET || end_hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
@@ -2346,6 +2347,7 @@ private:
                         reinterpret_cast<LPARAM>(listary_search_->StatusText().c_str()));
                     Invalidate();
                 }
+                if (listary_search_) listary_search_->PrefetchIcons(renderer_.Caches().icons);
                 return 0;
             }
             if (wparam == kSubmitPollTimer) { PollSubmit(); return 0; }

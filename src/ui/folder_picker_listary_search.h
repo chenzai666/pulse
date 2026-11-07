@@ -7,9 +7,24 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pulse::ui {
+
+class ShellIconCache;
+
+// Lexical display helpers: never query the filesystem or invoke the Shell.
+std::wstring ListaryResultName(const integrations::ListarySearchItem& item);
+std::wstring ListaryResultParent(std::wstring_view path);
+struct ListaryNameMatch {
+    UINT32 start = 0;
+    UINT32 length = 0;
+};
+// Ordinal, case-insensitive literal query spans mapped to the visible prefix.
+// Filter operators/negative terms are not filename highlight text.
+std::vector<ListaryNameMatch> ListaryNameMatches(std::wstring_view name,
+    std::wstring_view query, std::wstring_view shown);
 
 // UI-thread-owned search state. Its single worker only sees a shared mailbox,
 // never a window or a callback into the picker.
@@ -33,8 +48,10 @@ public:
     bool Contains(float x, float y) const;
     void SelectRow(int index);
     void Layout(float width, float footer_top, float content_top, float scale);
+    // Called by the existing 80 ms UI timer. Draw only consumes cached pixels.
+    void PrefetchIcons(ShellIconCache& icons) const;
     void Draw(Compositor& compositor, fluent::Painter& painter, const Theme& theme,
-              bool enabled) const;
+              bool enabled, ShellIconCache& icons) const;
     D2D1_RECT_F InputBounds() const { return input_; }
     const std::wstring& Query() const { return query_; }
     const std::wstring& StatusText() const { return status_; }

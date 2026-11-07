@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cmath>
+#include <cwctype>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -41,6 +42,84 @@ std::wstring Status(integrations::ListarySearchError error, bool empty_query,
 }
 
 } // namespace
+
+std::wstring ListaryResultName(const integrations::ListarySearchItem& item) {
+    if (!item.name.empty()) return item.name;
+    std::wstring_view path = item.path;
+    while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/')) path.remove_suffix(1);
+    const size_t slash = path.find_last_of(L"\\/");
+    return std::wstring(slash == std::wstring_view::npos || slash + 1 == path.size()
+        ? path : path.substr(slash + 1));
+}
+
+std::wstring ListaryResultParent(std::wstring_view path) {
+    while (path.size() > 3 && (path.back() == L'\\' || path.back() == L'/')) path.remove_suffix(1);
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring_view::npos) return {};
+    if (path.size() >= 3 && path[1] == L':' && slash == 2) return std::wstring(path.substr(0, 3));
+    if (path.starts_with(L"\\\\") || path.starts_with(L"//")) {
+        const size_t server_end = path.find_first_of(L"\\/", 2);
+        // A UNC share root has no higher filesystem folder to display.
+        if (server_end == slash) return std::wstring(path);
+    }
+    return std::wstring(path.substr(0, slash));
+}
+
+std::vector<ListaryNameMatch> ListaryNameMatches(std::wstring_view name,
+    std::wstring_view query, std::wstring_view shown) {
+    auto high = [](wchar_t ch) { return ch >= 0xd800 && ch <= 0xdbff; };
+    auto low = [](wchar_t ch) { return ch >= 0xdc00 && ch <= 0xdfff; };
+    auto valid = [&](std::wstring_view text) {
+        for (size_t i = 0; i < text.size(); ++i) {
+            if (high(text[i])) {
+                if (++i >= text.size() || !low(text[i])) return false;
+            } else if (low(text[i])) return false;
+        }
+        return true;
+    };
+    if (name.empty() || query.empty() || !valid(name) || !valid(query)) return {};
+    size_t prefix = 0;
+    while (prefix < name.size() && prefix < shown.size() && name[prefix] == shown[prefix]) ++prefix;
+    if (prefix && high(name[prefix - 1])) --prefix;
+    std::vector<bool> mask(prefix, false);
+    for (size_t at = 0; at < query.size();) {
+        while (at < query.size() && std::iswspace(query[at])) ++at;
+        std::wstring term;
+        bool quoted = false;
+        while (at < query.size()) {
+            const wchar_t ch = query[at];
+            if (ch == L'"') { quoted = !quoted; ++at; continue; }
+            if (!quoted && std::iswspace(ch)) break;
+            term += ch;
+            ++at;
+        }
+        if (term.empty() || term.front() == L'-' || term.find(L':') != std::wstring::npos) continue;
+        // Wildcard punctuation is syntax; only its literal portions are marked.
+        for (size_t first = 0; first < term.size();) {
+            while (first < term.size() && (term[first] == L'*' || term[first] == L'?')) ++first;
+            const size_t end = term.find_first_of(L"*?", first);
+            const auto literal = std::wstring_view(term).substr(first,
+                end == std::wstring::npos ? end : end - first);
+            if (!literal.empty()) for (size_t pos = 0; pos < prefix && literal.size() <= name.size() - pos; ++pos) {
+                if (low(name[pos])) continue;
+                if (CompareStringOrdinal(name.data() + pos, static_cast<int>(literal.size()),
+                        literal.data(), static_cast<int>(literal.size()), TRUE) != CSTR_EQUAL) continue;
+                const size_t finish = std::min(prefix, pos + literal.size());
+                std::fill(mask.begin() + pos, mask.begin() + finish, true);
+            }
+            if (end == std::wstring::npos) break;
+            first = end + 1;
+        }
+    }
+    std::vector<ListaryNameMatch> ranges;
+    for (size_t i = 0; i < mask.size();) {
+        if (!mask[i]) { ++i; continue; }
+        const size_t start = i;
+        while (i < mask.size() && mask[i]) ++i;
+        ranges.push_back({static_cast<UINT32>(start), static_cast<UINT32>(i - start)});
+    }
+    return ranges;
+}
 
 struct PickerListarySearch::Mailbox {
     struct Request {

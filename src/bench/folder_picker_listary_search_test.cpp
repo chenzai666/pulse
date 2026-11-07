@@ -76,6 +76,49 @@ ListarySearchResult SearchListary(const ListarySearchConfig&, const std::wstring
 
 int main() {
     using pulse::ui::PickerListarySearch;
+    using pulse::ui::ListaryNameMatches;
+    using pulse::ui::ListaryResultName;
+    using pulse::ui::ListaryResultParent;
+    {
+        const auto chinese = ListaryNameMatches(L"音乐播放器.exe", L"音乐", L"音乐播放器.exe");
+        Check(chinese.size() == 1 && chinese[0].start == 0 && chinese[0].length == 2,
+              "Chinese query highlights the filename UTF-16 span");
+        const auto casing = ListaryNameMatches(L"Firefox.exe", L"FIRE", L"Firefox.exe");
+        Check(casing.size() == 1 && casing[0].start == 0 && casing[0].length == 4,
+              "filename highlight uses ordinal case-insensitive matching");
+        const auto repeated = ListaryNameMatches(L"foo-FOO.exe", L"foo", L"foo-FOO.exe");
+        Check(repeated.size() == 2 && repeated[1].start == 4 && repeated[1].length == 3,
+              "all repeated filename matches retain their original indexes");
+        const auto clipped = ListaryNameMatches(L"Firefox.exe", L"firefox", L"Fire\u2026");
+        Check(clipped.size() == 1 && clipped[0].length == 4,
+              "highlight stops before the generated ellipsis");
+        Check(ListaryNameMatches(L"Firefox.exe", L"exe", L"Fire\u2026").empty(),
+              "hidden filename suffix does not create a visible highlight");
+        const std::wstring emoji = L"\xD83D\xDD0D";
+        const auto pair = ListaryNameMatches(emoji + L"Search.exe", emoji, emoji + L"Search.exe");
+        Check(pair.size() == 1 && pair[0].start == 0 && pair[0].length == 2,
+              "surrogate-pair query keeps both UTF-16 units in one highlight");
+        Check(ListaryNameMatches(emoji + L"Search.exe", emoji,
+              std::wstring(1, emoji[0]) + L"\u2026").empty(),
+              "truncation cannot leave half a surrogate pair highlighted");
+        Check(ListaryNameMatches(emoji + L"Search.exe", std::wstring(1, emoji[0]),
+              emoji + L"Search.exe").empty(), "malformed UTF-16 query does not produce a highlight");
+        const auto terms = ListaryNameMatches(L"Firefox Portable.exe", L"fire portable ext:exe -fox",
+                                               L"Firefox Portable.exe");
+        Check(terms.size() == 2 && terms[0].length == 4 && terms[1].start == 8 && terms[1].length == 8,
+              "filename terms highlight separately while filters and exclusions are ignored");
+        Check(ListaryResultName({L"C:\\Apps\\XTerminal.exe", L"", false}) == L"XTerminal.exe",
+              "missing display name uses the leaf instead of repeating the whole path");
+        Check(ListaryResultParent(L"C:\\Apps\\XTerminal.exe") == L"C:\\Apps",
+              "second line displays the containing folder only");
+        Check(ListaryResultParent(L"C:\\Apps\\Tools\\") == L"C:\\Apps",
+              "folder results display their parent without the trailing leaf");
+        Check(ListaryResultParent(L"C:\\app.exe") == L"C:\\" && ListaryResultParent(L"C:\\") == L"C:\\",
+              "drive-root parents remain valid absolute roots");
+        Check(ListaryResultParent(L"\\\\server\\share\\app.exe") == L"\\\\server\\share" &&
+              ListaryResultParent(L"\\\\server\\share\\") == L"\\\\server\\share",
+              "UNC result and share-root parents retain the valid share path");
+    }
     {
         PickerListarySearch search(false);
         search.Layout(640, 316, 112, 1);

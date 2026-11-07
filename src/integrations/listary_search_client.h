@@ -27,6 +27,9 @@ struct ListarySearchConfig {
 };
 
 ListarySearchConfig ReadListarySearchConfig();
+// Simple names only: match quality first, program/shortcut preference within
+// the same matching tier, with engine order retained for equal ranks.
+void RankListarySearchResults(const std::wstring& query, std::vector<ListarySearchItem>& items);
 // Call from a worker. This function returns data only and never opens a result.
 ListarySearchResult SearchListary(const ListarySearchConfig& config, const std::wstring& query,
                                   bool folders_only, const std::atomic<bool>& cancelled);

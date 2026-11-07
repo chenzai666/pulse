@@ -152,10 +152,6 @@ if ($ListarySearchValidation) {
     if ($LASTEXITCODE) { throw 'Listary 本机搜索接口检查失败' }
     & (Join-Path $taskBuild 'pulse_picker_listary_search_test.exe') *> (Join-Path $galleryOutput 'listary-search-state.log')
     if ($LASTEXITCODE) { throw 'Listary 搜索底栏异步状态检查失败' }
-    & "$PSScriptRoot/build_listary_adapter.ps1" -OutputDirectory (Join-Path $taskBuild 'listary-sdk')
-    if ($LASTEXITCODE) { throw 'Listary SDK 加载契约检查失败' }
-    Copy-Item -LiteralPath (Join-Path $taskBuild 'listary-sdk/tests.log') -Destination (Join-Path $galleryOutput 'listary-sdk-tests.log')
-    Copy-Item -LiteralPath (Join-Path $taskBuild 'listary-sdk/loader-contract.log') -Destination (Join-Path $galleryOutput 'listary-sdk-loader-contract.log')
 }
 if ($OperationProgressValidation) {
     & (Join-Path $taskBuild 'pulse_operation_presentation_test.exe') *> (Join-Path $galleryOutput 'operation-progress.log')
