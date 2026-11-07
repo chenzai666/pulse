@@ -5,7 +5,7 @@ namespace Listary.FileAppPlugin.PulseAdapter;
 
 public sealed class PulseManagerPlugin : IFileAppPlugin, IDisposable
 {
-    private readonly AdapterCore _core = new AdapterCore(false);
+    private readonly AdapterCore _core = new AdapterCore(false, (window, generation) => new ManagerTab(window, generation));
     public bool IsOpenedFolderProvider => _core.IsOpenedFolderProvider;
     public bool IsQuickSwitchTarget => _core.IsQuickSwitchTarget;
     public bool IsSharedAcrossApplications => _core.IsSharedAcrossApplications;

@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><AssemblyName>Listary.FileAppPlugin.PulsePicker</AssemblyName><RootNamespace>Listary.FileAppPlugin.PulseAdapter</RootNamespace></PropertyGroup>
+  <PropertyGroup><AssemblyName>Listary.FileAppPlugin.PulsePickerAdapter</AssemblyName><RootNamespace>Listary.FileAppPlugin.PulseAdapter</RootNamespace></PropertyGroup>
   <ItemGroup>
     <Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
     <PackageReference Include="Listary.FileAppPlugin" Version="1.0.0" PrivateAssets="all" />

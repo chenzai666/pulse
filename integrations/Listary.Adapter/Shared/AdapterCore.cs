@@ -11,6 +11,7 @@ internal sealed class AdapterCore : IDisposable
 {
     private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
     private readonly IWindows _windows;
+    private readonly Func<AdapterWindow, uint, IFileTab> _createTab;
     private IFileAppPluginHost? _host;
     private string? _executable;
     private int _disposed;
@@ -20,10 +21,13 @@ internal sealed class AdapterCore : IDisposable
     public bool IsSharedAcrossApplications => false;
     public SearchBarType SearchBarType => _picker ? SearchBarType.Fixed : SearchBarType.Floating;
 
-    internal AdapterCore(bool picker) : this(picker, new NativeWindows(), null) { }
-    internal AdapterCore(bool picker, IWindows windows, string? executable)
+    internal AdapterCore(bool picker, Func<AdapterWindow, uint, IFileTab> createTab)
+        : this(picker, new NativeWindows(), null, createTab) { }
+    internal AdapterCore(bool picker, IWindows windows, string? executable,
+        Func<AdapterWindow, uint, IFileTab> createTab)
     {
         _picker = picker; _windows = windows; _executable = executable;
+        _createTab = createTab;
     }
 
     public Task<bool> Initialize(IFileAppPluginHost host)
@@ -67,7 +71,7 @@ internal sealed class AdapterCore : IDisposable
         var identity = _windows.Capture(handle, _picker, executable);
         if (identity == null) return null!;
         Diagnostics.Write(_picker, "bind_accepted");
-        return new AdapterWindow(identity, _windows, host, _lifetime.Token);
+        return new AdapterWindow(identity, _windows, host, _lifetime.Token, _createTab);
     }
 
     public void Dispose()
@@ -79,32 +83,35 @@ internal sealed class AdapterCore : IDisposable
     }
 }
 
-internal sealed class AdapterWindow : IFileWindow, IDisposable
+public sealed class AdapterWindow : IFileWindow, IDisposable
 {
     private readonly WindowIdentity _identity;
     private readonly IWindows _windows;
     private readonly IFileAppPluginHost _host;
     private readonly CancellationTokenSource _lifetime;
     private readonly CancellationToken _token;
+    private readonly Func<AdapterWindow, uint, IFileTab> _createTab;
     private int _disposed;
     public IntPtr Handle => _identity.Handle;
 
-    internal AdapterWindow(WindowIdentity identity, IWindows windows, IFileAppPluginHost host, CancellationToken lifetime)
+    internal AdapterWindow(WindowIdentity identity, IWindows windows, IFileAppPluginHost host, CancellationToken lifetime,
+        Func<AdapterWindow, uint, IFileTab> createTab)
     {
         _identity = identity; _windows = windows; _host = host;
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
         _token = _lifetime.Token;
+        _createTab = createTab;
     }
 
     public Task<IFileTab> GetCurrentTab()
     {
         if (!Valid()) return Task.FromResult<IFileTab>(null!);
-        if (_identity.Picker) return Task.FromResult<IFileTab>(new PickerTab(this, 0));
+        if (_identity.Picker) return Task.FromResult(_createTab(this, 0));
         var generation = _windows.Generation(_identity);
         var folder = _windows.ReadFolder(_identity);
         if (generation == 0 || folder == null || _windows.Generation(_identity) != generation || !Valid())
             return Task.FromResult<IFileTab>(null!);
-        return Task.FromResult<IFileTab>(new ManagerTab(this, generation));
+        return Task.FromResult(_createTab(this, generation));
     }
 
     internal bool Valid() => !_token.IsCancellationRequested &&
@@ -149,20 +156,4 @@ internal sealed class AdapterWindow : IFileWindow, IDisposable
         _lifetime.Cancel();
         _lifetime.Dispose();
     }
-}
-
-internal class ManagerTab : IFileTab, IGetFolder, IOpenFolder
-{
-    protected readonly AdapterWindow Window;
-    protected readonly uint Generation;
-    internal ManagerTab(AdapterWindow window, uint generation) { Window = window; Generation = generation; }
-    public Task<string> GetCurrentFolder() => Window.Folder(Generation);
-    public Task<bool> OpenFolder(string path) => Window.Send(path, Generation, false);
-}
-
-internal sealed class PickerTab : ManagerTab, IOpenFile, IOpenFolderAndSelectFile
-{
-    internal PickerTab(AdapterWindow window, uint generation) : base(window, generation) { }
-    public Task<bool> OpenFile(string path) => Window.Send(path, Generation, true);
-    public Task<bool> OpenFolderAndSelectFile(string path) => Window.Send(path, Generation, true);
 }

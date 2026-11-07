@@ -19,6 +19,10 @@ foreach($relative in $projects){
 $test=Join-Path $artifacts 'bin/Listary.Adapter.Tests/Release/net48/Pulse.Listary.AdapterTests.exe'
 & $test *> (Join-Path $artifacts 'tests.log')
 if($LASTEXITCODE){throw '适配器定向检查失败'}
+$manager=Join-Path $artifacts 'bin/Listary.FileAppPlugin.PulseManager/Release/net48/Listary.FileAppPlugin.PulseManager.dll'
+$picker=Join-Path $artifacts 'bin/Listary.FileAppPlugin.PulsePicker/Release/net48/Listary.FileAppPlugin.PulsePickerAdapter.dll'
+& $test --loader-contract $manager $picker *> (Join-Path $artifacts 'loader-contract.log')
+if($LASTEXITCODE){throw '实际适配器 DLL 加载契约检查失败'}
 $package=Join-Path $artifacts 'package'
 if(Test-Path -LiteralPath $package){throw '适配器包目录已存在，拒绝覆盖'}
 foreach($kind in 'Manager','Picker'){
@@ -40,3 +44,4 @@ $entries=@(foreach($file in Get-ChildItem -LiteralPath $package -Recurse -File){
 })
 [ordered]@{schema=1;source_commit=(& git -C $repo rev-parse HEAD).Trim();runtime_loading='须由真实 Listary 宿主加载确认';files=$entries}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $package 'adapter-manifest.json') -Encoding utf8
 Get-Content -LiteralPath (Join-Path $artifacts 'tests.log')
+Get-Content -LiteralPath (Join-Path $artifacts 'loader-contract.log')

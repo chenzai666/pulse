@@ -2,6 +2,10 @@ name: 构建 Pulse 专用 Listary 适配器
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      sdk_only:
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -21,6 +25,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build_listary_adapter.ps1 -OutputDirectory build-listary-adapter
       - name: 构建主程序并检查受限目录导航协议
+        if: ${{ !inputs.sdk_only }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,9 +42,10 @@ jobs:
           name: Pulse-Listary-Adapter-verification
           path: |
             build-listary-adapter/tests.log
+            build-listary-adapter/loader-contract.log
             build-custom/picker-verification/**
       - uses: actions/upload-artifact@v4
-        if: success()
+        if: success() && !inputs.sdk_only
         with:
           name: Pulse-Listary-main-update
           path: build-custom/picker-update/**

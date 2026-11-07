@@ -5,7 +5,7 @@ namespace Listary.FileAppPlugin.PulseAdapter;
 
 public sealed class PulsePickerPlugin : IFileAppPlugin, IDisposable
 {
-    private readonly AdapterCore _core = new AdapterCore(true);
+    private readonly AdapterCore _core = new AdapterCore(true, (window, generation) => new PickerTab(window, generation));
     public bool IsOpenedFolderProvider => _core.IsOpenedFolderProvider;
     public bool IsQuickSwitchTarget => _core.IsQuickSwitchTarget;
     public bool IsSharedAcrossApplications => _core.IsSharedAcrossApplications;

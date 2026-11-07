@@ -9,5 +9,5 @@
   "Icon": "Icon.png",
   "Api": "NetFramework",
   "ApiVersion": 1,
-  "Entry": "Listary.FileAppPlugin.PulsePicker.dll"
+  "Entry": "Listary.FileAppPlugin.PulsePickerAdapter.dll"
 }

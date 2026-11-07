@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation, [switch]$ListarySearchValidation)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -15,6 +15,9 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', '.github/workflows/listary-adapter.yml',
     'scripts/build_listary_adapter.ps1', 'src/app/listary_adapter_endpoint.cpp', 'src/app/listary_adapter_endpoint.h',
     'src/app/listary_adapter_protocol.h', 'src/bench/listary_adapter_protocol_test.cpp',
+    'src/integrations/listary_search_client.h', 'src/integrations/listary_search_client.cpp',
+    'src/bench/listary_search_client_test.cpp', 'src/ui/folder_picker_listary_search.h', 'src/ui/folder_picker_listary_search.cpp',
+    'src/ui/folder_picker_listary_search.draw.cpp', 'src/bench/folder_picker_listary_search_test.cpp',
     'src/ops/ops_manager.cpp', 'src/ops/ops_manager.h', 'src/ops/ops_manager_authorized_delete.cpp',
     'src/ops/ops_manager_shell_transfer.cpp', 'src/ops/operation_presentation.h', 'src/bench/ops_test_main.cpp',
     'src/bench/operation_presentation_test.cpp', 'src/ui/file_operation_dialog.cpp', 'src/ui/file_operation_dialog.h',
@@ -97,7 +100,7 @@ $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
 $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
 $recycleOnly = if ($RecycleValidation -or $OperationProgressValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
-$targets = if ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
+$targets = if ($ListarySearchValidation) { 'pulse pulse_listary_search_client_test pulse_picker_listary_search_test' } elseif ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
@@ -143,6 +146,16 @@ if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
 if ($ListaryAdapterValidation) {
     & (Join-Path $taskBuild 'pulse_listary_adapter_protocol_test.exe') *> (Join-Path $galleryOutput 'listary-adapter-protocol.log')
     if ($LASTEXITCODE) { throw 'Listary 主窗口受限导航协议检查失败' }
+}
+if ($ListarySearchValidation) {
+    & (Join-Path $taskBuild 'pulse_listary_search_client_test.exe') *> (Join-Path $galleryOutput 'listary-search-client.log')
+    if ($LASTEXITCODE) { throw 'Listary 本机搜索接口检查失败' }
+    & (Join-Path $taskBuild 'pulse_picker_listary_search_test.exe') *> (Join-Path $galleryOutput 'listary-search-state.log')
+    if ($LASTEXITCODE) { throw 'Listary 搜索底栏异步状态检查失败' }
+    & "$PSScriptRoot/build_listary_adapter.ps1" -OutputDirectory (Join-Path $taskBuild 'listary-sdk')
+    if ($LASTEXITCODE) { throw 'Listary SDK 加载契约检查失败' }
+    Copy-Item -LiteralPath (Join-Path $taskBuild 'listary-sdk/tests.log') -Destination (Join-Path $galleryOutput 'listary-sdk-tests.log')
+    Copy-Item -LiteralPath (Join-Path $taskBuild 'listary-sdk/loader-contract.log') -Destination (Join-Path $galleryOutput 'listary-sdk-loader-contract.log')
 }
 if ($OperationProgressValidation) {
     & (Join-Path $taskBuild 'pulse_operation_presentation_test.exe') *> (Join-Path $galleryOutput 'operation-progress.log')

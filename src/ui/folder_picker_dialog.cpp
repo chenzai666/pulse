@@ -5,6 +5,7 @@
 #include "address_search_layout.h"
 #include "folder_picker_loader.h"
 #include "folder_picker_listary_protocol.h"
+#include "folder_picker_listary_search.h"
 #include "folder_picker_operations.h"
 #include "folder_picker_view.h"
 #include "fluent_menu.h"
@@ -46,9 +47,12 @@ constexpr UINT_PTR kSearchTimer = 2;
 constexpr UINT_PTR kMotionTimer = 3;
 constexpr UINT_PTR kDirectoryPollTimer = 4;
 constexpr UINT_PTR kSubmitPollTimer = 5;
+constexpr UINT_PTR kListarySearchTimer = 6;
 constexpr int kPathEditId = 101;
 constexpr int kFilenameEditId = 102;
 constexpr int kSearchEditId = 103;
+constexpr int kListaryEditId = 104;
+constexpr int kPickListary = 100;
 constexpr UINT kSpinnerDelayMs = 150;
 constexpr float kDefaultWidth = 1000.0f;
 constexpr float kDefaultHeight = 640.0f;
@@ -396,6 +400,7 @@ public:
         PresentEdits();
         if (spec_.on_ready) spec_.on_ready(hwnd_);
         if (spec_.poll_directory || spec_.should_close) SetTimer(hwnd_, kDirectoryPollTimer, 250, nullptr);
+        if (listary_search_) SetTimer(hwnd_, kListarySearchTimer, 80, nullptr);
 
         MSG message{};
         while (!done_) {
@@ -437,6 +442,9 @@ private:
     void Navigate(std::wstring path, bool push_history, std::wstring select_after = {},
                   bool verified = false) {
         if (SubmissionLocked()) return;
+        listary_validation_ = false;
+        listary_directory_ = false;
+        listary_preserve_filename_ = false;
         EndColumnResize(true);
         const bool moved = !SamePickerPath(path, current_);
         if (push_history && moved) history_.Navigate(current_);
@@ -532,11 +540,13 @@ private:
         if (!select_after_.empty()) {
             for (size_t i = 0; i < entries_.size(); ++i) {
                 if (SamePickerPath(entries_[i].path, select_after_)) {
-                    Select(static_cast<int>(i), false, false, false, false);
+                    const bool preserve_name = std::exchange(listary_preserve_filename_, false);
+                    Select(static_cast<int>(i), false, false, preserve_name, false);
                     break;
                 }
             }
             select_after_.clear();
+            listary_preserve_filename_ = false;
         }
         ClampScroll();
         UpdateChosen();
@@ -663,6 +673,8 @@ private:
 
     void ValidateNames(std::vector<std::wstring> names) {
         if (SubmissionLocked() || !loader_ || validating_ || waiting_ || names.empty()) return;
+        listary_validation_ = false;
+        listary_directory_ = false;
         if (!allow_multiselect_ && names.size() > 1) {
             chrome_.notice = l10n::Pick(L"此处只能选择一个文件。", L"Select one file here.");
             Invalidate();
@@ -697,6 +709,8 @@ private:
 
     void OnValidation(std::unique_ptr<PickerValidation> validation) {
         if (SubmissionLocked() || !validation || validation->generation != generation_ || !validating_) return;
+        const bool listary_navigation = std::exchange(listary_validation_, false);
+        const bool listary_directory = std::exchange(listary_directory_, false);
         validating_ = false;
         chrome_.notice.clear();
         if (validation->error != ERROR_SUCCESS) {
@@ -718,7 +732,15 @@ private:
         }
         if (validation->paths.empty()) { UpdateChosen(); return; }
         if (validation_navigation_only_) {
+            if (listary_navigation && listary_directory) {
+                Navigate(validation->paths.front(), true);
+                FocusList();
+                return;
+            }
+            const bool preserve_name = listary_navigation && mode_ == PickerMode::Save &&
+                                       !filename_text_.empty();
             Navigate(PickerParent(validation->paths.front()), true, validation->paths.front());
+            listary_preserve_filename_ = preserve_name;
             FocusList();
             return;
         }
@@ -746,9 +768,10 @@ private:
     void SetSubmitInteraction() {
         menu_.Dismiss();
         EndColumnResize(true);
-        for (HWND edit : {path_edit_, filename_edit_, search_edit_})
+        for (HWND edit : {path_edit_, filename_edit_, search_edit_, listary_edit_})
             if (edit) EnableWindow(edit, !SubmissionLocked());
         if (SubmissionLocked()) {
+            if (listary_search_) listary_search_->Dismiss();
             focus_ = kPickCancel;
             SetFocus(hwnd_);
         }
@@ -819,6 +842,8 @@ private:
         KillTimer(hwnd_, kMotionTimer);
         KillTimer(hwnd_, kDirectoryPollTimer);
         KillTimer(hwnd_, kSubmitPollTimer);
+        KillTimer(hwnd_, kListarySearchTimer);
+        listary_search_.reset();
         // Stop the loader first: after this no listing can be posted, so the
         // ones already queued are all that must be freed.
         loader_.reset();
@@ -1003,7 +1028,7 @@ private:
                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                                 DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         }
-        for (HWND edit : {path_edit_, filename_edit_, search_edit_})
+        for (HWND edit : {path_edit_, filename_edit_, search_edit_, listary_edit_})
             if (edit && font_) SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
 
@@ -1025,6 +1050,15 @@ private:
                 reinterpret_cast<LPARAM>(l10n::Pick(L"输入文件名，或从上方选择", L"Type a name, or pick one above")));
         }
         search_edit_ = MakeEdit(kSearchEditId, L"");
+        if (spec_.listary_integration) {
+            listary_search_ = std::make_unique<PickerListarySearch>(mode_ == PickerMode::Folder);
+            listary_edit_ = MakeEdit(kListaryEditId, L"");
+            if (listary_edit_) {
+                SendMessageW(listary_edit_, EM_SETLIMITTEXT, 1024, 0);
+                SendMessageW(listary_edit_, EM_SETCUEBANNER, TRUE,
+                             reinterpret_cast<LPARAM>(listary_search_->StatusText().c_str()));
+            }
+        }
         if (SubmissionLocked()) SetSubmitInteraction();
         if (search_edit_) SendMessageW(search_edit_, EM_SETCUEBANNER, TRUE,
             reinterpret_cast<LPARAM>(l10n::Pick(L"搜索当前文件夹", L"Search this folder")));
@@ -1033,7 +1067,7 @@ private:
     }
 
     void PresentEdits() {
-        for (HWND edit : {path_edit_, filename_edit_, search_edit_})
+        for (HWND edit : {path_edit_, filename_edit_, search_edit_, listary_edit_})
             if (edit && IsWindowVisible(edit))
                 PresentChildEdit(compositor_, compositor_.TextFormat(), EditForeground(), EditBackground(), edit);
     }
@@ -1069,6 +1103,7 @@ private:
         PlaceOneEdit(search_edit_, LayoutAddressSearch(renderer_.SearchBarRect(w), scale_).input,
                      searching_, 0.0f);
         PlaceOneEdit(filename_edit_, chrome_layout_.filename, true);
+        if (listary_search_) PlaceOneEdit(listary_edit_, listary_search_->InputBounds(), true);
     }
 
     void BeginAddressEdit() {
@@ -1155,8 +1190,81 @@ private:
         SendMessageW(filename_edit_, EM_SETSEL, 0, -1);
     }
 
+    void FocusListary() {
+        if (!listary_edit_ || !listary_search_) return;
+        focus_ = kPickListary;
+        SetFocus(listary_edit_);
+        listary_search_->SetFocused(true);
+        Invalidate();
+    }
+
+    bool DismissListary() {
+        if (!listary_search_) return false;
+        if (listary_search_->Dismiss()) { Invalidate(); return true; }
+        if (listary_search_->Query().empty()) return false;
+        SetWindowTextW(listary_edit_, L"");
+        Invalidate();
+        return true;
+    }
+
+    void AcceptListaryResult() {
+        if (!listary_search_ || SubmissionLocked() || !loader_ || waiting_ ||
+            validating_ || operating_) return;
+        const auto item = listary_search_->Selected();
+        if (!item || !IsPickerListaryPath(item->path) ||
+            (mode_ == PickerMode::Folder && !item->directory)) return;
+        listary_search_->Dismiss();
+        listary_validation_ = true;
+        listary_directory_ = item->directory;
+        validation_navigation_only_ = true;
+        validating_ = true;
+        // Resolve actual filesystem type and shortcuts in the existing model;
+        // HTTP results never submit or directly change the name field.
+        const auto validation_mode = item->directory ? PickerMode::Folder
+            : mode_ == PickerMode::Save ? PickerMode::File : mode_;
+        loader_->Validate(++generation_, current_, {item->path}, validation_mode, options_);
+        chrome_.notice = l10n::Pick(L"正在检查搜索结果…", L"Checking the search result…");
+        UpdateChosen();
+        Invalidate();
+    }
+
+    bool ListaryKey(WPARAM key) {
+        if (!listary_search_) return false;
+        if (key == VK_DOWN || key == VK_UP) {
+            listary_search_->MoveSelection(key == VK_DOWN ? 1 : -1);
+            Invalidate();
+            return true;
+        }
+        if (key == VK_RETURN) {
+            if (listary_search_->Selected()) AcceptListaryResult();
+            else listary_search_->SearchNow();
+            Invalidate();
+            return true;
+        }
+        if (key == VK_ESCAPE) {
+            if (!DismissListary()) FocusList();
+            return true;
+        }
+        return false;
+    }
+
     void InputChanged(HWND edit) {
         if (setting_edits_ || SubmissionLocked()) return;
+        if (edit == listary_edit_ && listary_search_) {
+            if (listary_validation_ && validating_) {
+                ++generation_;
+                validating_ = false;
+                listary_validation_ = false;
+                listary_directory_ = false;
+                chrome_.notice.clear();
+                UpdateChosen();
+            }
+            listary_search_->SetQuery(ReadEdit(edit));
+            Invalidate();
+            return;
+        }
+        listary_validation_ = false;
+        listary_directory_ = false;
         chrome_.pressed = kPickNone;
         if (validating_) { ++generation_; validating_ = false; }
         chrome_.notice.clear();
@@ -1179,6 +1287,8 @@ private:
         if (!self) return DefSubclassProc(hwnd, msg, wparam, lparam);
         switch (msg) {
         case WM_KEYDOWN:
+            if (hwnd == self->listary_edit_ && self->ListaryKey(wparam)) return 0;
+            if (wparam == VK_ESCAPE && self->DismissListary()) return 0;
             if (wparam == VK_RETURN) {
                 if (hwnd == self->path_edit_) self->SubmitPath();
                 else if (hwnd == self->filename_edit_) self->SubmitSelection();
@@ -1215,9 +1325,13 @@ private:
             break;
         case WM_SETFOCUS:
             self->focus_ = hwnd == self->path_edit_ ? kPickAddress
-                         : hwnd == self->filename_edit_ ? kPickFilename : kPickSearch;
+                         : hwnd == self->filename_edit_ ? kPickFilename
+                         : hwnd == self->listary_edit_ ? kPickListary : kPickSearch;
+            if (self->listary_search_) self->listary_search_->SetFocused(hwnd == self->listary_edit_);
             break;
         case WM_KILLFOCUS:
+            if (hwnd == self->listary_edit_ && self->listary_search_)
+                self->listary_search_->SetFocused(false);
             // Clicking away from the path field ends the edit, like the main
             // window's address bar. Posted: the edit is mid-message here.
             if (hwnd == self->path_edit_ && self->address_editing_)
@@ -1241,7 +1355,7 @@ private:
     // ---- layout and painting ----------------------------------------------
 
     void ApplyRendererSettings() {
-        renderer_.SetEmbedded(kPickerTitleDip, PickerFooterDip(mode_));
+        renderer_.SetEmbedded(kPickerTitleDip, PickerFooterHeight());
         renderer_.SetSidebarWidthDip(kSidebarDip);
         if (spec_.row_height_dip > 0.0f) renderer_.SetRowHeightDip(spec_.row_height_dip);
         renderer_.SetListStyle(spec_.list_smart_date, spec_.list_zebra_rows, spec_.list_size_bar,
@@ -1253,10 +1367,17 @@ private:
 
     void Relayout() {
         if (!compositor_.Dc()) return;
-        renderer_.SetEmbedded(kPickerTitleDip, PickerFooterDip(mode_));
+        renderer_.SetEmbedded(kPickerTitleDip, PickerFooterHeight());
         chrome_layout_ = LayoutPickerChrome(Width(), Height(), chrome_, painter_, scale_);
+        if (listary_search_) listary_search_->Layout(Width(), chrome_layout_.footer.top,
+                                                    PaneBounds().top, scale_);
         ClampScroll();
         PlaceEdits();
+    }
+
+    float PickerFooterHeight() const {
+        return PickerFooterDip(mode_) +
+            (spec_.listary_integration ? PickerListarySearch::FooterDip() : 0.0f);
     }
 
     void Render() {
@@ -1291,6 +1412,7 @@ private:
         chrome_.filter_turn = filter_motion_from_ +
             ((filter_open_ ? 1.0f : 0.0f) - filter_motion_from_) * motion::EaseOutCubic(filter_t);
         DrawPickerChrome(compositor_, painter_, theme, chrome_, chrome_layout_, hc);
+        if (listary_search_) listary_search_->Draw(compositor_, painter_, theme, !SubmissionLocked());
         const HRESULT end_hr = dc->EndDraw();
         if (end_hr == D2DERR_RECREATE_TARGET || end_hr == DXGI_ERROR_DEVICE_REMOVED ||
             end_hr == DXGI_ERROR_DEVICE_RESET || end_hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
@@ -1318,6 +1440,7 @@ private:
 
     Hit HitAt(float x, float y) {
         Hit hit;
+        if (listary_search_ && listary_search_->Contains(x, y)) return hit;
         hit.chrome = HitTestPickerChrome(chrome_layout_, chrome_, x, y);
         if (hit.chrome != kPickNone) return hit;
         // The title strip and the footer belong to the picker alone.
@@ -1803,6 +1926,7 @@ private:
     std::vector<int> FocusOrder() const {
         if (SubmissionLocked()) return {kPickCancel};
         std::vector<int> order = {kPickAddress, kPickSearch, kPickList};
+        if (listary_edit_ && IsWindowEnabled(listary_edit_)) order.push_back(kPickListary);
         if (filename_edit_) {
             if (IsWindowEnabled(filename_edit_)) order.push_back(kPickFilename);
             order.push_back(kPickFilter);
@@ -1823,6 +1947,7 @@ private:
         if (next == kPickAddress) { BeginAddressEdit(); return; }
         if (next == kPickSearch) { BeginSearch(); return; }
         if (next == kPickFilename) { FocusFilename(); return; }
+        if (next == kPickListary) { FocusListary(); return; }
         focus_ = next;
         SetFocus(hwnd_);
         Invalidate();
@@ -1876,6 +2001,7 @@ private:
         };
         switch (key) {
         case VK_ESCAPE:
+            if (DismissListary()) return true;
             if (searching_) ExitSearch();
             else Cancel();
             return true;
@@ -2119,6 +2245,8 @@ private:
             if (!data) return FALSE;
             auto request = ParsePickerListaryRequest(data->dwData, wparam, data->lpData, data->cbData);
             if (!request) return FALSE;
+            listary_validation_ = false;
+            listary_directory_ = false;
             if (request->file && mode_ != PickerMode::Folder) SetFilename(request->path);
             // Plugin results prepare the selection; the user's Pick/Save action commits it.
             validation_navigation_only_ = true;
@@ -2212,6 +2340,14 @@ private:
             if (address_editing_ && GetFocus() != path_edit_) EndAddressEdit(false);
             return 0;
         case WM_TIMER:
+            if (wparam == kListarySearchTimer) {
+                if (listary_search_ && listary_search_->Tick()) {
+                    SendMessageW(listary_edit_, EM_SETCUEBANNER, TRUE,
+                        reinterpret_cast<LPARAM>(listary_search_->StatusText().c_str()));
+                    Invalidate();
+                }
+                return 0;
+            }
             if (wparam == kSubmitPollTimer) { PollSubmit(); return 0; }
             if (wparam == kDirectoryPollTimer) {
                 if (spec_.should_close && spec_.should_close()) { ForceCancel(); return 0; }
@@ -2238,6 +2374,11 @@ private:
             OnValidation(PickerLoader::TakeValidation(lparam));
             return 0;
         case WM_MOUSEMOVE: {
+            if (listary_search_ && listary_search_->Contains(
+                    static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam)))) {
+                UpdateHover({});
+                return 0;
+            }
             if (column_resize_index_ >= 0) {
                 if ((wparam & MK_LBUTTON) && GetCapture() == hwnd_)
                     DragColumnResize(static_cast<float>(GET_X_LPARAM(lparam)));
@@ -2269,12 +2410,26 @@ private:
             break;
         }
         case WM_MOUSEWHEEL:
+            if (listary_search_ && listary_search_->PopupVisible()) {
+                listary_search_->MoveSelection(GET_WHEEL_DELTA_WPARAM(wparam) < 0 ? 1 : -1);
+                Invalidate();
+                return 0;
+            }
             Wheel(wparam, lparam);
             return 0;
         case WM_LBUTTONDOWN:
         case WM_LBUTTONDBLCLK: {
             const float x = static_cast<float>(GET_X_LPARAM(lparam));
             const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+            if (listary_search_ && listary_search_->Contains(x, y)) {
+                const int row = listary_search_->HitRow(x, y);
+                if (row >= 0 && !SubmissionLocked()) {
+                    listary_search_->SelectRow(row);
+                    AcceptListaryResult();
+                } else if (!SubmissionLocked()) FocusListary();
+                return 0;
+            }
+            if (listary_search_) listary_search_->Dismiss();
             const Hit hit = HitAt(x, y);
             chrome_.show_focus = false;
             if (hit.chrome == kPickFilename) { FocusFilename(); return 0; }
@@ -2311,6 +2466,7 @@ private:
         case WM_RBUTTONUP: {
             const float x = static_cast<float>(GET_X_LPARAM(lparam));
             const float y = static_cast<float>(GET_Y_LPARAM(lparam));
+            if (listary_search_ && listary_search_->Contains(x, y)) return 0;
             const Hit hit = HitAt(x, y);
             const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
             if (hit.main.region == HitTestResult::BreadcrumbSegment || hit.main.region == HitTestResult::AddressBar) {
@@ -2374,6 +2530,8 @@ private:
         case WM_ERASEBKGND:
             return 1;
         case WM_DESTROY:
+            KillTimer(hwnd_, kListarySearchTimer);
+            listary_search_.reset();
             EndColumnResize(true);
             RemovePropW(hwnd_, L"Pulse.PickerTestColumns");
             RemovePropW(hwnd_, kPickerListaryMarker);
@@ -2381,10 +2539,10 @@ private:
             menu_.Dismiss();
             KillTimer(hwnd_, kMotionTimer);
             renderer_.SetIconNotifyWindow(nullptr);
-            for (HWND edit : {path_edit_, filename_edit_, search_edit_}) {
+            for (HWND edit : {path_edit_, filename_edit_, search_edit_, listary_edit_}) {
                 if (edit) { RemoveWindowSubclass(edit, EditProc, 1); DestroyWindow(edit); }
             }
-            path_edit_ = filename_edit_ = search_edit_ = nullptr;
+            path_edit_ = filename_edit_ = search_edit_ = listary_edit_ = nullptr;
             if (font_) { DeleteObject(font_); font_ = nullptr; }
             if (edit_brush_) { DeleteObject(edit_brush_); edit_brush_ = nullptr; }
             compositor_.Shutdown();
@@ -2399,6 +2557,11 @@ private:
     HWND path_edit_ = nullptr;
     HWND filename_edit_ = nullptr;
     HWND search_edit_ = nullptr;
+    HWND listary_edit_ = nullptr;
+    std::unique_ptr<PickerListarySearch> listary_search_;
+    bool listary_validation_ = false;
+    bool listary_directory_ = false;
+    bool listary_preserve_filename_ = false;
     bool operating_ = false;
     bool filter_open_ = false;
     float filter_motion_from_ = 0.0f;

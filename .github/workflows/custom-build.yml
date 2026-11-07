@@ -68,6 +68,14 @@ on:
         description: '仅重建索引进程；严格核对主界面源码未变并复用其成功验证'
         type: boolean
         default: false
+      listary_sdk_only:
+        description: '仅构建 Listary C# 适配器并检查 DLL 加载契约'
+        type: boolean
+        default: false
+      listary_search_validation:
+        description: '验证 Pulse 底栏的 Listary 本机搜索接口'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,6 +89,8 @@ jobs:
   listary-adapter:
     if: inputs.validation_scope == 'listary-adapter'
     uses: ./.github/workflows/listary-adapter.yml
+    with:
+      sdk_only: ${{ inputs.listary_sdk_only || false }}
   build:
     if: inputs.validation_scope != 'installer' && inputs.validation_scope != 'search' && inputs.validation_scope != 'status-center' && inputs.validation_scope != 'picker' && inputs.validation_scope != 'picker-plugin' && inputs.validation_scope != 'listary-adapter'
     runs-on: windows-2022
@@ -206,6 +216,7 @@ jobs:
       build_only: ${{ inputs.picker_build_only == true }}
       recycle_validation: ${{ inputs.recycle_validation == true }}
       operation_progress_validation: ${{ inputs.operation_progress_validation == true }}
+      listary_search_validation: ${{ inputs.listary_search_validation == true }}
       publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'

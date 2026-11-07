@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Listary.FileAppPlugin;
@@ -18,11 +19,17 @@ internal static class Program
         Console.WriteLine("[PASS] " + name);
     }
 
-    private static int Main()
+    private static int Main(string[] args)
     {
         try
         {
-            Run().GetAwaiter().GetResult();
+            if (args.Length == 3 && args[0] == "--loader-contract")
+            {
+                LoaderContract(args[1], false);
+                LoaderContract(args[2], true);
+            }
+            else if (args.Length == 0) Run().GetAwaiter().GetResult();
+            else throw new ArgumentException("Usage: no arguments, or --loader-contract <ManagerDll> <PickerDll>");
             Console.WriteLine("[PASS] " + _checks + " adapter checks");
             return 0;
         }
@@ -32,6 +39,35 @@ internal static class Program
             return 1;
         }
     }
+
+    private static void LoaderContract(string path, bool picker)
+    {
+        var assembly = Assembly.LoadFrom(System.IO.Path.GetFullPath(path));
+        var expected = picker ? "Listary.FileAppPlugin.PulsePickerAdapter" : "Listary.FileAppPlugin.PulseManager";
+        Check(assembly.GetName().Name == expected && assembly != typeof(Program).Assembly,
+            expected + " checks independent production assembly");
+        Check(assembly.GetName().Name != "Listary.FileAppPlugin.PulsePicker" &&
+            assembly.GetName().Name != "Listary.FileAppPlugin.PulseFolderSource",
+            expected + " has no legacy plugin assembly identity collision");
+        var exported = assembly.GetExportedTypes();
+        var plugins = exported.Where(type => typeof(IFileAppPlugin).IsAssignableFrom(type)).ToArray();
+        var windows = exported.Where(type => typeof(IFileWindow).IsAssignableFrom(type)).ToArray();
+        var tabs = exported.Where(type => typeof(IFileTab).IsAssignableFrom(type)).ToArray();
+        Check(plugins.Length == 1 && !plugins[0].IsAbstract && plugins[0].GetConstructor(Type.EmptyTypes) != null,
+            expected + " exports one constructible SDK plugin");
+        Check(windows.Length == 1 && !windows[0].IsAbstract, expected + " exports one SDK window");
+        Check(tabs.Length == 1 && !tabs[0].IsAbstract, expected + " exports one SDK tab");
+        Check(typeof(IGetFolder).IsAssignableFrom(tabs[0]) && typeof(IOpenFolder).IsAssignableFrom(tabs[0]) &&
+            typeof(IOpenFile).IsAssignableFrom(tabs[0]) == picker &&
+            typeof(IOpenFolderAndSelectFile).IsAssignableFrom(tabs[0]) == picker,
+            expected + " exposes only its intended tab capabilities");
+        Check(windows[0].GetConstructors().Length == 0 && tabs[0].GetConstructors().Length == 0,
+            expected + " keeps window and tab construction internal");
+    }
+
+    private static AdapterCore Core(bool picker, FakeWindows windows) => new AdapterCore(picker, windows,
+        FakeWindows.Executable, (window, generation) => picker ?
+            (IFileTab)new PickerTab(window, generation) : new ManagerTab(window, generation));
 
     private static async Task Run()
     {
@@ -63,7 +99,7 @@ internal static class Program
 
         var windows = new FakeWindows();
         var host = new FakeHost();
-        using var core = new AdapterCore(false, windows, FakeWindows.Executable);
+        using var core = Core(false, windows);
         Check(await core.Initialize(host), "initialize with trusted executable");
         Check(core.BindFileWindow(new IntPtr(9)) == null, "reject unrelated HWND");
         var window = core.BindFileWindow(new IntPtr(10));
@@ -106,7 +142,7 @@ internal static class Program
 
         windows = new FakeWindows { Picker = true };
         host = new FakeHost();
-        using var pickerCore = new AdapterCore(true, windows, FakeWindows.Executable);
+        using var pickerCore = Core(true, windows);
         await pickerCore.Initialize(host);
         window = pickerCore.BindFileWindow(new IntPtr(10));
         tab = await window.GetCurrentTab();
@@ -125,7 +161,7 @@ internal static class Program
         ((IDisposable)window).Dispose();
         Check(!await ((IOpenFile)tab).OpenFile(@"D:\target\file.txt") && host.Calls == 3,
             "window disposal revokes picker callbacks");
-        using var wrongKind = new AdapterCore(false, windows, FakeWindows.Executable);
+        using var wrongKind = Core(false, windows);
         await wrongKind.Initialize(host);
         Check(wrongKind.BindFileWindow(new IntPtr(10)) == null, "manager cannot bind picker class/marker");
     }

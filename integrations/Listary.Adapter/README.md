@@ -28,9 +28,14 @@ dotnet restore .\integrations\Listary.Adapter\Picker\Listary.FileAppPlugin.Pulse
 dotnet build .\integrations\Listary.Adapter\Picker\Listary.FileAppPlugin.PulsePicker.csproj -c Release --no-restore
 dotnet restore .\integrations\Listary.Adapter\tests\Listary.Adapter.Tests.csproj --locked-mode
 dotnet run --project .\integrations\Listary.Adapter\tests\Listary.Adapter.Tests.csproj -c Release --no-restore
+.\out\listary-adapter\bin\Listary.Adapter.Tests\Release\net48\Pulse.Listary.AdapterTests.exe --loader-contract .\out\listary-adapter\bin\Listary.FileAppPlugin.PulseManager\Release\net48\Listary.FileAppPlugin.PulseManager.dll .\out\listary-adapter\bin\Listary.FileAppPlugin.PulsePicker\Release\net48\Listary.FileAppPlugin.PulsePickerAdapter.dll
 ```
 
 默认产物位于仓库 `out/listary-adapter`。需要任务隔离目录时，在 restore/build/run 命令均加入 `-p:PulseListaryArtifactsRoot=<绝对目录>`，将临时 `obj` 和 `bin` 集中保存。测试通过编译常量 `ADAPTER_TESTS` 禁止诊断写入，不修改用户的 Pulse/Listary 配置，也不启动产品进程。
+
+公开 SDK loader 使用 `Assembly.GetExportedTypes()` 分别发现插件、窗口与标签页类型；三类实现都必须公开。每个生产 DLL 恰好导出一个插件、一个窗口和一个标签页，构造窗口与标签页的入口保持内部可见。管理器和选择器的标签页在各自工程编译，避免通过导出类型错误地把文件选择能力声明到管理器。`--loader-contract` 直接检查传入的两个生产 DLL，不调用其初始化或操作真实窗口，也不以测试 EXE 内的类型替代验收。
+
+新选择器的程序集名称与入口为 `Listary.FileAppPlugin.PulsePickerAdapter.dll`，与旧 `PulseCustom.FileDialog` 使用的 `Listary.FileAppPlugin.PulsePicker.dll` 分开。两个插件同时保留时，避免 .NET Framework `Assembly.LoadFrom` 因相同程序集身份复用旧 DLL。工程文件与默认输出目录仍为 `Listary.FileAppPlugin.PulsePicker`，实际入口 DLL 名称以清单为准。
 
 ## 部署与版本验证
 

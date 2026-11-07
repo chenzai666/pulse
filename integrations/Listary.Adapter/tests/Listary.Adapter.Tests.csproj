@@ -8,7 +8,9 @@
   <ItemGroup>
     <Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
     <Compile Include="../Manager/PulseManagerPlugin.cs" Link="PulseManagerPlugin.cs" />
+    <Compile Include="../Manager/ManagerTab.cs" Link="ManagerTab.cs" />
     <Compile Include="../Picker/PulsePickerPlugin.cs" Link="PulsePickerPlugin.cs" />
+    <Compile Include="../Picker/PickerTab.cs" Link="PickerTab.cs" />
     <PackageReference Include="Listary.FileAppPlugin" Version="1.0.0" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>

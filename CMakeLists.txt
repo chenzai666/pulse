@@ -475,6 +475,12 @@ target_link_libraries(pulse_command_icon_test PRIVATE d2d1 dwrite dwmapi ole32 w
 
 # ---- Listary 主窗口受限目录导航协议边界 ----
 add_executable(pulse_listary_adapter_protocol_test src/bench/listary_adapter_protocol_test.cpp)
+add_executable(pulse_listary_search_client_test src/bench/listary_search_client_test.cpp
+    src/integrations/listary_search_client.cpp)
+target_link_libraries(pulse_listary_search_client_test PRIVATE winhttp shell32)
+add_executable(pulse_picker_listary_search_test src/bench/folder_picker_listary_search_test.cpp
+    src/ui/folder_picker_listary_search.cpp)
+target_link_libraries(pulse_picker_listary_search_test PRIVATE pulse_localization user32)
 
 # ---- Pulse.exe: main UI process ----
 file(GLOB_RECURSE PULSE_APP_SOURCES CONFIGURE_DEPENDS
@@ -497,7 +503,7 @@ if(NOT PULSE_WITH_SELFTEST)
     list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "selftest_1b2\\.cpp$")
     list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "index_(engine|engine_pinyin|visibility|mft|paths|delta|folder_sizes)\\.cpp$")
 endif()
-list(APPEND PULSE_APP_SOURCES src/index/network_agent_client.cpp)
+list(APPEND PULSE_APP_SOURCES src/index/network_agent_client.cpp src/integrations/listary_search_client.cpp)
 if(PULSE_APP_SOURCES)
     add_executable(pulse WIN32 ${PULSE_APP_SOURCES})
     if(PULSE_WITH_SELFTEST)
