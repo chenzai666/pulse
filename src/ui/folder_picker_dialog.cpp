@@ -1235,6 +1235,11 @@ private:
             Invalidate();
             return true;
         }
+        if (key == VK_NEXT || key == VK_PRIOR) {
+            listary_search_->MoveSelection(key == VK_NEXT ? 8 : -8);
+            Invalidate();
+            return true;
+        }
         if (key == VK_RETURN) {
             if (listary_search_->Selected()) AcceptListaryResult();
             else listary_search_->SearchNow();
@@ -2424,6 +2429,11 @@ private:
             const float x = static_cast<float>(GET_X_LPARAM(lparam));
             const float y = static_cast<float>(GET_Y_LPARAM(lparam));
             if (listary_search_ && listary_search_->Contains(x, y)) {
+                if (listary_search_->HitLoadMore(x, y) && !SubmissionLocked()) {
+                    listary_search_->LoadMore();
+                    Invalidate();
+                    return 0;
+                }
                 const int row = listary_search_->HitRow(x, y);
                 if (row >= 0 && !SubmissionLocked()) {
                     listary_search_->SelectRow(row);

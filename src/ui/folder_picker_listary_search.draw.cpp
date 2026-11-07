@@ -64,9 +64,13 @@ void DrawMatchedName(Compositor& compositor, fluent::Painter& painter, const The
 
 void PickerListarySearch::PrefetchIcons(ShellIconCache& icons) const {
     if (!PopupVisible()) return;
-    for (const auto& item : items_)
+    const int first = FirstVisible();
+    const int end = std::min(static_cast<int>(items_.size()), first + VisibleRows());
+    for (int index = first; index < end; ++index) {
+        const auto& item = items_[static_cast<size_t>(index)];
         icons.Prefetch(item.path, ListaryResultName(item), item.directory,
             item.directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL, 20.0f * scale_);
+    }
 }
 
 void PickerListarySearch::Draw(Compositor& compositor, fluent::Painter& painter,
@@ -86,14 +90,14 @@ void PickerListarySearch::Draw(Compositor& compositor, fluent::Painter& painter,
         const auto hint = D2D1::RectF(input_.left, input_.bottom,
                                      input_.right, band_.bottom - 2.0f * scale_);
         painter.DrawText(Fit(compositor, status_, hint.right - hint.left), hint,
-                         compositor.TextFormat(), theme.text_secondary);
+                         compositor.TextFormat(), has_more_ && !page_loading_ ? theme.accent : theme.text_secondary);
     }
     if (!PopupVisible()) return;
     const auto panel = PanelBounds();
     painter.FillRoundedRect(panel, theme.radius_control * scale_, theme.surface_flyout);
     painter.StrokeRoundedRect(panel, theme.radius_control * scale_, theme.stroke_card);
-    const int visible = std::max(1, static_cast<int>((panel.bottom - panel.top) / (kRowDip * scale_)));
-    const int first = std::max(0, selected_ - visible + 1);
+    const int visible = VisibleRows();
+    const int first = FirstVisible();
     for (int offset = 0; offset < visible && first + offset < static_cast<int>(items_.size()); ++offset) {
         const int index = first + offset;
         const auto& item = items_[static_cast<size_t>(index)];

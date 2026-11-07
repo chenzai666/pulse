@@ -43,6 +43,8 @@ public:
     bool Dismiss();
     bool PopupVisible() const;
     void MoveSelection(int direction);
+    void LoadMore();
+    bool HitLoadMore(float x, float y) const;
     std::optional<integrations::ListarySearchItem> Selected() const;
     int HitRow(float x, float y) const;
     bool Contains(float x, float y) const;
@@ -58,13 +60,22 @@ public:
 
 private:
     struct Mailbox;
-    void Queue();
+    void Queue(bool append = false);
+    void UpdatePageStatus(std::wstring error = {});
+    int VisibleRows() const;
+    int FirstVisible() const;
     std::shared_ptr<Mailbox> mailbox_;
     std::wstring query_;
     std::wstring status_;
     std::vector<integrations::ListarySearchItem> items_;
     uint64_t generation_ = 0;
     uint64_t due_ = 0;
+    uint64_t total_ = 0;
+    uint64_t next_offset_ = 0;
+    uint64_t requested_offset_ = 0;
+    bool has_more_ = false;
+    bool page_loading_ = false;
+    bool request_append_ = false;
     bool focused_ = false;
     bool dismissed_ = false;
     int selected_ = -1;

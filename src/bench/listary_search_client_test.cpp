@@ -11,9 +11,11 @@ std::string Item(std::string path = "C:\\\\Work\\\\invoice.pdf", std::string typ
     return "{\"path\":\"" + path + "\",\"name\":\"" + name + "\",\"type\":\"" + type + "\"}";
 }
 
-std::string Response(std::string items, unsigned count = 1) {
-    return "{\"ok\":true,\"data\":{\"total\":100,\"offset\":0,\"limit\":50,\"count\":" +
-        std::to_string(count) + ",\"results\":[" + items + "]},\"error\":null}";
+std::string Response(std::string items, unsigned count = 1, uint64_t total = 100,
+                     uint64_t offset = 0, unsigned limit = 50) {
+    return "{\"ok\":true,\"data\":{\"total\":" + std::to_string(total) +
+        ",\"offset\":" + std::to_string(offset) + ",\"limit\":" + std::to_string(limit) +
+        ",\"count\":" + std::to_string(count) + ",\"results\":[" + items + "]},\"error\":null}";
 }
 
 ListarySearchItem LocalItem(std::wstring name, bool directory = false) {
@@ -35,8 +37,8 @@ int main() {
         if (!passed) ++failures;
         std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", label);
     };
-    const auto parse = [](const std::string& text, bool folders = false) {
-        return detail::ParseListarySearchResponse(text, folders);
+    const auto parse = [](const std::string& text, bool folders = false, uint64_t offset = 0) {
+        return detail::ParseListarySearchResponse(text, folders, offset);
     };
     const auto invalid = [&](const std::string& text) {
         const auto result = parse(text);
@@ -72,6 +74,38 @@ int main() {
     check(!detail::BuildListarySearchBody(std::wstring(4097, L'x'), false), "oversized query rejected");
     check(!detail::BuildListarySearchBody(std::wstring(L"a\0b", 3), false), "NUL query rejected");
     check(!detail::BuildListarySearchBody(L"\xD800", false), "invalid UTF-16 query rejected");
+    body = detail::BuildListarySearchBody(L"xterm", false, 50);
+    check(body && *body == R"({"query":"xterm","limit":50,"offset":50})" &&
+        body->find("search_in") == std::string::npos, "next page offset retains global search scope");
+    body = detail::BuildListarySearchBody(L"xterm", true, 100);
+    check(body && *body == R"({"query":"xterm","limit":50,"offset":100,"types":["folder"]})" &&
+        body->find("search_in") == std::string::npos, "folder page keeps query and type without narrowing scope");
+    body = detail::BuildListarySearchBody(L"xterm", false, UINT64_C(9007199254740991));
+    check(body && body->find("\"offset\":9007199254740991") != std::string::npos,
+        "maximum JSON-safe offset encoded as exact decimal integer");
+    check(!detail::BuildListarySearchBody(L"xterm", false, UINT64_C(9007199254740992)),
+        "unsafe JSON integer offset rejected");
+    check(!detail::BuildListarySearchBody(L"xterm", false, UINT64_MAX), "uint64 maximum offset rejected");
+    check(detail::ListaryEffectiveQuery(L"LA516") == L"LA 516" &&
+        detail::ListaryEffectiveQuery(L"RTX4090") == L"RTX 4090", "compact model query separates letters and digits");
+    for (const auto* unchanged : {L"mp3", L"xterm", L"LA516.pdf", L"LA 516", L"LA516*", L"file:LA516",
+            L"A516", L"LA5", L"12LA516", L"LA_516"}) {
+        check(detail::ListaryEffectiveQuery(unchanged) == unchanged,
+            "ordinary filenames and advanced queries keep engine syntax unchanged");
+    }
+    body = detail::BuildListarySearchBody(L"LA516", false);
+    check(body && *body == R"({"query":"LA 516","limit":50,"offset":0})",
+        "compact model first page searches expanded engine query");
+    body = detail::BuildListarySearchBody(L"LA516", false, 50);
+    check(body && *body == R"({"query":"LA 516","limit":50,"offset":50})",
+        "compact model later page retains identical effective search scope");
+    check(detail::ListaryEffectiveQuery(L"OX1228D") == L"OX 1228 D" &&
+        detail::ListaryEffectiveQuery(L"RX6750GRE") == L"RX 6750 GRE" &&
+        detail::ListaryEffectiveQuery(L"AB12CD34E") == L"AB 12 CD 34 E",
+        "compact model separates every letter-digit run including suffix letters");
+    body = detail::BuildListarySearchBody(L"OX1228D", false, 50);
+    check(body && *body == R"({"query":"OX 1228 D","limit":50,"offset":50})",
+        "letter-suffix model pagination uses expanded engine query");
     const auto success = parse(Response(Item()));
     check(success.error == ListarySearchError::None && success.items.size() == 1 &&
         success.items[0].path == L"C:\\Work\\invoice.pdf" && !success.items[0].directory,
@@ -82,8 +116,40 @@ int main() {
     const auto chinese = parse(Response(Item(R"(C:\\\u4e2d\\test.txt)", "file", "test.txt")));
     check(chinese.error == ListarySearchError::None && chinese.items.size() == 1 &&
         chinese.items[0].path == L"C:\\中\\test.txt", "JSON Unicode escapes decoded");
-    const auto empty = parse(Response("", 0));
-    check(empty.error == ListarySearchError::None && empty.items.empty(), "empty successful result");
+    const auto empty = parse(Response("", 0, 0));
+    check(empty.error == ListarySearchError::None && empty.items.empty() && empty.total == 0 &&
+        empty.offset == 0 && !empty.has_more, "zero-result page has no more results");
+    check(success.total == 100 && success.offset == 0 && success.has_more,
+        "first page exposes total and next-page availability");
+    const auto middle = parse(Response(Item(), 1, 101, 50), false, 50);
+    check(middle.error == ListarySearchError::None && middle.total == 101 && middle.offset == 50 &&
+        middle.items.size() == 1 && middle.has_more, "middle page retains requested offset and total");
+    const auto last = parse(Response(Item(), 1, 101, 100), false, 100);
+    check(last.error == ListarySearchError::None && last.offset == 100 && !last.has_more,
+        "last page clears has-more flag");
+    const auto end = parse(Response("", 0, 100, 100), false, 100);
+    check(end.error == ListarySearchError::None && !end.has_more && end.items.empty(),
+        "empty page exactly at total terminates pagination");
+    check(invalid(Response("", 0)), "empty page before total rejected to prevent pagination loop");
+    check(parse(Response(Item(), 1, 100, 0), false, 50).error == ListarySearchError::InvalidResponse,
+        "server response offset must equal requested page");
+    check(parse(Response(Item(), 1, 50, 50), false, 50).error == ListarySearchError::InvalidResponse,
+        "page count cannot extend past total");
+    check(parse(Response("", 0, 49, 50), false, 50).error == ListarySearchError::InvalidResponse,
+        "offset past total rejected");
+    check(invalid(Response(Item(), 1, UINT64_C(9007199254740992))), "unsafe JSON total rejected");
+    check(parse(Response("", 0, UINT64_MAX, UINT64_MAX), false, UINT64_MAX).error ==
+        ListarySearchError::InvalidResponse, "oversized request and response offset rejected without addition overflow");
+    const auto boundary = parse(Response(Item(), 1, UINT64_C(9007199254740991), UINT64_C(9007199254740990)),
+        false, UINT64_C(9007199254740990));
+    check(boundary.error == ListarySearchError::None && !boundary.has_more,
+        "safe integer last-page boundary calculates without overflow");
+    check(invalid(Response(Item(), 1, 100, 0, 100)), "response limit must match requested page size");
+    std::string full_page;
+    for (unsigned i = 0; i < 50; ++i) { if (i) full_page += ','; full_page += Item(); }
+    const auto full_middle = parse(Response(full_page, 50, 120, 50), false, 50);
+    check(full_middle.error == ListarySearchError::None && full_middle.items.size() == 50 && full_middle.has_more,
+        "full middle page advances by actual count");
     check(parse(Response(Item()), true).error == ListarySearchError::InvalidResponse, "folder filter enforces response type");
     check(invalid(Response(Item("C:\\\\Work\\\\file", "command"))), "command result rejected");
     for (const auto* path : {"relative.txt", "C:relative.txt", "shell:Downloads", "pulse:home",
@@ -198,6 +264,19 @@ int main() {
     RankListarySearchResults(L"xterm", ranked);
     check(ranked[0].name == L"xterminal" && ranked[1].name == L"my-xterm.txt" &&
         ranked[2].name == L"x-t-e-r-m.exe", "prefix and substring relevance precede fuzzy program preference");
+    ranked = {LocalItem(L"Amazon_LA516_front.png"), LocalItem(L"Amazon_LA516_back.png"),
+        LocalItem(L"LA 516", true), LocalItem(L"LA_516-assets", true), LocalItem(L"LA-516.pdf")};
+    RankListarySearchResults(L"LA516", ranked);
+    check(ranked[0].name == L"LA 516" && ranked[0].directory && ranked[1].name == L"LA-516.pdf" &&
+        ranked[2].name == L"LA_516-assets" && ranked[3].name == L"Amazon_LA516_front.png",
+        "compact model ranking recognizes spaced folder as exact ahead of Amazon image substring");
+    ranked = {LocalItem(L"Amazon_OX1228D_front.png"), LocalItem(L"OX 1228D 68296359358.rar"),
+        LocalItem(L"OX 1228D 68296359358", true), LocalItem(L"OX-1228_D", true)};
+    RankListarySearchResults(L"OX1228D", ranked);
+    check(ranked[0].name == L"OX-1228_D" && ranked[0].directory &&
+        ranked[1].name == L"OX 1228D 68296359358.rar" && ranked[2].directory &&
+        ranked[3].name == L"Amazon_OX1228D_front.png",
+        "letter-suffix model ranks spaced folders and RAR ahead of image substring with stable prefix ties");
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

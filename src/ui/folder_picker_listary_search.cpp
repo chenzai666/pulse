@@ -9,12 +9,14 @@
 #include <cmath>
 #include <cwctype>
 #include <mutex>
+#include <limits>
+#include <set>
 #include <thread>
 #include <utility>
 
 namespace pulse::ui {
 namespace {
-constexpr size_t kMaxResults = 8;
+constexpr size_t kPageSize = 50;
 constexpr float kRowDip = 44.0f;
 bool ContainsSearchRect(const D2D1_RECT_F& rect, float x, float y) {
     return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
@@ -94,6 +96,36 @@ std::vector<ListaryNameMatch> ListaryNameMatches(std::wstring_view name,
             ++at;
         }
         if (term.empty() || term.front() == L'-' || term.find(L':') != std::wstring::npos) continue;
+        auto letter = [](wchar_t ch) {
+            return (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z');
+        };
+        auto digit = [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; };
+        size_t letters = 0, digit_run = 0;
+        bool compact_model = true, has_number = false;
+        while (letters < term.size() && letter(term[letters])) ++letters;
+        for (const auto ch : term) {
+            if (!letter(ch) && !digit(ch)) { compact_model = false; break; }
+            digit_run = digit(ch) ? digit_run + 1 : 0;
+            if (digit_run >= 2) has_number = true;
+        }
+        compact_model = compact_model && letters >= 2 && has_number;
+        if (compact_model) for (size_t start = 0; start < prefix; ++start) {
+            if (start && (letter(name[start - 1]) || digit(name[start - 1]))) continue;
+            size_t source = start;
+            std::vector<size_t> matched;
+            for (size_t query_at = 0; query_at < term.size(); ++query_at) {
+                if (query_at) while (source < name.size() &&
+                    (name[source] == L' ' || name[source] == L'-' || name[source] == L'_')) ++source;
+                if (source >= name.size() || CompareStringOrdinal(name.data() + source, 1,
+                        term.data() + query_at, 1, TRUE) != CSTR_EQUAL) break;
+                matched.push_back(source++);
+            }
+            // Only the exact model characters are marked. A following order
+            // number belongs to the rest of the name and is never consumed.
+            if (matched.size() == term.size() &&
+                (source == name.size() || (!letter(name[source]) && !digit(name[source]))))
+                for (const auto pos : matched) if (pos < prefix) mask[pos] = true;
+        }
         // Wildcard punctuation is syntax; only its literal portions are marked.
         for (size_t first = 0; first < term.size();) {
             while (first < term.size() && (term[first] == L'*' || term[first] == L'?')) ++first;
@@ -125,6 +157,7 @@ struct PickerListarySearch::Mailbox {
     struct Request {
         uint64_t generation = 0;
         std::wstring query;
+        uint64_t offset = 0;
         std::shared_ptr<std::atomic<bool>> cancelled;
     };
     struct Reply {
@@ -164,8 +197,7 @@ struct PickerListarySearch::Mailbox {
                                               : integrations::ListarySearchError::Disabled;
                 if (config.enabled && !request.query.empty() && !request.cancelled->load())
                     result = integrations::SearchListary(config, request.query, folders_only,
-                                                        *request.cancelled);
-                if (result.items.size() > kMaxResults) result.items.resize(kMaxResults);
+                                                        *request.cancelled, request.offset);
             } catch (...) {
                 result.error = integrations::ListarySearchError::Unavailable;
                 result.items.clear();
@@ -209,6 +241,8 @@ void PickerListarySearch::SetQuery(std::wstring query) {
         mailbox_->CancelLocked();
     }
     items_.clear();
+    total_ = next_offset_ = requested_offset_ = 0;
+    has_more_ = page_loading_ = request_append_ = false;
     selected_ = -1;
     dismissed_ = false;
     due_ = GetTickCount64() + 220;
@@ -216,18 +250,27 @@ void PickerListarySearch::SetQuery(std::wstring query) {
                              : l10n::Pick(L"正在搜索…", L"Searching…");
 }
 
-void PickerListarySearch::Queue() {
+void PickerListarySearch::Queue(bool append) {
+    ++generation_;
+    requested_offset_ = append ? next_offset_ : 0;
+    request_append_ = append;
+    page_loading_ = true;
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     {
         std::lock_guard lock(mailbox_->mutex);
         mailbox_->CancelLocked();
-        mailbox_->pending = Mailbox::Request{generation_, query_, std::move(cancelled)};
+        mailbox_->pending = Mailbox::Request{generation_, query_, requested_offset_, std::move(cancelled)};
     }
     mailbox_->ready.notify_one();
     due_ = 0;
 }
 
 void PickerListarySearch::SearchNow() {
+    if (page_loading_ && !due_) return;
+    items_.clear();
+    selected_ = -1;
+    has_more_ = false;
+    total_ = next_offset_ = 0;
     if (!query_.empty()) status_ = l10n::Pick(L"正在搜索…", L"Searching…");
     Queue();
 }
@@ -241,11 +284,65 @@ bool PickerListarySearch::Tick() {
         mailbox_->reply.reset();
     }
     if (!reply || reply->generation != generation_) return false;
-    items_ = std::move(reply->result.items);
-    if (reply->result.error != integrations::ListarySearchError::None) items_.clear();
-    selected_ = items_.empty() ? -1 : 0;
-    status_ = Status(reply->result.error, query_.empty(), items_.empty());
+    page_loading_ = false;
+    auto& result = reply->result;
+    if (result.error == integrations::ListarySearchError::None && !query_.empty()) {
+        const uint64_t count = static_cast<uint64_t>(result.items.size());
+        const bool overflow = requested_offset_ > (std::numeric_limits<uint64_t>::max)() - count;
+        const uint64_t end = overflow ? 0 : requested_offset_ + count;
+        if (result.offset != requested_offset_ || count > kPageSize || overflow ||
+            end > result.total || (result.has_more && (!count || end >= result.total)) ||
+            (!result.has_more && end != result.total) ||
+            items_.size() > static_cast<size_t>((std::numeric_limits<int>::max)()) - result.items.size())
+            result.error = integrations::ListarySearchError::InvalidResponse;
+    }
+    if (result.error != integrations::ListarySearchError::None) {
+        if (!request_append_) { items_.clear(); selected_ = -1; has_more_ = false; }
+        UpdatePageStatus(Status(result.error, query_.empty(), items_.empty()));
+        return true;
+    }
+    // Path identities are case-insensitive on the Windows filesystem. Offset
+    // always advances by the raw page size, including duplicate path entries.
+    struct PathLess {
+        bool operator()(const std::wstring& a, const std::wstring& b) const {
+            return CompareStringOrdinal(a.data(), static_cast<int>(a.size()),
+                b.data(), static_cast<int>(b.size()), TRUE) == CSTR_LESS_THAN;
+        }
+    };
+    std::set<std::wstring, PathLess> paths;
+    for (const auto& item : items_) paths.insert(item.path);
+    for (auto& item : result.items) if (paths.insert(item.path).second) items_.push_back(std::move(item));
+    total_ = result.total;
+    next_offset_ = result.offset + static_cast<uint64_t>(result.items.size());
+    has_more_ = result.has_more;
+    if (!request_append_) selected_ = items_.empty() ? -1 : 0;
+    UpdatePageStatus();
     return true;
+}
+
+void PickerListarySearch::UpdatePageStatus(std::wstring error) {
+    if (items_.empty()) {
+        status_ = error.empty() ? Status(integrations::ListarySearchError::None, query_.empty(), true)
+                                : std::move(error);
+        return;
+    }
+    status_ = l10n::Pick(L"已加载 ", L"Loaded ") + std::to_wstring(items_.size()) +
+        l10n::Pick(L" / 共 ", L" / Total ") + std::to_wstring(total_);
+    if (!error.empty()) status_ += L" · " + error;
+    if (page_loading_) status_ += l10n::Pick(L" · 正在加载…", L" · Loading…");
+    else if (has_more_) status_ += l10n::Pick(L" · 继续向下或点击加载更多", L" · Down or click to load more");
+    else status_ += l10n::Pick(L" · 全部已加载", L" · All results loaded");
+}
+
+void PickerListarySearch::LoadMore() {
+    if (query_.empty() || !has_more_ || page_loading_ || !next_offset_) return;
+    Queue(true);
+    UpdatePageStatus();
+}
+
+bool PickerListarySearch::HitLoadMore(float x, float y) const {
+    return has_more_ && !page_loading_ && x >= input_.left && x < input_.right &&
+        y >= input_.bottom && y < band_.bottom;
 }
 
 void PickerListarySearch::SetFocused(bool focused) {
@@ -267,7 +364,10 @@ void PickerListarySearch::MoveSelection(int direction) {
     if (items_.empty()) return;
     dismissed_ = false;
     const int count = static_cast<int>(items_.size());
-    selected_ = (selected_ + direction + count) % count;
+    if (direction > 0 && selected_ >= count - 1) { LoadMore(); return; }
+    const auto target = static_cast<int64_t>(selected_) + direction;
+    selected_ = static_cast<int>(std::clamp(target, int64_t{0}, static_cast<int64_t>(count - 1)));
+    if (direction > 0 && target >= count) LoadMore();
 }
 
 void PickerListarySearch::SelectRow(int index) {
@@ -290,7 +390,7 @@ void PickerListarySearch::Layout(float width, float footer_top, float content_to
 D2D1_RECT_F PickerListarySearch::PanelBounds() const {
     const float max_height = std::max(0.0f, band_.top - content_top_ - 8.0f * scale_);
     const float rows = std::floor(max_height / (kRowDip * scale_));
-    const float height = std::min(static_cast<float>(items_.size()), rows) * kRowDip * scale_;
+    const float height = std::min({static_cast<float>(items_.size()), rows, 8.0f}) * kRowDip * scale_;
     return D2D1::RectF(input_.left, band_.top - height, input_.right, band_.top);
 }
 
@@ -299,10 +399,18 @@ int PickerListarySearch::HitRow(float x, float y) const {
     const auto panel = PanelBounds();
     if (!ContainsSearchRect(panel, x, y)) return -1;
     // A short dialog displays fewer rows, with the selection scrolled into view.
-    const int visible = std::max(1, static_cast<int>((panel.bottom - panel.top) / (kRowDip * scale_)));
-    const int first = std::max(0, selected_ - visible + 1);
+    const int first = FirstVisible();
     const int index = first + static_cast<int>((y - panel.top) / (kRowDip * scale_));
     return index < static_cast<int>(items_.size()) ? index : -1;
+}
+
+int PickerListarySearch::VisibleRows() const {
+    const auto panel = PanelBounds();
+    return std::max(0, static_cast<int>(std::lround((panel.bottom - panel.top) / (kRowDip * scale_))));
+}
+
+int PickerListarySearch::FirstVisible() const {
+    return std::max(0, selected_ - VisibleRows() + 1);
 }
 
 bool PickerListarySearch::Contains(float x, float y) const {

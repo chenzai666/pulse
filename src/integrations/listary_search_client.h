@@ -19,6 +19,8 @@ struct ListarySearchItem {
 struct ListarySearchResult {
     ListarySearchError error = ListarySearchError::None;
     std::vector<ListarySearchItem> items;
+    uint64_t total = 0, offset = 0;
+    bool has_more = false;
 };
 
 struct ListarySearchConfig {
@@ -32,12 +34,13 @@ ListarySearchConfig ReadListarySearchConfig();
 void RankListarySearchResults(const std::wstring& query, std::vector<ListarySearchItem>& items);
 // Call from a worker. This function returns data only and never opens a result.
 ListarySearchResult SearchListary(const ListarySearchConfig& config, const std::wstring& query,
-                                  bool folders_only, const std::atomic<bool>& cancelled);
+                                  bool folders_only, const std::atomic<bool>& cancelled, uint64_t offset = 0);
 
 // Pure protocol boundaries shared with the focused test executable.
 namespace detail {
+std::wstring ListaryEffectiveQuery(const std::wstring& query);
 ListarySearchConfig ParseListarySearchConfig(std::string_view utf8);
-std::optional<std::string> BuildListarySearchBody(const std::wstring& query, bool folders_only);
-ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folders_only);
+std::optional<std::string> BuildListarySearchBody(const std::wstring& query, bool folders_only, uint64_t offset = 0);
+ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folders_only, uint64_t offset = 0);
 } // namespace detail
 } // namespace pulse::integrations

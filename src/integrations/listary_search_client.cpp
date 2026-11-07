@@ -16,6 +16,7 @@ namespace {
 constexpr size_t kMaximumBytes = 1024 * 1024;
 constexpr size_t kMaximumQuery = 4096;
 constexpr unsigned kMaximumResults = 50;
+constexpr uint64_t kMaximumJsonInteger = UINT64_C(9007199254740991);
 constexpr ULONGLONG kBudgetMs = 2000;
 using Members = std::unordered_map<std::wstring, std::wstring>;
 
@@ -138,9 +139,34 @@ bool ProgramResult(const ListarySearchItem& item) {
     return false;
 }
 
+bool CompactModel(std::wstring_view query) {
+    if (query.empty() || query.size() > kMaximumQuery) return false;
+    size_t leading_letters = 0, digit_run = 0;
+    bool long_digit_run = false, seen_digit = false;
+    for (const auto c : query) {
+        const bool letter = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
+        const bool digit = c >= L'0' && c <= L'9';
+        if (!letter && !digit) return false;
+        if (digit) {
+            seen_digit = true;
+            if (++digit_run >= 2) long_digit_run = true;
+        } else {
+            if (!seen_digit) ++leading_letters;
+            digit_run = 0;
+        }
+    }
+    return leading_letters >= 2 && long_digit_run;
+}
+
 unsigned MatchTier(std::wstring_view query, const ListarySearchItem& item) {
-    const auto name = item.name.empty() ? Leaf(item.path) : std::wstring_view(item.name);
+    auto name = item.name.empty() ? Leaf(item.path) : std::wstring_view(item.name);
     if (name.size() > 32767) return 0;
+    std::wstring compact;
+    if (CompactModel(query)) {
+        compact.reserve(name.size());
+        for (const auto c : name) if (c != L' ' && c != L'_' && c != L'-') compact += c;
+        name = compact;
+    }
     if (EqualName(name, query)) return 4;
     if (!item.directory && query.find(L'.') == query.npos) {
         const auto dot = name.find_last_of(L'.');
@@ -193,6 +219,20 @@ void RankListarySearchResults(const std::wstring& query, std::vector<ListarySear
 
 namespace detail {
 
+std::wstring ListaryEffectiveQuery(const std::wstring& query) {
+    if (!CompactModel(query)) return query;
+    std::wstring effective;
+    effective.reserve(query.size() * 2);
+    bool previous_digit = false;
+    for (const auto c : query) {
+        const bool digit = c >= L'0' && c <= L'9';
+        if (!effective.empty() && digit != previous_digit) effective += L' ';
+        effective += c;
+        previous_digit = digit;
+    }
+    return effective;
+}
+
 ListarySearchConfig ParseListarySearchConfig(std::string_view utf8) {
     ListarySearchConfig config;
     std::wstring text;
@@ -210,21 +250,24 @@ ListarySearchConfig ParseListarySearchConfig(std::string_view utf8) {
     return config;
 }
 
-std::optional<std::string> BuildListarySearchBody(const std::wstring& query, bool folders_only) {
-    if (query.empty() || query.size() > kMaximumQuery || query.find(L'\0') != query.npos) return std::nullopt;
+std::optional<std::string> BuildListarySearchBody(const std::wstring& query, bool folders_only, uint64_t offset) {
+    if (offset > kMaximumJsonInteger || query.empty() || query.size() > kMaximumQuery ||
+        query.find(L'\0') != query.npos) return std::nullopt;
     std::vector<uint8_t> bytes;
-    if (!EncodeUtf8Bytes(query, bytes)) return std::nullopt;
+    const auto effective_query = ListaryEffectiveQuery(query);
+    if (!EncodeUtf8Bytes(effective_query, bytes)) return std::nullopt;
     std::wstring body = L"{\"query\":\"";
-    json::Escape(query, body);
-    body += L"\",\"limit\":50,\"offset\":0";
+    json::Escape(effective_query, body);
+    body += L"\",\"limit\":50,\"offset\":" + std::to_wstring(offset);
     if (folders_only) body += L",\"types\":[\"folder\"]";
     body += L"}";
     if (!EncodeUtf8Bytes(body, bytes)) return std::nullopt;
     return std::string(bytes.begin(), bytes.end());
 }
 
-ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folders_only) {
+ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folders_only, uint64_t requested_offset) {
     const auto invalid = [] { return Error(ListarySearchError::InvalidResponse); };
+    if (requested_offset > kMaximumJsonInteger) return invalid();
     std::wstring text;
     Members root, data;
     if (!Decode(utf8, text) || !Object(text, root) || !root.contains(L"ok") ||
@@ -238,9 +281,10 @@ ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folde
     if (root.at(L"ok") != L"true" || !Object(root.at(L"data"), data)) return invalid();
     uint64_t count = 0, total = 0, offset = 0, limit = 0;
     if (!data.contains(L"count") || !Unsigned(data.at(L"count"), count) || count > kMaximumResults ||
-        !data.contains(L"total") || !Unsigned(data.at(L"total"), total) || total < count ||
-        !data.contains(L"offset") || !Unsigned(data.at(L"offset"), offset) || offset != 0 ||
-        !data.contains(L"limit") || !Unsigned(data.at(L"limit"), limit) || !limit || limit > 100 || limit < count ||
+        !data.contains(L"total") || !Unsigned(data.at(L"total"), total) || total > kMaximumJsonInteger ||
+        !data.contains(L"offset") || !Unsigned(data.at(L"offset"), offset) || offset != requested_offset ||
+        offset > total || count > total - offset || (!count && offset < total) ||
+        !data.contains(L"limit") || !Unsigned(data.at(L"limit"), limit) || limit != kMaximumResults ||
         !data.contains(L"results") || !json::ValidConfigArray(data.at(L"results"))) return invalid();
     ListarySearchResult result;
     bool valid = true;
@@ -259,7 +303,11 @@ ListarySearchResult ParseListarySearchResponse(std::string_view utf8, bool folde
         parsed.directory = type == L"folder";
         result.items.push_back(std::move(parsed));
     });
-    return array && valid && actual == count ? result : invalid();
+    if (!array || !valid || actual != count) return invalid();
+    result.total = total;
+    result.offset = offset;
+    result.has_more = count < total - offset;
+    return result;
 }
 
 } // namespace detail
@@ -294,11 +342,11 @@ ListarySearchConfig ReadListarySearchConfig() {
 }
 
 ListarySearchResult SearchListary(const ListarySearchConfig& config, const std::wstring& query,
-                                  bool folders_only, const std::atomic<bool>& cancelled) {
+                                  bool folders_only, const std::atomic<bool>& cancelled, uint64_t offset) {
     if (cancelled.load()) return Error(ListarySearchError::Cancelled);
     if (!config.enabled) return Error(ListarySearchError::Disabled);
     if (!config.port) return Error(ListarySearchError::Unavailable);
-    const auto body = detail::BuildListarySearchBody(query, folders_only);
+    const auto body = detail::BuildListarySearchBody(query, folders_only, offset);
     if (!body) return Error(ListarySearchError::InvalidResponse);
     const auto deadline = GetTickCount64() + kBudgetMs;
     HttpHandle session(WinHttpOpen(L"Pulse Listary Search/1", WINHTTP_ACCESS_TYPE_NO_PROXY,
@@ -364,7 +412,7 @@ ListarySearchResult SearchListary(const ListarySearchConfig& config, const std::
     }
     stopped = Interrupted(cancelled, deadline);
     if (stopped != ListarySearchError::None) return Error(stopped);
-    auto result = detail::ParseListarySearchResponse(response, folders_only);
+    auto result = detail::ParseListarySearchResponse(response, folders_only, offset);
     if (result.error == ListarySearchError::None) RankListarySearchResults(query, result.items);
     stopped = Interrupted(cancelled, deadline);
     return stopped == ListarySearchError::None ? result : Error(stopped);

@@ -96,19 +96,20 @@ if($progress){
 $listarySearch=$env:PULSE_LISTARY_SEARCH_VALIDATION -eq 'true'
 if($listarySearch){
 @"
-# Pulse 定制版 v1.0.53 · Listary 搜索排序与图标
+# Pulse 定制版 v1.0.53 · Listary 搜索完整性
 
 源码提交：$commit。支持覆盖安装和自定义路径，保留配置、索引及增强包。
 
-- 未指定扩展名的简单名称搜索，优先显示名称精确或前缀匹配的程序和快捷方式。例如搜索 xterm 时，XTerminal.exe 排在 xterm 普通文件、目录和 xterm.js 前。
-- 精确文档名称优先于模糊匹配的程序；路径、过滤条件和通配符查询保留 Listary 的结果顺序。
-- 搜索结果通过已有后台图标缓存显示真实程序图标，并高亮名称中匹配的文字。
-- 保留输入防抖、后台搜索、过期结果取消、目录联动和文件名保护；结果仍由用户最终确认打开或保存。
+- 紧凑型号查询兼容分隔名称，例如 LA516 匹配 LA 516，OX1228D 匹配 OX 1228 D，保留明确文件名和高级查询语义。
+- 移除结果只保留前八条的截断；列表滚动可访问全部已加载结果，到末尾继续向下、按 PageDown 或点击提示加载下一页。
+- 显示已加载数量和总数；分页失败保留已有结果并支持重试，输入变化会取消旧查询的后续页。
+- 图标仅预取当前可见行，分页结果按路径去重，避免大量结果拖慢界面。
+- 保留程序优先排序、真实图标、名称高亮、目录联动与文件名保护；用户最终确认打开或保存。
 - 沿用 Listary 7.1 本机 HTTP 接口，仅访问 127.0.0.1，禁用代理与重定向，不修改 Listary 程序。
 
 使用前请在 Listary 的 HTTP API 设置中开启本机搜索接口。使用自定义端口时自动读取该用户配置。
 
-本次执行无界面的协议、排序和底栏异步／布局检查；实际界面验收由用户完成。
+本次执行无界面的分页协议、型号匹配、排序及底栏异步／布局检查；实际界面验收由用户完成。
 
 构建记录：https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID
 
@@ -116,7 +117,7 @@ if($listarySearch){
 "@|Set-Content -LiteralPath $notes -Encoding utf8
 }
 $tag='custom-v1.0.53-'+$(if($listarySearch){'listary-'}elseif($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
-$releaseTitle=if($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索排序与图标'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
+$releaseTitle=if($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索完整性'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
 & gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes
