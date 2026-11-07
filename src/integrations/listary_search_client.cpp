@@ -167,15 +167,19 @@ unsigned MatchTier(std::wstring_view query, const ListarySearchItem& item) {
 
 void RankListarySearchResults(const std::wstring& query, std::vector<ListarySearchItem>& items) {
     if (!SimpleNameQuery(query) || items.size() < 2) return;
-    // No Shell lookup: extensions provide a bounded preference, not execution
-    // or shortcut-target resolution. Unmatched programs receive no preference.
+    // Extensionless names normally express app-launch intent. Only an exact
+    // stem or prefix program match crosses relevance tiers; fuzzy programs do
+    // not outrank more relevant documents. No Shell resolution is performed.
+    const bool extensionless = query.find(L'.') == query.npos;
     struct RankedItem { unsigned rank; size_t index; };
     std::vector<RankedItem> ranked;
     ranked.reserve(items.size());
     for (size_t i = 0; i < items.size(); ++i) {
         const auto& item = items[i];
         const auto tier = MatchTier(query, item);
-        const unsigned rank = tier * 2 + (tier && ProgramResult(item) ? 1u : 0u);
+        const bool program = tier && ProgramResult(item);
+        const unsigned rank = tier * 2 + (program ? 1u : 0u) +
+            (extensionless && program && tier >= 3 ? 10u : 0u);
         ranked.push_back({rank, i});
     }
     std::stable_sort(ranked.begin(), ranked.end(), [](const auto& left, const auto& right) {

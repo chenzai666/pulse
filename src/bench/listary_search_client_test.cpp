@@ -136,8 +136,24 @@ int main() {
     RankListarySearchResults(L"report.pdf", ranked);
     check(ranked[0].name == L"report.pdf", "exact document filename beats prefix and double-extension programs");
     ranked = {LocalItem(L"ReportViewer.exe"), LocalItem(L"report.txt")};
+    RankListarySearchResults(L"report.txt", ranked);
+    check(ranked[0].name == L"report.txt", "explicit exact document filename beats program");
+
+    ranked = {LocalItem(L"xterm", true), LocalItem(L"xterm"), LocalItem(L"XTerm.scs"),
+        LocalItem(L"xterm.js"), LocalItem(L"XTerminal", true), LocalItem(L"XTerminal.exe"),
+        LocalItem(L"XTerminal-Setup-x64.exe"), LocalItem(L"unrelated.exe")};
+    RankListarySearchResults(L"xterm", ranked);
+    check(ranked[0].name == L"XTerminal.exe" && ranked[1].name == L"XTerminal-Setup-x64.exe" &&
+        ranked[2].name == L"xterm" && ranked[2].directory && ranked[3].name == L"xterm" &&
+        ranked[4].name == L"XTerm.scs" && ranked[5].name == L"xterm.js",
+        "real API mix: prefix programs precede exact extensionless files, directories, and documents");
+    ranked = {LocalItem(L"report.txt"), LocalItem(L"ReportViewer.exe")};
     RankListarySearchResults(L"report", ranked);
-    check(ranked[0].name == L"report.txt", "exact document stem beats fuzzy program");
+    check(ranked[0].name == L"ReportViewer.exe", "extensionless app query prefers a prefix program over document stem");
+    ranked = {LocalItem(L"my-xterm.exe"), LocalItem(L"xterm", true), LocalItem(L"x-t-e-r-m.exe")};
+    RankListarySearchResults(L"xterm", ranked);
+    check(ranked[0].name == L"xterm" && ranked[0].directory && ranked[1].name == L"my-xterm.exe",
+        "substring and subsequence programs do not cross stronger relevance tiers");
 
     ranked = {LocalItem(L"calculator.exe"), LocalItem(L"xterm-notes.txt"), LocalItem(L"other.exe")};
     RankListarySearchResults(L"xterm", ranked);
