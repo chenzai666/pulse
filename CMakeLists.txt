@@ -473,6 +473,9 @@ pulse_enable_lumatext(pulse_file_operation_authorization_dialog_test)
 add_executable(pulse_command_icon_test src/bench/command_icon_test.cpp)
 target_link_libraries(pulse_command_icon_test PRIVATE d2d1 dwrite dwmapi ole32 windowscodecs user32)
 
+# ---- Listary 主窗口受限目录导航协议边界 ----
+add_executable(pulse_listary_adapter_protocol_test src/bench/listary_adapter_protocol_test.cpp)
+
 # ---- Pulse.exe: main UI process ----
 file(GLOB_RECURSE PULSE_APP_SOURCES CONFIGURE_DEPENDS
     src/app/*.cpp src/ui/*.cpp src/fs/*.cpp src/ops/*.cpp src/ipc/*.cpp src/index/*.cpp)

@@ -1,0 +1,13 @@
+{
+  "ManifestVersion": 1,
+  "Id": "PulsePicker",
+  "PluginType": "FileAppPlugin",
+  "PluginVersion": "1.0.0",
+  "DisplayName": "Pulse 文件选择器",
+  "Authors": ["Pulse Custom"],
+  "Description": "Pulse 选择器固定搜索、目录切换和文件准备选择；保留用户最终确认。",
+  "Icon": "Icon.png",
+  "Api": "NetFramework",
+  "ApiVersion": 1,
+  "Entry": "Listary.FileAppPlugin.PulsePicker.dll"
+}

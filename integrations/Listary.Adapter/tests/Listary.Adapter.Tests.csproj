@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Pulse.Listary.AdapterTests</AssemblyName>
+    <DefineConstants>$(DefineConstants);ADAPTER_TESTS</DefineConstants>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
+    <Compile Include="../Manager/PulseManagerPlugin.cs" Link="PulseManagerPlugin.cs" />
+    <Compile Include="../Picker/PulsePickerPlugin.cs" Link="PulsePickerPlugin.cs" />
+    <PackageReference Include="Listary.FileAppPlugin" Version="1.0.0" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

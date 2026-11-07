@@ -1,0 +1,13 @@
+{
+  "ManifestVersion": 1,
+  "Id": "PulseManager",
+  "PluginType": "FileAppPlugin",
+  "PluginVersion": "1.0.0",
+  "DisplayName": "Pulse 文件管理器",
+  "Authors": ["Pulse Custom"],
+  "Description": "Pulse 文件管理器目录来源、浮动搜索和受限目录导航。",
+  "Icon": "Icon.png",
+  "Api": "NetFramework",
+  "ApiVersion": 1,
+  "Entry": "Listary.FileAppPlugin.PulseManager.dll"
+}

@@ -165,6 +165,7 @@ void UnregisterAssocChangeNotify() {
 #include "tray_reveal.h"
 #include "default_file_manager.h"
 #include "shell_window_sync.h"
+#include "listary_adapter_endpoint.h"
 #include "host_window.h"
 #include "host_routing.h"
 #include <commctrl.h>
@@ -646,6 +647,8 @@ static BOOL HandleInstanceCopyData(AppState& s, COPYDATASTRUCT* cds) {
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    if (LRESULT adapter_result = 0; s && ListaryAdapterMessage(*s, msg, wParam, lParam, adapter_result))
+        return adapter_result;
     if (s && (s->tabDropPending || s->tabDragPending || s->tabDragging) &&
         (msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)) {
         static ULONGLONG next_drag_trace = 0;
@@ -1110,6 +1113,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (init_core && !s->isolatedTest && !s->shot.active && !s->menushot)
             app::CleanupAbandonedUpdateStagesAsync();
         s->startupComplete = true;
+        AttachListaryAdapter(*s);
         s->lastFrameTime = std::chrono::steady_clock::now();
         s->renderer.SetDetailsPanelVisible(s->showDetailsPanel);
         s->renderer.SetDetailsPanelWidth(s->detailsPanelWidth);
@@ -2379,6 +2383,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_DESTROY: {
+        if (s) DetachListaryAdapter(*s);
         if (s) CancelPendingTabDrop(*s);
         if (s) CancelDroppedNavigation(*s);
         // Closing one of several windows (M3f) tears down what the window
@@ -3216,7 +3221,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                   "keep the system animations without DWM's duplicate caption buttons");
     // Hidden process window (host_window.h), created before the main window
     // so WM_CREATE can point services at it. It owns the single-instance
-    // endpoint (Pulse windows do not accept WM_COPYDATA) and forwards the
+    // command endpoint (distinct from the restricted per-window Listary
+    // directory adapter) and forwards the
     // process-level notifications in host_routing.h to the most recently
     // active window (WindowRegistry).
     const bool host_created = state.core.host.Create(hInstance,

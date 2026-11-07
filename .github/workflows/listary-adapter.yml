@@ -1,0 +1,44 @@
+name: 构建 Pulse 专用 Listary 适配器
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  adapter:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 构建并检查公开 SDK 适配器
+        shell: pwsh
+        run: ./scripts/build_listary_adapter.ps1 -OutputDirectory build-listary-adapter
+      - name: 构建主程序并检查受限目录导航协议
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/build_picker_ci.ps1 -BuildOnly -ListaryAdapterValidation
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Listary-Adapter
+          path: build-listary-adapter/package/**
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Pulse-Listary-Adapter-verification
+          path: |
+            build-listary-adapter/tests.log
+            build-custom/picker-verification/**
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Pulse-Listary-main-update
+          path: build-custom/picker-update/**
