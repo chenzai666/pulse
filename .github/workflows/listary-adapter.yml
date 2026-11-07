@@ -1,6 +1,7 @@
 name: 构建 Pulse 专用 Listary 适配器
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
   actions: read
