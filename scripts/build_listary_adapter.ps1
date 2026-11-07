@@ -34,6 +34,7 @@ foreach($kind in 'Manager','Picker'){
  }
 }
 Copy-Item -LiteralPath (Join-Path $repo 'integrations/Listary.Adapter/README.md') -Destination (Join-Path $package '使用说明.md')
+Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $package 'LICENSE.txt')
 $entries=@(foreach($file in Get-ChildItem -LiteralPath $package -Recurse -File){
  [ordered]@{path=[IO.Path]::GetRelativePath($package,$file.FullName).Replace('\','/');bytes=$file.Length;sha256=(Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()}
 })
