@@ -16,7 +16,7 @@ foreach($relative in $projects){
  & dotnet build $project --no-restore -c Release --nologo "-p:PulseListaryArtifactsRoot=$artifacts"
  if($LASTEXITCODE){throw "适配器构建失败：$relative"}
 }
-$test=Join-Path $artifacts 'bin/Pulse.Listary.AdapterTests/Release/net48/Pulse.Listary.AdapterTests.exe'
+$test=Join-Path $artifacts 'bin/Listary.Adapter.Tests/Release/net48/Pulse.Listary.AdapterTests.exe'
 & $test *> (Join-Path $artifacts 'tests.log')
 if($LASTEXITCODE){throw '适配器定向检查失败'}
 $package=Join-Path $artifacts 'package'
