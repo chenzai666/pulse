@@ -452,7 +452,7 @@ void ClearTextWidthCache() {
         float pad = 8.0f;
         float headerH = 36.0f;
         float itemH = 32.0f;
-        float driveH = 48.0f;
+        float driveH = fluent::kDriveSidebarItemHeightDip;
         float tagH = 26.0f;
         float itemGap = 2.0f;
         float groupGap = 16.0f;
@@ -470,7 +470,7 @@ void ClearTextWidthCache() {
         m.pad = 8.0f * scale;
         m.headerH = 36.0f * scale;
         m.itemH = 32.0f * scale;
-        m.driveH = 48.0f * scale;
+        m.driveH = fluent::kDriveSidebarItemHeightDip * scale;
         m.tagH = 26.0f * scale;
         m.itemGap = 2.0f * scale;
         m.groupGap = 16.0f * scale;

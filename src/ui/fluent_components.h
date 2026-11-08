@@ -2,6 +2,7 @@
 
 #include "ui_compositor.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -251,6 +252,35 @@ struct SidebarSectionHeaderSpec {
     ControlState state{};
     bool expanded = true;
 };
+
+inline constexpr float kDriveSidebarItemHeightDip = 64.0f;
+
+struct DriveSidebarItemLayout {
+    D2D1_RECT_F icon{};
+    D2D1_RECT_F name{};
+    D2D1_RECT_F detail{};
+    D2D1_RECT_F track{};
+};
+
+// A full-width capacity caption has its own row. Keep this geometry shared by
+// glyph/vector painting and the renderer's drive-row height in every host.
+inline DriveSidebarItemLayout LayoutDriveSidebarItem(const D2D1_RECT_F& bounds, float scale) {
+    const float left = std::min(bounds.right, bounds.left + 10.0f * scale);
+    const float right = std::max(left, bounds.right - 10.0f * scale);
+    const float title_top = std::min(bounds.bottom, bounds.top + 6.0f * scale);
+    const float title_bottom = std::min(bounds.bottom, title_top + 20.0f * scale);
+    const float detail_top = std::min(bounds.bottom, title_bottom + 2.0f * scale);
+    const float detail_bottom = std::min(bounds.bottom, detail_top + 18.0f * scale);
+    const float bar_bottom = std::min(bounds.bottom,
+        std::max(detail_bottom + 8.0f * scale, bounds.bottom - 8.0f * scale));
+    DriveSidebarItemLayout layout;
+    layout.icon = D2D1::RectF(left, title_top, std::min(right, left + 16.0f * scale), title_bottom);
+    layout.name = D2D1::RectF(std::min(right, layout.icon.right + 8.0f * scale),
+                             title_top, right, title_bottom);
+    layout.detail = D2D1::RectF(left, detail_top, right, detail_bottom);
+    layout.track = D2D1::RectF(left, std::max(detail_bottom, bar_bottom - 4.0f * scale), right, bar_bottom);
+    return layout;
+}
 
 struct DriveSidebarItemSpec {
     D2D1_RECT_F bounds{};

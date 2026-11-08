@@ -2,6 +2,8 @@
 
 当前版本号固定为 **v1.0.53**。项目主页、问题反馈和安装包均使用本仓库：
 
+磁盘容量在主窗口侧边栏、文件选择窗口侧边栏及主页统一使用 IEC 单位，最多保留两位小数并省略多余尾零，例如 `37.72 GiB`、`67.9 GiB`、`500 GiB`。侧边栏将磁盘名称、容量与容量条分行显示；通用文件大小的原显示规则继续保留。
+
 - 项目主页：https://github.com/chenzai666/pulse
 - 问题反馈：https://github.com/chenzai666/pulse/issues
 - 版本下载：https://github.com/chenzai666/pulse/releases

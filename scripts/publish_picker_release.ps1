@@ -116,8 +116,26 @@ if($listarySearch){
 安装包 SHA-256：$hash。来源记录见 provenance.json。
 "@|Set-Content -LiteralPath $notes -Encoding utf8
 }
-$tag='custom-v1.0.53-'+$(if($listarySearch){'listary-'}elseif($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
-$releaseTitle=if($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索完整性'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
+$driveCapacity=$env:PULSE_DRIVE_CAPACITY_VALIDATION -eq 'true'
+if($driveCapacity){
+@"
+# Pulse 定制版 v1.0.53 · 磁盘容量显示
+
+源码提交：$commit。支持覆盖安装和自定义路径，保留配置、索引及增强包。
+
+- 主窗口、文件选择窗口侧边栏及主页共用磁盘容量显示规则：IEC 单位、最多两位小数，省略多余尾零。例如 37.72 GiB、67.9 GiB、500 GiB。
+- 侧边栏磁盘名称与容量分行显示，避免更精确的数字挤压名称；容量条继续沿用实际使用比例。
+- 通用文件大小显示规则保留原状。
+
+本次只执行相关的容量格式边界检查并构建主程序，实际界面验收由用户完成。
+
+构建记录：https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID
+
+安装包 SHA-256：$hash。来源记录见 provenance.json。
+"@|Set-Content -LiteralPath $notes -Encoding utf8
+}
+$tag='custom-v1.0.53-'+$(if($driveCapacity){'capacity-'}elseif($listarySearch){'listary-'}elseif($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
+$releaseTitle=if($driveCapacity){'Pulse 定制版 v1.0.53 · 磁盘容量显示'}elseif($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索完整性'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
 & gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes

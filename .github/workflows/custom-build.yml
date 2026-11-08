@@ -76,6 +76,10 @@ on:
         description: '验证 Pulse 底栏的 Listary 本机搜索接口'
         type: boolean
         default: false
+      drive_capacity_validation:
+        description: '验证磁盘容量精度与 IEC 单位显示'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -217,6 +221,7 @@ jobs:
       recycle_validation: ${{ inputs.recycle_validation == true }}
       operation_progress_validation: ${{ inputs.operation_progress_validation == true }}
       listary_search_validation: ${{ inputs.listary_search_validation == true }}
+      drive_capacity_validation: ${{ inputs.drive_capacity_validation == true }}
       publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'

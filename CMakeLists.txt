@@ -475,6 +475,7 @@ target_link_libraries(pulse_command_icon_test PRIVATE d2d1 dwrite dwmapi ole32 w
 
 # ---- Listary 主窗口受限目录导航协议边界 ----
 add_executable(pulse_listary_adapter_protocol_test src/bench/listary_adapter_protocol_test.cpp)
+add_executable(pulse_drive_capacity_format_test src/bench/drive_capacity_format_test.cpp)
 add_executable(pulse_listary_search_client_test src/bench/listary_search_client_test.cpp
     src/integrations/listary_search_client.cpp)
 target_link_libraries(pulse_listary_search_client_test PRIVATE winhttp shell32)

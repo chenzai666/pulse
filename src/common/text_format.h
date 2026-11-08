@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <cstdint>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 #include <string_view>
@@ -31,6 +32,42 @@ inline std::wstring ByteSize(uint64_t bytes, bool empty_zero = false,
     } else if (unit == 0) swprintf_s(text, L"%llu %s", bytes, units[unit]);
     else swprintf_s(text, L"%.1f %s", value, units[unit]);
     return text;
+}
+
+inline std::wstring DriveCapacity(uint64_t bytes) {
+    static constexpr const wchar_t* units[] = {L"B", L"KiB", L"MiB", L"GiB", L"TiB", L"PiB", L"EiB"};
+    size_t unit = 0;
+    uint64_t divisor = 1;
+    while (bytes / divisor >= 1024 && unit + 1 < std::size(units)) {
+        divisor *= 1024;
+        ++unit;
+    }
+    if (!unit) return std::to_wstring(bytes) + L" B";
+    const auto rounded = [bytes](uint64_t scale) {
+        uint64_t remainder = bytes % scale;
+        uint64_t hundredths = (bytes / scale) * 100;
+        // Extract decimal digits separately: remainder * 100 could overflow
+        // at EiB, whereas remainder * 10 stays within uint64_t.
+        for (const uint64_t weight : {uint64_t{10}, uint64_t{1}}) {
+            remainder *= 10;
+            hundredths += (remainder / scale) * weight;
+            remainder %= scale;
+        }
+        return hundredths + (remainder >= scale / 2 ? 1u : 0u);
+    };
+    uint64_t value = rounded(divisor);
+    if (value == 102400 && unit + 1 < std::size(units)) {
+        divisor *= 1024;
+        ++unit;
+        value = rounded(divisor);
+    }
+    std::wstring text = std::to_wstring(value / 100);
+    if (const auto fraction = value % 100; fraction) {
+        text += L'.';
+        text += static_cast<wchar_t>(L'0' + fraction / 10);
+        if (fraction % 10) text += static_cast<wchar_t>(L'0' + fraction % 10);
+    }
+    return text + L" " + units[unit];
 }
 
 inline std::wstring LocalFileTime(const FILETIME& time,

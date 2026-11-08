@@ -2,6 +2,9 @@ name: 构建文件选择窗口与系统集成
 on:
   workflow_dispatch:
     inputs:
+      drive_capacity_validation:
+        type: boolean
+        default: false
       listary_search_validation:
         type: boolean
         default: false
@@ -25,6 +28,9 @@ on:
         default: false
   workflow_call:
     inputs:
+      drive_capacity_validation:
+        type: boolean
+        default: false
       listary_search_validation:
         type: boolean
         default: false
@@ -63,7 +69,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true') -RecycleValidation:('${{ inputs.recycle_validation }}' -eq 'true') -OperationProgressValidation:('${{ inputs.operation_progress_validation }}' -eq 'true') -ListarySearchValidation:('${{ inputs.listary_search_validation }}' -eq 'true')
+        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true') -RecycleValidation:('${{ inputs.recycle_validation }}' -eq 'true') -OperationProgressValidation:('${{ inputs.operation_progress_validation }}' -eq 'true') -ListarySearchValidation:('${{ inputs.listary_search_validation }}' -eq 'true') -DriveCapacityValidation:('${{ inputs.drive_capacity_validation }}' -eq 'true')
       - name: 制作并发布最新弹窗修复安装包
         if: inputs.publish_release == true
         shell: pwsh
@@ -73,6 +79,7 @@ jobs:
           PULSE_RECYCLE_VALIDATION: ${{ inputs.recycle_validation }}
           PULSE_PROGRESS_VALIDATION: ${{ inputs.operation_progress_validation }}
           PULSE_LISTARY_SEARCH_VALIDATION: ${{ inputs.listary_search_validation }}
+          PULSE_DRIVE_CAPACITY_VALIDATION: ${{ inputs.drive_capacity_validation }}
         run: ./scripts/publish_picker_release.ps1
       - uses: actions/upload-artifact@v4
         if: inputs.publish_release == true && success()

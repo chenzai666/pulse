@@ -124,8 +124,7 @@ std::vector<PickerPlace> KnownPlaces() {
 
 std::wstring DriveDetail(uint64_t free, uint64_t total) {
     if (!total) return {};
-    return format::ByteSize(free, false, format::ByteSizeStyle::Compact) + L" / " +
-           format::ByteSize(total, false, format::ByteSizeStyle::Compact);
+    return format::DriveCapacity(free) + L" / " + format::DriveCapacity(total);
 }
 
 // Drives for the sidebar. Only local fixed disks are asked for their label

@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation, [switch]$ListarySearchValidation)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation, [switch]$ListarySearchValidation, [switch]$DriveCapacityValidation)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -15,6 +15,8 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', '.github/workflows/listary-adapter.yml',
     'scripts/build_listary_adapter.ps1', 'src/app/listary_adapter_endpoint.cpp', 'src/app/listary_adapter_endpoint.h',
     'src/app/listary_adapter_protocol.h', 'src/bench/listary_adapter_protocol_test.cpp',
+    'src/common/text_format.h', 'src/app/app_model.cpp', 'src/app/home_widgets.cpp',
+    'src/ui/fluent_components.h', 'src/ui/fluent_components.cpp', 'src/bench/drive_capacity_format_test.cpp',
     'src/integrations/listary_search_client.h', 'src/integrations/listary_search_client.cpp',
     'src/bench/listary_search_client_test.cpp', 'src/ui/folder_picker_listary_search.h', 'src/ui/folder_picker_listary_search.cpp',
     'src/ui/folder_picker_listary_search.draw.cpp', 'src/bench/folder_picker_listary_search_test.cpp',
@@ -99,8 +101,8 @@ $sdkRoot = & "$PSScriptRoot/verify_lumatext_sdk.ps1"
 $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
 $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
-$recycleOnly = if ($RecycleValidation -or $OperationProgressValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
-$targets = if ($ListarySearchValidation) { 'pulse pulse_listary_search_client_test pulse_picker_listary_search_test' } elseif ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
+$recycleOnly = if ($RecycleValidation -or $OperationProgressValidation -or $DriveCapacityValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
+$targets = if ($DriveCapacityValidation) { 'pulse pulse_drive_capacity_format_test' } elseif ($ListarySearchValidation) { 'pulse pulse_listary_search_client_test pulse_picker_listary_search_test' } elseif ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
@@ -152,6 +154,10 @@ if ($ListarySearchValidation) {
     if ($LASTEXITCODE) { throw 'Listary 本机搜索接口检查失败' }
     & (Join-Path $taskBuild 'pulse_picker_listary_search_test.exe') *> (Join-Path $galleryOutput 'listary-search-state.log')
     if ($LASTEXITCODE) { throw 'Listary 搜索底栏异步状态检查失败' }
+}
+if ($DriveCapacityValidation) {
+    & (Join-Path $taskBuild 'pulse_drive_capacity_format_test.exe') *> (Join-Path $galleryOutput 'drive-capacity-format.log')
+    if ($LASTEXITCODE) { throw '磁盘容量格式检查失败' }
 }
 if ($OperationProgressValidation) {
     & (Join-Path $taskBuild 'pulse_operation_presentation_test.exe') *> (Join-Path $galleryOutput 'operation-progress.log')

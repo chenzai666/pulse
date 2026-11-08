@@ -1283,8 +1283,7 @@ void RefreshSidebarDriveCapacity(std::vector<SidebarEntry>& drives) {
         entry.free_bytes = free;
         entry.total_bytes = total;
         entry.capacity_valid = total > 0;
-        entry.detail = pulse::format::ByteSize(free, false, pulse::format::ByteSizeStyle::Compact)
-            + L" / " + pulse::format::ByteSize(total, false, pulse::format::ByteSizeStyle::Compact);
+        entry.detail = pulse::format::DriveCapacity(free) + L" / " + pulse::format::DriveCapacity(total);
         if (total > 0) {
             entry.used_ratio = static_cast<float>(static_cast<double>(total - free) / static_cast<double>(total));
             entry.danger = static_cast<double>(free) / static_cast<double>(total) < 0.10;

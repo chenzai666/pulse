@@ -3,6 +3,7 @@
 #include "places.h"
 #include "../common/localization.h"
 #include "../common/display_path.h"
+#include "../common/text_format.h"
 #include <algorithm>
 
 namespace pulse::app {
@@ -15,9 +16,9 @@ ui::HomeWidgetItem FromSidebar(const SidebarEntry& entry) {
     if(entry.is_drive) {
         if(entry.capacity_valid) {
             wchar_t capacity[160]{};
-            swprintf_s(capacity,l10n::Pick(L"%.2f GiB 可用，共 %.2f GiB",L"%.2f GiB free of %.2f GiB"),
-                static_cast<double>(entry.free_bytes)/1073741824.0,
-                static_cast<double>(entry.total_bytes)/1073741824.0);
+            swprintf_s(capacity,l10n::Pick(L"%s 可用，共 %s",L"%s free of %s"),
+                format::DriveCapacity(entry.free_bytes).c_str(),
+                format::DriveCapacity(entry.total_bytes).c_str());
             item.detail=capacity;
         } else if(item.detail.empty()) {
             item.detail=l10n::Pick(L"容量不可用",L"Capacity unavailable");

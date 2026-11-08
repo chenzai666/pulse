@@ -2249,9 +2249,7 @@ D2D1_RECT_F Painter::SidebarItemIconRect(const D2D1_RECT_F& bounds, bool status_
 }
 
 D2D1_RECT_F Painter::DriveSidebarItemIconRect(const D2D1_RECT_F& bounds) const {
-    const float left = bounds.left + Px(10.0f);
-    const float top = bounds.top + Px(6.0f);
-    return D2D1::RectF(left, top, left + Px(16.0f), top + Px(18.0f));
+    return LayoutDriveSidebarItem(bounds, scale_).icon;
 }
 
 D2D1_RECT_F Painter::SidebarSectionHeaderIconRect(const D2D1_RECT_F& bounds) const {
@@ -2326,35 +2324,15 @@ void Painter::DrawDriveSidebarItem(const DriveSidebarItemSpec& spec) {
     }
     const D2D1_COLOR_F foreground = spec.state.enabled ? theme_->text
                                                         : theme_->text_disabled;
-    auto content = spec.bounds;
-    content.left += Px(10.0f);
-    content.right -= Px(10.0f);
-    content.top += Px(6.0f);
-    content.bottom -= Px(8.0f);
-    const float icon_slot = Px(16.0f);
-    const float text_row = Px(18.0f);
+    const auto layout = LayoutDriveSidebarItem(spec.bounds, scale_);
     const D2D1_COLOR_F icon_color = spec.icon_color.a > 0.0f ? spec.icon_color : foreground;
     if (!spec.skip_glyph) {
-        DrawGlyph(spec.glyph,
-                  D2D1::RectF(content.left, content.top,
-                             content.left + icon_slot, content.top + text_row),
-                  icon_color);
+        DrawGlyph(spec.glyph, layout.icon, icon_color);
     }
-    const float text_left = content.left + icon_slot + Px(8.0f);
-    const float detail_width = MeasureTextWidth(compositor_->DwriteFactory(),
-                                                CaptionFormat(), spec.detail) + Px(6.0f);
-    DrawText(spec.name,
-             D2D1::RectF(text_left, content.top, content.right - detail_width,
-                        content.top + text_row),
-             NavFormat(), foreground);
-    DrawText(spec.detail,
-             D2D1::RectF(content.right - detail_width, content.top, content.right,
-                        content.top + text_row),
-             CaptionFormat(), theme_->text_secondary, HorizontalAlignment::Right);
+    DrawText(spec.name, layout.name, NavFormat(), foreground);
+    DrawText(spec.detail, layout.detail, CaptionFormat(), theme_->text_secondary);
 
-    const auto track = D2D1::RectF(text_left, content.bottom - Px(4.0f), content.right,
-                                   content.bottom);
-    DrawCapacityBar(track, spec.capacity,
+    DrawCapacityBar(layout.track, spec.capacity,
                     spec.bar_color.a > 0.0f ? spec.bar_color
                     : spec.icon_color.a > 0.0f ? spec.icon_color
                                                : theme_->accent);
