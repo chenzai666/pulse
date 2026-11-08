@@ -461,7 +461,7 @@ int RunHomeWidgetsTest(const wchar_t* output) {
     check(folders.sections[0].items.size()==8,"主页六个常用目录及回收站、固定文件夹去重后显示");
     sidebar.drives[0].capacity_valid=true;sidebar.drives[0].free_bytes=128ull<<30;sidebar.drives[0].total_bytes=256ull<<30;
     const auto capacity=app::BuildHomeWidgets(sidebar,places,0).sections[1].items[0].detail;
-    check(capacity.find(L"128.00 GiB")!=std::wstring::npos && capacity.find(L"256.00 GiB")!=std::wstring::npos,
+    check(capacity==l10n::Pick(L"128 GiB 可用，共 256 GiB",L"128 GiB free of 256 GiB"),
         "磁盘卡片由缓存显示完整可用空间和总容量");
     const auto wide=ui::HitHomeWidgets(folders,D2D1::RectF(0,0,1100,700),0,1,1050,100);
     check(wide.index==5 && wide.path==sidebar.home_folders[5].path,"宽主页六列卡片绘制与点击位置一致");

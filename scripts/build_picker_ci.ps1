@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Path $taskBuild -Force | Out-Null
 $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml', '.github/workflows/picker-plugin.yml', '.github/workflows/listary-adapter.yml',
     'scripts/build_listary_adapter.ps1', 'src/app/listary_adapter_endpoint.cpp', 'src/app/listary_adapter_endpoint.h',
     'src/app/listary_adapter_protocol.h', 'src/bench/listary_adapter_protocol_test.cpp',
-    'src/common/text_format.h', 'src/app/app_model.cpp', 'src/app/home_widgets.cpp',
+    'src/common/text_format.h', 'src/app/app_model.cpp', 'src/app/home_widgets.cpp', 'src/app/home_widgets_test.cpp',
     'src/ui/fluent_components.h', 'src/ui/fluent_components.cpp', 'src/bench/drive_capacity_format_test.cpp',
     'src/integrations/listary_search_client.h', 'src/integrations/listary_search_client.cpp',
     'src/bench/listary_search_client_test.cpp', 'src/ui/folder_picker_listary_search.h', 'src/ui/folder_picker_listary_search.cpp',
