@@ -49,8 +49,10 @@ struct WindowIdentity {
 
 enum class PendingDecision {
     FocusWait, InputDebounce, IdleWait, Ready, FilenameChanged, FocusChanged,
-    UnsafeInteraction, TargetChanged, Expired
+    UnsafeInteraction, TargetChanged, Expired, FilenameWait, GuiWait, UnprotectedInput
 };
+
+enum class FilenameProbeStatus { Ready, Missing, Ambiguous, WrongIdentity, Disabled, ReadFailed };
 
 struct PendingObservation {
     uint64_t now = 0;
@@ -59,6 +61,8 @@ struct PendingObservation {
     std::wstring_view filename;
     bool target_current = false, controls_ready = false, safe_focus = false;
     bool switching_input_down = false;
+    FilenameProbeStatus filename_status = FilenameProbeStatus::Ready;
+    bool gui_ready = true;
 };
 
 // Keep a returning dialog pending while Shell restores its focus. Input ticks
@@ -73,13 +77,39 @@ public:
         filename_control_ = filename_control;
         filename_ = std::move(filename);
         focus_ = focus;
+        have_filename_ = true;
+    }
+
+    void BeginBaseline(uint64_t now, uint32_t input_tick) {
+        Reset();
+        queued_at_ = now;
+        baseline_input_ = input_tick;
     }
 
     PendingDecision Observe(const PendingObservation& value) {
         if (!value.target_current) return PendingDecision::TargetChanged;
         if (value.now < queued_at_ || value.now - queued_at_ >= 1200) return PendingDecision::Expired;
+        if (!have_filename_ && value.input_tick != baseline_input_) return PendingDecision::UnprotectedInput;
+        if (value.gui_ready && !value.safe_focus) return PendingDecision::UnsafeInteraction;
+        if (value.gui_ready) {
+            if (focus_ && value.focus != focus_) return PendingDecision::FocusChanged;
+            if (value.focus) focus_ = value.focus;
+        }
+        if (value.filename_status != FilenameProbeStatus::Ready) {
+            if (have_filename_ || value.filename_status == FilenameProbeStatus::Ambiguous ||
+                value.filename_status == FilenameProbeStatus::WrongIdentity) return PendingDecision::FilenameChanged;
+            have_idle_ = false;
+            return PendingDecision::FilenameWait;
+        }
+        if (!have_filename_) {
+            if (!value.filename_control) return PendingDecision::FilenameChanged;
+            filename_control_ = value.filename_control;
+            filename_ = value.filename;
+            have_filename_ = true;
+        }
         if (!filename_control_ || value.filename_control != filename_control_ || value.filename != filename_)
             return PendingDecision::FilenameChanged;
+        if (!value.gui_ready) { have_idle_ = false; return PendingDecision::GuiWait; }
         if (!value.safe_focus) return PendingDecision::UnsafeInteraction;
         if (focus_ && value.focus != focus_) return PendingDecision::FocusChanged;
         if (!value.focus) {
@@ -105,7 +135,9 @@ public:
         queued_at_ = idle_at_ = 0;
         filename_control_ = focus_ = 0;
         input_tick_ = 0;
+        baseline_input_ = 0;
         have_idle_ = false;
+        have_filename_ = false;
         filename_.clear();
     }
     uint32_t input_tick() const noexcept { return input_tick_; }
@@ -113,8 +145,8 @@ public:
 private:
     uint64_t queued_at_ = 0, idle_at_ = 0;
     uintptr_t filename_control_ = 0, focus_ = 0;
-    uint32_t input_tick_ = 0;
-    bool have_idle_ = false;
+    uint32_t input_tick_ = 0, baseline_input_ = 0;
+    bool have_idle_ = false, have_filename_ = false;
     std::wstring filename_;
 };
 

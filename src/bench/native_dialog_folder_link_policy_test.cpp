@@ -116,6 +116,74 @@ int main() {
     Check(pending.Observe(observed) == PendingDecision::IdleWait, "time spent holding a switch key is excluded from idle");
     observed.now = 5451;
     Check(pending.Observe(observed) == PendingDecision::Ready, "released switch input dispatches only after a full stable idle period");
+    using pulse::app::folder_link::FilenameProbeStatus;
+    pending.BeginBaseline(6000, 90);
+    observed = {6000, 90, 101, 0, L"baseline.txt", true, true, true, false};
+    observed.gui_ready = false;
+    Check(pending.Observe(observed) == PendingDecision::GuiWait,
+          "filename is retained when initial GUI query is temporarily unavailable");
+    observed.now = 6050; observed.gui_ready = true; // Hidden in-dialog focus is normalized to zero by the native probe.
+    Check(pending.Observe(observed) == PendingDecision::FocusWait,
+          "hidden address focus does not become an established focus baseline");
+    observed.now = 6100; observed.focus = 0;
+    Check(pending.Observe(observed) == PendingDecision::FocusWait,
+          "hidden focus followed by no focus keeps the original baseline pending");
+    observed.now = 6150; observed.focus = 101; observed.input_tick = 91;
+    Check(pending.Observe(observed) == PendingDecision::InputDebounce,
+          "first visible safe focus starts a fresh idle interval after protected switch input");
+    observed.now = 6300;
+    Check(pending.Observe(observed) == PendingDecision::Ready,
+          "staged filename and visible focus permit dispatch after stable idle");
+    pending.BeginBaseline(7000, 100);
+    observed = {7000, 100, 101, 0, L"baseline.txt", true, true, true, false};
+    observed.gui_ready = false;
+    Check(pending.Observe(observed) == PendingDecision::GuiWait, "staged filename locks before GUI recovery");
+    observed.now = 7050; observed.filename = L"edited.txt";
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged,
+          "editing retained filename during GUI initialization cancels");
+    observed.filename = L"baseline.txt"; observed.filename_control = 102;
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged,
+          "replacing retained filename control during GUI initialization cancels");
+    pending.BeginBaseline(8000, 110);
+    observed = {8000, 110, 0, 101, L"", true, true, true, false, FilenameProbeStatus::Missing, true};
+    Check(pending.Observe(observed) == PendingDecision::FilenameWait,
+          "missing initial filename control can appear within the original deadline");
+    observed.now = 8050; observed.filename_status = FilenameProbeStatus::Ready;
+    observed.filename_control = 101; observed.filename = L"baseline.txt";
+    Check(pending.Observe(observed) == PendingDecision::InputDebounce,
+          "unchanged input permits first filename baseline after a missing-control wait");
+    pending.BeginBaseline(8500, 115);
+    observed = {8500, 115, 0, 101, L"", true, true, true, false, FilenameProbeStatus::Missing, true};
+    Check(pending.Observe(observed) == PendingDecision::FilenameWait,
+          "safe visible focus locks independently while the first filename control is unavailable");
+    observed.now = 8550; observed.focus = 102;
+    Check(pending.Observe(observed) == PendingDecision::FocusChanged,
+          "changing independently retained focus cancels even before filename initialization");
+    pending.BeginBaseline(9000, 120);
+    observed = {9000, 120, 0, 0, L"", true, false, true, false, FilenameProbeStatus::ReadFailed, false};
+    Check(pending.Observe(observed) == PendingDecision::FilenameWait, "transient first filename read failure remains pending");
+    observed.now = 9050; observed.input_tick = 121; observed.filename_status = FilenameProbeStatus::Ready;
+    observed.filename_control = 101; observed.filename = L"typed-during-read.txt";
+    Check(pending.Observe(observed) == PendingDecision::UnprotectedInput,
+          "post-read input change prevents newly typed text from becoming an initial baseline");
+    pending.BeginBaseline(10000, 130);
+    observed = {10000, 130, 0, 0, L"", true, false, true, false, FilenameProbeStatus::Disabled, false};
+    Check(pending.Observe(observed) == PendingDecision::FilenameWait, "temporarily disabled initial filename control is awaited");
+    observed.now = 11200;
+    Check(pending.Observe(observed) == PendingDecision::Expired, "staged baseline retries never extend the 1200ms total deadline");
+    pending.BeginBaseline(12000, 140);
+    observed = {12000, 140, 101, 101, L"baseline.txt", true, true, false, false};
+    Check(pending.Observe(observed) == PendingDecision::UnsafeInteraction,
+          "visible address editing and external focus remain unsafe during initialization");
+    observed.filename_status = FilenameProbeStatus::Missing;
+    Check(pending.Observe(observed) == PendingDecision::UnsafeInteraction,
+          "capture or menu is rejected even while filename control is missing");
+    observed.safe_focus = true; observed.filename_status = FilenameProbeStatus::Ambiguous;
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "ambiguous initial filename controls are never awaited");
+    observed.filename_status = FilenameProbeStatus::WrongIdentity;
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "wrong initial control identity is immediately rejected");
+    observed.target_current = false;
+    Check(pending.Observe(observed) == PendingDecision::TargetChanged, "staged baseline cannot survive loss of the exact foreground target");
     Transition t;
     using pulse::app::folder_link::CanReconcileForegroundReturn;
     ForegroundEventOrder reconciled_order;

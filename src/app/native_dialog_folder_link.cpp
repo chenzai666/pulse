@@ -246,23 +246,34 @@ BOOL CALLBACK FindFilenameControl(HWND window, LPARAM param) {
     if (combo) { ++found.count; found.edit = window; }
     return TRUE;
 }
-bool ReadFilename(const WindowIdentity& dialog, HWND& edit, std::wstring& text) {
+folder_link::FilenameProbeStatus ProbeFilename(const WindowIdentity& dialog, HWND& edit, std::wstring& text) {
+    using folder_link::FilenameProbeStatus;
     HWND window = reinterpret_cast<HWND>(dialog.window);
     FilenameControl found{window};
     EnumChildWindows(window, FindFilenameControl, reinterpret_cast<LPARAM>(&found));
-    if (found.count != 1 || !IsChild(window, found.edit) || !SameThread(found.edit, dialog) ||
-        !IsWindowEnabled(found.edit) || !ReadControl(found.edit, text) || !SameIdentity(dialog)) return false;
+    if (!found.count) return FilenameProbeStatus::Missing;
+    if (found.count != 1) return FilenameProbeStatus::Ambiguous;
+    if (!IsChild(window, found.edit) || !SameThread(found.edit, dialog) || !SameIdentity(dialog))
+        return FilenameProbeStatus::WrongIdentity;
+    if (!IsWindowEnabled(found.edit)) return FilenameProbeStatus::Disabled;
+    if (!ReadControl(found.edit, text)) return FilenameProbeStatus::ReadFailed;
+    if (!SameIdentity(dialog)) return FilenameProbeStatus::WrongIdentity;
     edit = found.edit;
-    return true;
+    return FilenameProbeStatus::Ready;
 }
-bool SafePendingFocus(const WindowIdentity& dialog, const GUITHREADINFO& info) {
-    if (info.hwndCapture ||
-        (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE))) return false;
+bool ReadFilename(const WindowIdentity& dialog, HWND& edit, std::wstring& text) {
+    return ProbeFilename(dialog, edit, text) == folder_link::FilenameProbeStatus::Ready;
+}
+bool SafePendingFocus(const WindowIdentity& dialog, const GUITHREADINFO& info, DWORD* reason = nullptr) {
+    const auto reject = [reason](DWORD value) { if (reason) *reason = value; return false; };
+    if (info.hwndCapture) return reject(1);
+    if (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE)) return reject(2);
     if (!info.hwndFocus) return true; // Shell may restore focus after the foreground event.
     HWND window = reinterpret_cast<HWND>(dialog.window);
-    if (!IsChild(window, info.hwndFocus) || !SameThread(info.hwndFocus, dialog)) return false;
+    if (!IsChild(window, info.hwndFocus) || !SameThread(info.hwndFocus, dialog)) return reject(3);
+    if (!IsWindowVisible(info.hwndFocus)) return true; // Stale hidden focus is not an established editor.
     for (HWND control = info.hwndFocus; control && control != window; control = GetParent(control))
-        if (ClassIs(control, L"Address Band Root")) return false;
+        if (ClassIs(control, L"Address Band Root")) return reject(4);
     return true;
 }
 
@@ -710,6 +721,8 @@ struct Watcher {
     std::wstring pending_folder;
     folder_link::PendingNavigation pending_wait;
     bool focus_wait_reported = false, input_debounce_reported = false;
+    uint32_t baseline_wait_reported = 0;
+    bool baseline_ready_reported = false;
     bool navigating = false;
 
     void CancelPending(const wchar_t* event = L"pending_cancel") {
@@ -717,6 +730,8 @@ struct Watcher {
         pending_dialog = {}; pending_pulse = {}; pending_folder.clear();
         pending_wait.Reset();
         focus_wait_reported = input_debounce_reported = false;
+        baseline_wait_reported = 0;
+        baseline_ready_reported = false;
     }
 
     void OnTimer() {
@@ -737,11 +752,13 @@ struct Watcher {
         if (!GetLastInputInfo(&input)) { CancelPending(); return; }
         HWND filename_control = nullptr;
         std::wstring filename;
-        if (!ReadFilename(pending_dialog, filename_control, filename)) {
-            CancelPending(L"pending_cancel_filename_control"); return;
-        }
+        const auto filename_status = ProbeFilename(pending_dialog, filename_control, filename);
         GUITHREADINFO info{sizeof(info)};
-        if (!GetGUIThreadInfo(pending_dialog.thread, &info)) { CancelPending(); return; }
+        const bool gui_ready = GetGUIThreadInfo(pending_dialog.thread, &info) != FALSE;
+        DWORD focus_rejection = 0;
+        const bool safe_focus = gui_ready && SafePendingFocus(pending_dialog, info, &focus_rejection);
+        const bool hidden_focus = safe_focus && info.hwndFocus && !IsWindowVisible(info.hwndFocus);
+        const HWND visible_focus = hidden_focus ? nullptr : info.hwndFocus;
         bool switching_input_down = false;
         for (const int key : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
                               VK_CONTROL, VK_SHIFT, VK_MENU, VK_TAB, VK_LWIN, VK_RWIN})
@@ -750,22 +767,50 @@ struct Watcher {
         const bool controls_ready = FindBand(reinterpret_cast<HWND>(pending_dialog.window), controls) &&
             SameThread(controls.band, pending_dialog) && SameThread(controls.toolbar, pending_dialog) &&
             IsWindowEnabled(controls.toolbar);
+        // Baseline acquisition crosses processes. Observe the input state
+        // afterwards so typing during the read cannot become a new baseline.
+        if (!GetLastInputInfo(&input)) { CancelPending(); return; }
         const auto decision = pending_wait.Observe({GetTickCount64(), input.dwTime,
-            reinterpret_cast<uintptr_t>(filename_control), reinterpret_cast<uintptr_t>(info.hwndFocus), filename,
+            reinterpret_cast<uintptr_t>(filename_control), reinterpret_cast<uintptr_t>(visible_focus), filename,
             GetForegroundWindow() == reinterpret_cast<HWND>(pending_dialog.window) && SameIdentity(pending_dialog),
-            controls_ready, SafePendingFocus(pending_dialog, info), switching_input_down});
+            controls_ready, safe_focus, switching_input_down, filename_status, gui_ready});
         using folder_link::PendingDecision;
+        if (!baseline_ready_reported && gui_ready && safe_focus && visible_focus &&
+            (decision == PendingDecision::InputDebounce || decision == PendingDecision::IdleWait ||
+             decision == PendingDecision::Ready)) {
+            TraceFolderLink(L"pending_baseline_ready"); baseline_ready_reported = true;
+        }
         switch (decision) {
-        case PendingDecision::FocusWait:
-            if (!focus_wait_reported) { TraceFolderLink(L"pending_focus_wait"); focus_wait_reported = true; }
+        case PendingDecision::FilenameWait:
+        case PendingDecision::GuiWait: {
+            const DWORD reason = decision == PendingDecision::GuiWait ? 8 : static_cast<DWORD>(filename_status);
+            const uint32_t bit = 1u << reason;
+            if (!(baseline_wait_reported & bit)) {
+                TraceFolderLink(L"pending_baseline_wait", reason); baseline_wait_reported |= bit;
+            }
             return;
+        }
+        case PendingDecision::UnprotectedInput: CancelPending(L"pending_cancel_unprotected_input"); return;
+        case PendingDecision::FocusWait: {
+            const DWORD reason = hidden_focus ? 9 : 10;
+            const uint32_t bit = 1u << reason;
+            if (!(baseline_wait_reported & bit)) {
+                TraceFolderLink(L"pending_baseline_wait", reason); baseline_wait_reported |= bit;
+            }
+            if (!focus_wait_reported) { TraceFolderLink(L"pending_focus_wait", hidden_focus ? 1 : 0); focus_wait_reported = true; }
+            return;
+        }
         case PendingDecision::InputDebounce:
             if (!input_debounce_reported) { TraceFolderLink(L"pending_input_debounce"); input_debounce_reported = true; }
             return;
         case PendingDecision::IdleWait: return;
-        case PendingDecision::FilenameChanged: CancelPending(L"pending_filename_changed"); return;
+        case PendingDecision::FilenameChanged:
+            TraceFolderLink(L"pending_filename_probe_rejected", static_cast<DWORD>(filename_status));
+            CancelPending(L"pending_filename_changed"); return;
         case PendingDecision::FocusChanged: CancelPending(L"pending_cancel_focus"); return;
-        case PendingDecision::UnsafeInteraction: CancelPending(L"pending_cancel_interaction"); return;
+        case PendingDecision::UnsafeInteraction:
+            TraceFolderLink(L"pending_baseline_unsafe", focus_rejection);
+            CancelPending(L"pending_cancel_interaction"); return;
         case PendingDecision::TargetChanged: CancelPending(L"pending_cancel_target"); return;
         case PendingDecision::Expired: CancelPending(L"pending_cancel_timeout"); return;
         case PendingDecision::Ready: break;
@@ -898,17 +943,15 @@ struct Watcher {
         if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), shared->owner_pid, current_pulse, folder)) {
             if (transition.Consume(identity, current_pulse, folder, GetTickCount64())) {
                 const ULONGLONG queued_at = GetTickCount64();
-                HWND filename_control = nullptr;
-                std::wstring filename;
-                GUITHREADINFO info{sizeof(info)};
-                if (ReadFilename(identity, filename_control, filename) &&
-                    GetGUIThreadInfo(identity.thread, &info) && SafePendingFocus(identity, info) &&
-                    window == GetForegroundWindow() && SameIdentity(identity)) {
+                LASTINPUTINFO input{sizeof(input), 0};
+                if (GetLastInputInfo(&input) && window == GetForegroundWindow() && SameIdentity(identity)) {
                     pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
-                    pending_wait.Begin(queued_at, reinterpret_cast<uintptr_t>(filename_control),
-                        std::move(filename), reinterpret_cast<uintptr_t>(info.hwndFocus));
+                    pending_wait.BeginBaseline(queued_at, input.dwTime);
                     focus_wait_reported = input_debounce_reported = false;
+                    baseline_wait_reported = 0;
+                    baseline_ready_reported = false;
                     TraceFolderLink(L"pending_queued");
+                    OnTimer(); // Acquire each available baseline now; never restart queued_at.
                 } else TraceFolderLink(L"pending_cancel_baseline");
             } else TraceFolderLink(L"foreground_transition_rejected");
         } else {
