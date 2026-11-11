@@ -832,6 +832,22 @@ struct Watcher {
             pulse = identity;
             transition.PulseForeground(identity, std::move(folder));
             TraceFolderLink(L"foreground_source_ready");
+            // The source callback may arrive after the dialog's callback.
+            // Reconcile a current snapshot only for the exact dialog which
+            // this watcher already observed and marked. Do not synthesize a
+            // foreground event or advance the real WinEvent timestamp order.
+            HWND current = GetForegroundWindow();
+            WindowIdentity current_dialog{};
+            if (current != window && current == shared->marked_window &&
+                DialogIdentity(current, current_dialog) && SameIdentity(last_dialog) &&
+                folder_link::CanReconcileForegroundReturn(GetTickCount(), event_time,
+                    last_dialog, current_dialog, current == window,
+                    !shared->marker.empty() &&
+                    GetPropW(current, shared->marker.c_str()) == reinterpret_cast<HANDLE>(1)) &&
+                current == GetForegroundWindow()) {
+                TraceFolderLink(L"foreground_return_reconciled");
+                HandleCurrentDialog(current, current_dialog);
+            }
             return;
         }
         DWORD candidate_pid = 0;
@@ -849,6 +865,11 @@ struct Watcher {
             transition.DialogForeground(identity, GetTickCount64());
             return;
         }
+        HandleCurrentDialog(window, identity);
+    }
+
+    void HandleCurrentDialog(HWND window, const WindowIdentity& identity) {
+        std::wstring folder;
         if (identity == pending_dialog) return;
         if (!(identity == last_dialog) || shared->marked_window != window) {
             ClearMarker();

@@ -117,6 +117,41 @@ int main() {
     observed.now = 5451;
     Check(pending.Observe(observed) == PendingDecision::Ready, "released switch input dispatches only after a full stable idle period");
     Transition t;
+    using pulse::app::folder_link::CanReconcileForegroundReturn;
+    ForegroundEventOrder reconciled_order;
+    Check(reconciled_order.Accept(1000, 1000), "real dialog callback is accepted before delayed source callback");
+    t.DialogForeground(dialog, 1000);
+    Check(reconciled_order.Accept(1010, 1000), "same-tick delayed Pulse callback preserves real event ordering");
+    t.PulseForeground(pulse_window, L"C:\\final");
+    const bool reconcile = CanReconcileForegroundReturn(1010, 1000, dialog, dialog, false, true);
+    if (reconcile) t.DialogForeground(dialog, 1010);
+    Check(reconcile && t.Consume(dialog, pulse_window, L"C:\\final", 1010),
+          "dialog then historical Pulse callback reconciles exact current dialog return");
+    Check(reconciled_order.Accept(1010, 1005),
+          "current foreground snapshot does not fabricate a newer WinEvent timestamp");
+    Check(!CanReconcileForegroundReturn(1010, 1000, {}, dialog, false, true),
+          "unknown dialog is never reconciled from a historical source callback");
+    Check(!CanReconcileForegroundReturn(1010, 1000, dialog, WindowIdentity{13, 23, 33, 43}, false, true),
+          "replacement current dialog cannot inherit an observed return target");
+    Check(!CanReconcileForegroundReturn(1010, 1000, dialog, {}, false, true),
+          "non-dialog foreground does not reconcile a return");
+    Check(!CanReconcileForegroundReturn(1010, 1000, dialog, dialog, true, true),
+          "still-current Pulse source waits for a normal dialog foreground callback");
+    Check(!CanReconcileForegroundReturn(1501, 1000, dialog, dialog, false, true),
+          "source event older than 500ms cannot reconcile current dialog");
+    Check(!CanReconcileForegroundReturn(999, 1000, dialog, dialog, false, true),
+          "future source timestamp cannot reconcile current dialog");
+    Check(!CanReconcileForegroundReturn(1010, 1000, dialog, dialog, false, false),
+          "revoked marker prevents historical source reconciliation");
+    Check(CanReconcileForegroundReturn(1500, 1000, dialog, dialog, false, true),
+          "source event at the accepted 500ms boundary remains eligible");
+    Check(CanReconcileForegroundReturn(10, 0xfffffff0u, dialog, dialog, false, true),
+          "historical source freshness handles tick count wrap");
+    t.DialogForeground(dialog, 2000);
+    t.PulseForeground(pulse_window, L"C:\\final");
+    t.DialogForeground(dialog, 2010);
+    Check(t.Consume(dialog, pulse_window, L"C:\\final", 2010),
+          "normal ordered Pulse then dialog return still follows without reconciliation");
     t.DialogForeground(dialog, 100);
     t.InterveningForeground(110); // Taskbar while switching away from dialog.
     t.PulseForeground(pulse_window, L"C:\\initial");

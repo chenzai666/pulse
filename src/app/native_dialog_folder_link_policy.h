@@ -136,6 +136,17 @@ private:
     bool have_event_ = false;
 };
 
+// An accepted Pulse event can arrive after the already observed dialog has
+// returned. Reconcile only that exact current target; this snapshot is not a
+// new WinEvent and must never advance ForegroundEventOrder.
+inline bool CanReconcileForegroundReturn(uint32_t now, uint32_t source_event_time,
+    const WindowIdentity& observed_dialog, const WindowIdentity& current_dialog,
+    bool source_is_current, bool marker_valid) noexcept {
+    const int32_t age = static_cast<int32_t>(now - source_event_time);
+    return age >= 0 && age <= 500 && !source_is_current && marker_valid &&
+        observed_dialog.valid() && current_dialog.valid() && observed_dialog == current_dialog;
+}
+
 // This policy only decides *when* a candidate is eligible for inspection.
 // It never validates window controls or sends messages. The caller must
 // independently revalidate the identities, foreground, integrity and controls
