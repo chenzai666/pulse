@@ -20,6 +20,13 @@ namespace pulse::app {
 using Microsoft::WRL::ComPtr;
 using folder_link::WindowIdentity;
 
+namespace {
+std::atomic<NativeFolderLinkTrace> folder_link_trace{nullptr};
+}
+void SetNativeFolderLinkTrace(NativeFolderLinkTrace callback) noexcept {
+    folder_link_trace.store(callback, std::memory_order_release);
+}
+
 // Shared with the owning parent process. The helper publishes immutable
 // identity and text before publishing a stage with an interlocked operation.
 // The parent consumes it only after the helper process is signaled.
@@ -74,6 +81,16 @@ void TraceFolderLink(const wchar_t* event, DWORD status = 0) {
     swprintf_s(line, L"Pulse.NativeFolderLink event=%s pid=%lu status=%lu\n",
                event, GetCurrentProcessId(), status);
     OutputDebugStringW(line);
+    if (const auto callback = folder_link_trace.load(std::memory_order_acquire)) {
+        char name[128]{};
+        size_t length = 0;
+        for (; event[length] && length + 1 < ARRAYSIZE(name); ++length) {
+            const wchar_t value = event[length];
+            if (value > 127) return; // Only fixed ASCII event tokens may reach the sink.
+            name[length] = static_cast<char>(value);
+        }
+        if (!event[length]) callback(name, status);
+    }
 }
 
 bool ClassIs(HWND window, const wchar_t* expected) {
@@ -518,33 +535,57 @@ struct RecoverySession {
 void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
               const std::shared_ptr<NativeDialogFolderLink::Shared>& shared, IUIAutomation* automation,
               const DWORD* expected_input = nullptr) {
+    TraceFolderLink(L"navigate_begin");
     LASTINPUTINFO input{sizeof(input), 0};
-    if ((shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) ||
-        !GetLastInputInfo(&input) || (expected_input && input.dwTime != *expected_input) ||
-        !Current(dialog, shared, input.dwTime) || !IsFolderSourcePath(folder)) return;
+    if (shared->recovery && InterlockedCompareExchange(&shared->recovery->stage, 0, 0) != 0) {
+        TraceFolderLink(L"navigate_source_rejected", 1); return;
+    }
+    if (!GetLastInputInfo(&input)) { TraceFolderLink(L"navigate_source_rejected", 2); return; }
+    if (expected_input && input.dwTime != *expected_input) { TraceFolderLink(L"navigate_source_rejected", 3); return; }
+    if (!Current(dialog, shared, input.dwTime)) { TraceFolderLink(L"navigate_source_rejected", 4); return; }
+    if (!IsFolderSourcePath(folder)) { TraceFolderLink(L"navigate_source_rejected", 5); return; }
     const DWORD attributes = GetFileAttributesW(folder.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
-        !Current(dialog, shared, input.dwTime)) return;
+        !Current(dialog, shared, input.dwTime)) {
+        TraceFolderLink(L"navigate_source_attributes_rejected", attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0); return;
+    }
+    TraceFolderLink(L"navigate_source_ready");
     HWND window = reinterpret_cast<HWND>(dialog.window);
     Controls controls;
     if (!FindBand(window, controls) || !SameThread(controls.band, dialog) ||
-        !SameThread(controls.toolbar, dialog) || !IsWindowEnabled(controls.toolbar)) return;
+        !SameThread(controls.toolbar, dialog) || !IsWindowEnabled(controls.toolbar)) {
+        TraceFolderLink(L"navigate_controls_rejected"); return;
+    }
+    TraceFolderLink(L"navigate_controls_ready");
     GUITHREADINFO info{sizeof(info)};
     if (!GetGUIThreadInfo(dialog.thread, &info) || !info.hwndFocus || info.hwndCapture ||
         (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE)) ||
         !IsChild(window, info.hwndFocus) || !SameThread(info.hwndFocus, dialog) ||
-        info.hwndFocus == controls.band || IsChild(controls.band, info.hwndFocus)) return;
+        info.hwndFocus == controls.band || IsChild(controls.band, info.hwndFocus)) {
+        TraceFolderLink(L"navigate_focus_rejected", info.flags); return;
+    }
+    TraceFolderLink(L"navigate_focus_ready");
     HWND original_focus = info.hwndFocus;
     ComPtr<IUIAutomationElement> original;
-    if (FAILED(automation->ElementFromHandle(original_focus, &original)) || !original) return;
+    const HRESULT focus_uia = automation->ElementFromHandle(original_focus, &original);
+    if (FAILED(focus_uia) || !original) { TraceFolderLink(L"navigate_uia_rejected", static_cast<DWORD>(focus_uia)); return; }
+    TraceFolderLink(L"navigate_uia_ready");
     POINT point{};
-    if (!BlankPoint(automation, controls.toolbar, point) || !Current(dialog, shared, input.dwTime)) return;
+    if (!BlankPoint(automation, controls.toolbar, point) || !Current(dialog, shared, input.dwTime)) {
+        TraceFolderLink(L"navigate_blank_rejected", 1); return;
+    }
+    TraceFolderLink(L"navigate_blank_ready", 1);
     Controls check;
     if (!FindBand(window, check) || check.band != controls.band || check.toolbar != controls.toolbar ||
-        !SameThread(check.toolbar, dialog) || !FocusIs(dialog.thread, original_focus)) return;
+        !SameThread(check.toolbar, dialog) || !FocusIs(dialog.thread, original_focus)) {
+        TraceFolderLink(L"navigate_controls_rejected", 2); return;
+    }
     POINT again{};
     if (!BlankPoint(automation, check.toolbar, again) || again.x != point.x || again.y != point.y ||
-        !Current(dialog, shared, input.dwTime) || !FocusIs(dialog.thread, original_focus)) return;
+        !Current(dialog, shared, input.dwTime) || !FocusIs(dialog.thread, original_focus)) {
+        TraceFolderLink(L"navigate_blank_rejected", 2); return;
+    }
+    TraceFolderLink(L"navigate_blank_ready", 2);
     RecoverySession recovery(shared->recovery);
     if (auto* r = shared->recovery) {
         r->pid = dialog.process; r->thread = dialog.thread; r->created = dialog.process_created;
@@ -560,12 +601,20 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     ReleaseToolbar release{dialog, shared, input.dwTime, controls.band, check.toolbar};
     release.down_attempted = true;
     recovery.Publish(1);
-    if (!SendTimed(check.toolbar, WM_LBUTTONDOWN, MK_LBUTTON, position, ignored)) return;
+    if (!SendTimed(check.toolbar, WM_LBUTTONDOWN, MK_LBUTTON, position, ignored)) {
+        TraceFolderLink(L"navigate_toolbar_down_rejected", GetLastError()); return;
+    }
+    TraceFolderLink(L"navigate_toolbar_down");
     // Mouse-up is directed to the same verified toolbar, even if the down
     // handler changed focus. Never send a message to a replacement window.
     if (!Current(dialog, shared, input.dwTime) || !SameThread(check.toolbar, dialog) ||
-        !IsChild(check.band, check.toolbar) || !ClassIs(check.toolbar, L"ToolbarWindow32")) return;
-    if (!SendTimed(check.toolbar, WM_LBUTTONUP, 0, position, ignored)) return;
+        !IsChild(check.band, check.toolbar) || !ClassIs(check.toolbar, L"ToolbarWindow32")) {
+        TraceFolderLink(L"navigate_toolbar_up_rejected", 1); return;
+    }
+    if (!SendTimed(check.toolbar, WM_LBUTTONUP, 0, position, ignored)) {
+        TraceFolderLink(L"navigate_toolbar_up_rejected", GetLastError()); return;
+    }
+    TraceFolderLink(L"navigate_toolbar_up");
     release.up_sent = true;
     recovery.Publish(2);
     // Mouse-up succeeded and no address text has changed. An editor which
@@ -573,48 +622,66 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     // Clear this stage on return so it cannot retire the helper permanently.
     recovery.complete = true;
     const ULONGLONG editor_deadline = GetTickCount64() + 500;
+    DWORD editor_cancel = 0;
     const bool editor_ready = folder_link::WaitForAddressEditor([&] {
-        if (GetTickCount64() > editor_deadline || !Current(dialog, shared, input.dwTime))
-            return folder_link::AddressEditorState::Cancelled;
+        if (GetTickCount64() > editor_deadline) { editor_cancel = 1; return folder_link::AddressEditorState::Cancelled; }
+        if (!Current(dialog, shared, input.dwTime)) { editor_cancel = 5; return folder_link::AddressEditorState::Cancelled; }
         if (!FindBand(window, check, false) || check.band != controls.band ||
-            !SameThread(check.band, dialog)) return folder_link::AddressEditorState::Cancelled;
+            !SameThread(check.band, dialog)) { editor_cancel = 2; return folder_link::AddressEditorState::Cancelled; }
         GUITHREADINFO current{sizeof(current)};
         if (!GetGUIThreadInfo(dialog.thread, &current) || current.hwndCapture ||
             (current.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE)))
-            return folder_link::AddressEditorState::Cancelled;
+            { editor_cancel = 3; return folder_link::AddressEditorState::Cancelled; }
         if (check.edits == 1 && SameThread(check.edit, dialog) && IsWindowEnabled(check.edit) &&
             current.hwndFocus == check.edit) return folder_link::AddressEditorState::Ready;
         if (current.hwndFocus && current.hwndFocus != original_focus && current.hwndFocus != controls.band &&
-            !IsChild(controls.band, current.hwndFocus)) return folder_link::AddressEditorState::Cancelled;
+            !IsChild(controls.band, current.hwndFocus)) { editor_cancel = 4; return folder_link::AddressEditorState::Cancelled; }
         return folder_link::AddressEditorState::Pending;
     }, [] { Sleep(20); });
-    if (!editor_ready) { TraceFolderLink(L"address_editor_not_ready"); return; }
+    if (!editor_ready) { TraceFolderLink(L"address_editor_not_ready"); TraceFolderLink(L"navigate_editor_wait_cancel", editor_cancel); return; }
+    TraceFolderLink(L"navigate_editor_ready");
     HWND edit = check.edit;
     RestoreAddress restore_address{dialog, shared, input.dwTime, controls.band, edit, folder};
-    if (!ReadControl(edit, restore_address.previous) || !Current(dialog, shared, input.dwTime) ||
-        !FocusIs(dialog.thread, edit)) return;
-    if (SamePhysicalFolder(restore_address.previous, folder)) { recovery.complete = true; return; }
+    if (!ReadControl(edit, restore_address.previous)) { TraceFolderLink(L"navigate_read_rejected", 1); return; }
+    if (!Current(dialog, shared, input.dwTime)) { TraceFolderLink(L"navigate_read_rejected", 2); return; }
+    if (!FocusIs(dialog.thread, edit)) { TraceFolderLink(L"navigate_read_rejected", 3); return; }
+    TraceFolderLink(L"navigate_read_ready");
+    if (SamePhysicalFolder(restore_address.previous, folder)) {
+        recovery.complete = true; TraceFolderLink(L"navigate_already_current"); return;
+    }
     if (auto* r = shared->recovery) {
         r->edit = reinterpret_cast<uintptr_t>(edit);
         if (wcscpy_s(r->original_text, restore_address.previous.c_str()) ||
-            wcscpy_s(r->attempted_text, folder.c_str())) return;
+            wcscpy_s(r->attempted_text, folder.c_str())) { TraceFolderLink(L"navigate_recovery_copy_rejected"); return; }
     }
     recovery.complete = false; // From here a failed write may need recovery.
     recovery.Publish(3);
-    if (!SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(folder.c_str()), ignored) || !ignored) return;
+    if (!SendTimed(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(folder.c_str()), ignored) || !ignored) {
+        TraceFolderLink(L"navigate_settext_rejected", GetLastError()); return;
+    }
+    TraceFolderLink(L"navigate_settext");
     restore_address.changed = true;
     recovery.Publish(4);
     std::wstring text;
-    if (!Current(dialog, shared, input.dwTime) || !FindBand(window, check, false) || check.edit != edit ||
-        check.edits != 1 || !SameThread(edit, dialog) || !FocusIs(dialog.thread, edit) ||
-        !ReadControl(edit, text) || text != folder || !Current(dialog, shared, input.dwTime) ||
-        !FocusIs(dialog.thread, edit)) return;
+    if (!Current(dialog, shared, input.dwTime)) { TraceFolderLink(L"navigate_readback_rejected", 1); return; }
+    if (!FindBand(window, check, false) || check.edit != edit || check.edits != 1 || !SameThread(edit, dialog)) {
+        TraceFolderLink(L"navigate_readback_rejected", 2); return;
+    }
+    if (!FocusIs(dialog.thread, edit)) { TraceFolderLink(L"navigate_readback_rejected", 3); return; }
+    if (!ReadControl(edit, text)) { TraceFolderLink(L"navigate_readback_rejected", 4); return; }
+    if (text != folder) { TraceFolderLink(L"navigate_readback_rejected", 5); return; }
+    if (!Current(dialog, shared, input.dwTime)) { TraceFolderLink(L"navigate_readback_rejected", 6); return; }
+    if (!FocusIs(dialog.thread, edit)) { TraceFolderLink(L"navigate_readback_rejected", 7); return; }
+    TraceFolderLink(L"navigate_readback_ready");
     // Only the proven, focused Address Band edit receives Enter. No global
     // input and no WM_COMMAND / IDOK are ever sent by Pulse.
     ReleaseReturn release_return{dialog, shared, input.dwTime, controls.band, edit};
     release_return.attempted = true;
     recovery.Publish(5);
-    if (!SendTimed(edit, WM_KEYDOWN, VK_RETURN, 0, ignored)) return;
+    if (!SendTimed(edit, WM_KEYDOWN, VK_RETURN, 0, ignored)) {
+        TraceFolderLink(L"navigate_enter_rejected", GetLastError()); return;
+    }
+    TraceFolderLink(L"navigate_enter");
     restore_address.submitted = true;
     recovery.Publish(6);
 #ifdef PULSE_WITH_SELFTEST
@@ -628,6 +695,7 @@ void Navigate(const WindowIdentity& dialog, const std::wstring& folder,
     // destroyed immediately; never retain an uncommitted recovery stage for
     // that completed operation. ReleaseReturn still pairs key-up when safe.
     recovery.complete = true;
+    TraceFolderLink(L"navigate_commit");
 }
 
 struct Watcher {
@@ -763,18 +831,21 @@ struct Watcher {
         if (PulseFolder(window, shared->owner_pid, identity, folder)) {
             pulse = identity;
             transition.PulseForeground(identity, std::move(folder));
+            TraceFolderLink(L"foreground_source_ready");
             return;
         }
         DWORD candidate_pid = 0;
         GetWindowThreadProcessId(window, &candidate_pid);
         if (candidate_pid == shared->owner_pid && ClassIs(window, L"PulseCustomMainWindow")) {
             // A virtual page or revoked source is not an intervening app.
+            TraceFolderLink(L"foreground_source_rejected");
             CancelPending(); transition.OtherForeground(); pulse = {}; return;
         }
         if (!DialogIdentity(window, identity)) {
             CancelPending(); transition.InterveningForeground(GetTickCount64()); return;
         }
         if (window != GetForegroundWindow()) {
+            TraceFolderLink(L"foreground_dialog_historical");
             transition.DialogForeground(identity, GetTickCount64());
             return;
         }
@@ -787,6 +858,7 @@ struct Watcher {
                 (shared->supervisor && WaitForSingleObject(shared->supervisor, 0) != WAIT_TIMEOUT) ||
                 (shared->owner && WaitForSingleObject(shared->owner, 0) != WAIT_TIMEOUT) ||
                 !SetPropW(window, shared->marker.c_str(), reinterpret_cast<HANDLE>(1))) {
+                TraceFolderLink(L"foreground_marker_rejected", GetLastError());
                 transition.OtherForeground(); last_dialog = {}; return;
             }
             shared->marked_window = window;
@@ -797,6 +869,7 @@ struct Watcher {
                 ClearMarker(); transition.OtherForeground(); last_dialog = {}; return;
             }
         } else if (GetPropW(window, shared->marker.c_str()) != reinterpret_cast<HANDLE>(1)) {
+            TraceFolderLink(L"foreground_marker_revoked");
             transition.OtherForeground(); shared->marked_window = nullptr; last_dialog = {}; return;
         }
         transition.DialogForeground(identity, GetTickCount64());
@@ -816,8 +889,11 @@ struct Watcher {
                     focus_wait_reported = input_debounce_reported = false;
                     TraceFolderLink(L"pending_queued");
                 } else TraceFolderLink(L"pending_cancel_baseline");
-            }
-        } else transition.OtherForeground();
+            } else TraceFolderLink(L"foreground_transition_rejected");
+        } else {
+            TraceFolderLink(L"foreground_dialog_source_rejected", pulse.valid() ? 1 : 0);
+            transition.OtherForeground();
+        }
         last_dialog = identity;
         // Preserve this dialog as the beginning of the next transition even
         // after an attempted navigation consumed the preceding sequence.

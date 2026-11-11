@@ -2905,11 +2905,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             if (!end || *end || !value || value > static_cast<unsigned long long>(UINTPTR_MAX)) return nullptr;
             return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value));
         };
-        if (__argc == 7)
-            return app::NativeDialogFolderLinkHelper(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
-                                                     handle_arg(__wargv[4]), handle_arg(__wargv[5]), __wargv[6]);
-        return app::NativeDialogFolderLinkSupervisor(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
-            handle_arg(__wargv[4]), handle_arg(__wargv[5]), handle_arg(__wargv[6]), __wargv[7]);
+        diagnostics::runtime::Initialize(app::GetPulseDataDir(),
+            __argc == 7 ? "native-folder-link" : "native-folder-link-supervisor");
+        app::SetNativeFolderLinkTrace([](const char* event, DWORD status) {
+            diagnostics::runtime::Event(event, {{"status", status}});
+        });
+        const int result = __argc == 7
+            ? app::NativeDialogFolderLinkHelper(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
+                handle_arg(__wargv[4]), handle_arg(__wargv[5]), __wargv[6])
+            : app::NativeDialogFolderLinkSupervisor(handle_arg(__wargv[2]), handle_arg(__wargv[3]),
+                handle_arg(__wargv[4]), handle_arg(__wargv[5]), handle_arg(__wargv[6]), __wargv[7]);
+        app::SetNativeFolderLinkTrace(nullptr);
+        diagnostics::runtime::Shutdown();
+        return result;
     }
 #ifdef PULSE_WITH_SELFTEST
     std::optional<CLSID> tag_com_audit_class;

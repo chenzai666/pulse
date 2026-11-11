@@ -6,6 +6,12 @@
 
 namespace pulse::app {
 
+// Optional process-local sink. Event names are fixed ASCII tokens and status
+// contains numeric OS/stage data only. The sink must be nonblocking and must
+// remain valid until it is unregistered and the helper has stopped.
+using NativeFolderLinkTrace = void (*)(const char* event, DWORD status);
+void SetNativeFolderLinkTrace(NativeFolderLinkTrace callback) noexcept;
+
 // Isolates foreground observation and external UIA calls in an owned process.
 // The parent maintains its job and never waits indefinitely for the helper.
 class NativeDialogFolderLink {
