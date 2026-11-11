@@ -214,6 +214,41 @@ bool SameThread(HWND child, const WindowIdentity& dialog) {
     return GetWindowThreadProcessId(child, &pid) == dialog.thread && pid == dialog.process;
 }
 
+struct FilenameControl {
+    HWND dialog = nullptr, edit = nullptr;
+    int count = 0;
+};
+BOOL CALLBACK FindFilenameControl(HWND window, LPARAM param) {
+    auto& found = *reinterpret_cast<FilenameControl*>(param);
+    if (!ClassIs(window, L"Edit") || GetDlgCtrlID(window) != 1001 || !IsWindowVisible(window)) return TRUE;
+    bool combo = false;
+    for (HWND parent = GetParent(window); parent && parent != found.dialog; parent = GetParent(parent)) {
+        if (ClassIs(parent, L"Address Band Root")) return TRUE;
+        if (ClassIs(parent, L"ComboBox") || ClassIs(parent, L"ComboBoxEx32")) combo = true;
+    }
+    if (combo) { ++found.count; found.edit = window; }
+    return TRUE;
+}
+bool ReadFilename(const WindowIdentity& dialog, HWND& edit, std::wstring& text) {
+    HWND window = reinterpret_cast<HWND>(dialog.window);
+    FilenameControl found{window};
+    EnumChildWindows(window, FindFilenameControl, reinterpret_cast<LPARAM>(&found));
+    if (found.count != 1 || !IsChild(window, found.edit) || !SameThread(found.edit, dialog) ||
+        !IsWindowEnabled(found.edit) || !ReadControl(found.edit, text) || !SameIdentity(dialog)) return false;
+    edit = found.edit;
+    return true;
+}
+bool SafePendingFocus(const WindowIdentity& dialog, const GUITHREADINFO& info) {
+    if (info.hwndCapture ||
+        (info.flags & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE))) return false;
+    if (!info.hwndFocus) return true; // Shell may restore focus after the foreground event.
+    HWND window = reinterpret_cast<HWND>(dialog.window);
+    if (!IsChild(window, info.hwndFocus) || !SameThread(info.hwndFocus, dialog)) return false;
+    for (HWND control = info.hwndFocus; control && control != window; control = GetParent(control))
+        if (ClassIs(control, L"Address Band Root")) return false;
+    return true;
+}
+
 bool IdleSince(DWORD tick) {
     LASTINPUTINFO input{sizeof(input), 0};
     return GetLastInputInfo(&input) && input.dwTime == tick;
@@ -605,48 +640,21 @@ struct Watcher {
     UINT_PTR poll_timer = 0;
     WindowIdentity pending_dialog{}, pending_pulse{};
     std::wstring pending_folder;
-    ULONGLONG queued_at = 0, idle_at = 0;
-    DWORD idle_input = 0;
+    folder_link::PendingNavigation pending_wait;
+    bool focus_wait_reported = false, input_debounce_reported = false;
     bool navigating = false;
 
-    void CancelPending() {
+    void CancelPending(const wchar_t* event = L"pending_cancel") {
+        if (pending_dialog.valid() && event) TraceFolderLink(event);
         pending_dialog = {}; pending_pulse = {}; pending_folder.clear();
-        queued_at = 0; idle_at = 0; idle_input = 0;
+        pending_wait.Reset();
+        focus_wait_reported = input_debounce_reported = false;
     }
 
     void OnTimer() {
         if (!pending_dialog.valid() || navigating) return;
-        const ULONGLONG now = GetTickCount64();
-        if (shared->stopping || now - queued_at > 1200 ||
-            GetForegroundWindow() != reinterpret_cast<HWND>(pending_dialog.window) ||
-            !SameIdentity(pending_dialog)) { CancelPending(); return; }
-        LASTINPUTINFO input{sizeof(input), 0};
-        if (!GetLastInputInfo(&input)) { CancelPending(); return; }
-        if (!idle_at) {
-            for (const int key : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
-                                  VK_CONTROL, VK_SHIFT, VK_MENU, VK_TAB, VK_LWIN, VK_RWIN})
-                if (GetAsyncKeyState(key) & 0x8000) return;
-            idle_input = input.dwTime;
-            idle_at = now;
-            return;
-        }
-        if (input.dwTime != idle_input) { CancelPending(); return; }
-        if (now - idle_at < 150) return;
-        // The foreground event can precede the Shell address controls being
-        // created. Keep the same idle transition pending until they are ready;
-        // the existing deadline and input checks still cancel stale work.
-        Controls controls;
-        if (!FindBand(reinterpret_cast<HWND>(pending_dialog.window), controls) ||
-            !SameThread(controls.band, pending_dialog) || !SameThread(controls.toolbar, pending_dialog)) return;
-        const WindowIdentity dialog = pending_dialog, source = pending_pulse;
-        const std::wstring expected_folder = pending_folder;
-        const DWORD verified_input = idle_input;
-        CancelPending(); // consume before calls which may reenter the message loop
-        struct Busy {
-            bool& flag;
-            explicit Busy(bool& value) : flag(value) { flag = true; }
-            ~Busy() { flag = false; }
-        } busy(navigating);
+        // Pre-reading filename text also crosses the process boundary. Keep
+        // those bounded calls under the same watchdog as navigation itself.
         struct Deadline {
             volatile LONG64* value;
             explicit Deadline(volatile LONG64* p) : value(p) {
@@ -654,11 +662,71 @@ struct Watcher {
             }
             ~Deadline() { if (value) InterlockedExchange64(value, 0); }
         } deadline(shared->deadline);
+        if (shared->stopping ||
+            GetForegroundWindow() != reinterpret_cast<HWND>(pending_dialog.window) ||
+            !SameIdentity(pending_dialog)) { CancelPending(L"pending_cancel_target"); return; }
+        LASTINPUTINFO input{sizeof(input), 0};
+        if (!GetLastInputInfo(&input)) { CancelPending(); return; }
+        HWND filename_control = nullptr;
+        std::wstring filename;
+        if (!ReadFilename(pending_dialog, filename_control, filename)) {
+            CancelPending(L"pending_cancel_filename_control"); return;
+        }
+        GUITHREADINFO info{sizeof(info)};
+        if (!GetGUIThreadInfo(pending_dialog.thread, &info)) { CancelPending(); return; }
+        bool switching_input_down = false;
+        for (const int key : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
+                              VK_CONTROL, VK_SHIFT, VK_MENU, VK_TAB, VK_LWIN, VK_RWIN})
+            if (GetAsyncKeyState(key) & 0x8000) switching_input_down = true;
+        Controls controls;
+        const bool controls_ready = FindBand(reinterpret_cast<HWND>(pending_dialog.window), controls) &&
+            SameThread(controls.band, pending_dialog) && SameThread(controls.toolbar, pending_dialog) &&
+            IsWindowEnabled(controls.toolbar);
+        const auto decision = pending_wait.Observe({GetTickCount64(), input.dwTime,
+            reinterpret_cast<uintptr_t>(filename_control), reinterpret_cast<uintptr_t>(info.hwndFocus), filename,
+            GetForegroundWindow() == reinterpret_cast<HWND>(pending_dialog.window) && SameIdentity(pending_dialog),
+            controls_ready, SafePendingFocus(pending_dialog, info), switching_input_down});
+        using folder_link::PendingDecision;
+        switch (decision) {
+        case PendingDecision::FocusWait:
+            if (!focus_wait_reported) { TraceFolderLink(L"pending_focus_wait"); focus_wait_reported = true; }
+            return;
+        case PendingDecision::InputDebounce:
+            if (!input_debounce_reported) { TraceFolderLink(L"pending_input_debounce"); input_debounce_reported = true; }
+            return;
+        case PendingDecision::IdleWait: return;
+        case PendingDecision::FilenameChanged: CancelPending(L"pending_filename_changed"); return;
+        case PendingDecision::FocusChanged: CancelPending(L"pending_cancel_focus"); return;
+        case PendingDecision::UnsafeInteraction: CancelPending(L"pending_cancel_interaction"); return;
+        case PendingDecision::TargetChanged: CancelPending(L"pending_cancel_target"); return;
+        case PendingDecision::Expired: CancelPending(L"pending_cancel_timeout"); return;
+        case PendingDecision::Ready: break;
+        }
+        const WindowIdentity dialog = pending_dialog, source = pending_pulse;
+        const std::wstring expected_folder = pending_folder;
+        const DWORD verified_input = pending_wait.input_tick();
+        const HWND expected_focus = info.hwndFocus;
+        CancelPending(nullptr); // consume only after filename, focus and idle checks are ready
+        struct Busy {
+            bool& flag;
+            explicit Busy(bool& value) : flag(value) { flag = true; }
+            ~Busy() { flag = false; }
+        } busy(navigating);
         WindowIdentity actual_source{};
         std::wstring folder;
         if (!Current(dialog, shared, verified_input) ||
             !PulseFolder(reinterpret_cast<HWND>(source.window), shared->owner_pid, actual_source, folder) ||
-            !(actual_source == source) || _wcsicmp(folder.c_str(), expected_folder.c_str()) != 0) return;
+            !(actual_source == source) || _wcsicmp(folder.c_str(), expected_folder.c_str()) != 0) {
+            TraceFolderLink(L"pending_cancel_source"); return;
+        }
+        HWND final_filename_control = nullptr;
+        std::wstring final_filename;
+        if (!ReadFilename(dialog, final_filename_control, final_filename) ||
+            final_filename_control != filename_control || final_filename != filename ||
+            !FocusIs(dialog.thread, expected_focus) || !Current(dialog, shared, verified_input)) {
+            TraceFolderLink(L"pending_cancel_dispatch_guard"); return;
+        }
+        TraceFolderLink(L"pending_dispatch");
         Navigate(dialog, folder, shared, automation.Get(), &verified_input);
     }
 
@@ -735,8 +803,19 @@ struct Watcher {
         WindowIdentity current_pulse{};
         if (pulse.valid() && PulseFolder(reinterpret_cast<HWND>(pulse.window), shared->owner_pid, current_pulse, folder)) {
             if (transition.Consume(identity, current_pulse, folder, GetTickCount64())) {
-                pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
-                queued_at = GetTickCount64(); idle_at = 0; idle_input = 0;
+                const ULONGLONG queued_at = GetTickCount64();
+                HWND filename_control = nullptr;
+                std::wstring filename;
+                GUITHREADINFO info{sizeof(info)};
+                if (ReadFilename(identity, filename_control, filename) &&
+                    GetGUIThreadInfo(identity.thread, &info) && SafePendingFocus(identity, info) &&
+                    window == GetForegroundWindow() && SameIdentity(identity)) {
+                    pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
+                    pending_wait.Begin(queued_at, reinterpret_cast<uintptr_t>(filename_control),
+                        std::move(filename), reinterpret_cast<uintptr_t>(info.hwndFocus));
+                    focus_wait_reported = input_debounce_reported = false;
+                    TraceFolderLink(L"pending_queued");
+                } else TraceFolderLink(L"pending_cancel_baseline");
             }
         } else transition.OtherForeground();
         last_dialog = identity;

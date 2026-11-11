@@ -47,6 +47,77 @@ struct WindowIdentity {
     bool operator==(const WindowIdentity&) const = default;
 };
 
+enum class PendingDecision {
+    FocusWait, InputDebounce, IdleWait, Ready, FilenameChanged, FocusChanged,
+    UnsafeInteraction, TargetChanged, Expired
+};
+
+struct PendingObservation {
+    uint64_t now = 0;
+    uint32_t input_tick = 0;
+    uintptr_t filename_control = 0, focus = 0;
+    std::wstring_view filename;
+    bool target_current = false, controls_ready = false, safe_focus = false;
+    bool switching_input_down = false;
+};
+
+// Keep a returning dialog pending while Shell restores its focus. Input ticks
+// include harmless pointer movement and switch-key releases; guard the actual
+// filename and the first established focus before restarting the idle period.
+class PendingNavigation {
+public:
+    void Begin(uint64_t now, uintptr_t filename_control, std::wstring filename,
+               uintptr_t focus = 0) {
+        Reset();
+        queued_at_ = now;
+        filename_control_ = filename_control;
+        filename_ = std::move(filename);
+        focus_ = focus;
+    }
+
+    PendingDecision Observe(const PendingObservation& value) {
+        if (!value.target_current) return PendingDecision::TargetChanged;
+        if (value.now < queued_at_ || value.now - queued_at_ >= 1200) return PendingDecision::Expired;
+        if (!filename_control_ || value.filename_control != filename_control_ || value.filename != filename_)
+            return PendingDecision::FilenameChanged;
+        if (!value.safe_focus) return PendingDecision::UnsafeInteraction;
+        if (focus_ && value.focus != focus_) return PendingDecision::FocusChanged;
+        if (!value.focus) {
+            have_idle_ = false;
+            return PendingDecision::FocusWait;
+        }
+        focus_ = value.focus;
+        if (value.switching_input_down) {
+            have_idle_ = false;
+            return PendingDecision::IdleWait;
+        }
+        if (!have_idle_ || value.input_tick != input_tick_) {
+            input_tick_ = value.input_tick;
+            idle_at_ = value.now;
+            have_idle_ = true;
+            return PendingDecision::InputDebounce;
+        }
+        if (!value.controls_ready || value.now - idle_at_ < 150) return PendingDecision::IdleWait;
+        return PendingDecision::Ready;
+    }
+
+    void Reset() {
+        queued_at_ = idle_at_ = 0;
+        filename_control_ = focus_ = 0;
+        input_tick_ = 0;
+        have_idle_ = false;
+        filename_.clear();
+    }
+    uint32_t input_tick() const noexcept { return input_tick_; }
+
+private:
+    uint64_t queued_at_ = 0, idle_at_ = 0;
+    uintptr_t filename_control_ = 0, focus_ = 0;
+    uint32_t input_tick_ = 0;
+    bool have_idle_ = false;
+    std::wstring filename_;
+};
+
 // WinEvent callbacks can arrive after the foreground has already changed.
 // Preserve recent event order without treating historical windows as current.
 class ForegroundEventOrder {
