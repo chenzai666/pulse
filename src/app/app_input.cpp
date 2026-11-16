@@ -2232,6 +2232,9 @@ static void ClickGroupHeader(AppState& s, int pane_slot, int group, bool select)
 
 LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!s) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        // A click is also a request to pull an Explorer window the takeover
+        // missed (a view that was not ready in time) into Pulse.
+        if (s->explorer_takeover) s->explorer_takeover->Rescan();
         s->blankDoubleTab = nullptr;
         s->blankDoublePending = false;
         int mx = GET_X_LPARAM(lParam);

@@ -12,6 +12,10 @@
 // are left alone, as are virtual locations Pulse cannot show and any window
 // opened with Shift held. Every call into Explorer runs on this object's own
 // STA thread.
+//
+// A window whose view was not ready within its timeout is given back, but a
+// later click in Pulse (Rescan) makes it a candidate again: the user asking
+// for the address it shows now.
 #pragma once
 #include <windows.h>
 #include <memory>
@@ -42,6 +46,11 @@ public:
 
     // Ends the thread, waiting at most `timeout_ms`.
     void Stop(DWORD timeout_ms = 2000);
+
+    // A click in Pulse: another chance for windows the watcher gave up on
+    // (a view that was not ready within its timeout). Coalesced; safe to call
+    // on every click.
+    void Rescan();
 
     struct Shared;
 

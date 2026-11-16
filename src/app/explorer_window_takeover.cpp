@@ -27,6 +27,7 @@ struct ExplorerWindowTakeover::Shared {
     HWND window = nullptr;
     UINT message = 0;
     std::atomic<bool> stopping{false};
+    std::atomic<bool> rescan_pending{false};
     std::atomic<DWORD> thread_id{0};
     std::mutex handoffs_mutex;
     std::vector<std::weak_ptr<ExplorerHandoff>> handoffs;
@@ -36,6 +37,7 @@ namespace {
 
 constexpr UINT kStopMessage = WM_APP + 1;   // thread messages
 constexpr UINT kScanMessage = WM_APP + 2;
+constexpr UINT kRescanMessage = WM_APP + 3;
 constexpr UINT kPollMs = 50;
 constexpr ULONGLONG kQuitTimeoutMs = 2000;   // a source still open after Quit is shown again
 
@@ -218,6 +220,49 @@ public:
         UpdateTimer();
     }
 
+    // A click in Pulse (Rescan) asked for windows the watcher gave up on after
+    // a view timeout. Their view exists by now; they are candidates again and
+    // walk the same hand-off as a fresh window, wherever they point now.
+    void CaptureLeft() {
+        if (shared_.stopping || left_.empty()) return;
+        std::vector<HWND> dead;
+        std::vector<HWND> retry;
+        for (HWND hwnd : left_) {
+            if (!IsWindow(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd ||
+                !HasClass(hwnd, L"CabinetWClass")) {
+                dead.push_back(hwnd);
+                continue;
+            }
+            retry.push_back(hwnd);
+        }
+        for (HWND hwnd : dead) left_.erase(hwnd);
+        for (HWND hwnd : retry) {
+            const bool already = std::any_of(candidates_.begin(), candidates_.end(),
+                                             [&](const Candidate& c) { return c.hwnd == hwnd; });
+            if (already) { left_.erase(hwnd); continue; }
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == GetCurrentProcessId() || !IsExplorerProcess(pid)) { left_.erase(hwnd); continue; }
+            ComPtr<IWebBrowser2> found;
+            ForEachExplorerWindow([&](HWND entry, IWebBrowser2* browser) {
+                if (!found && entry == hwnd) found = browser;
+            });
+            if (!found) continue;   // not registered in the shell (yet); try again next click
+            left_.erase(hwnd);
+            Candidate candidate;
+            candidate.hwnd = hwnd;
+            candidate.registered_at = GetTickCount64();
+            candidate.browser = found;
+            candidate.process_id = pid;
+            candidates_.push_back(std::move(candidate));
+            // The click is the user asking Pulse to show this folder, so the
+            // window disappears while the hand-off runs; a failure gives it back.
+            HideNew(hwnd, L"captured");
+            TraceShellWindows(L"takeover: hwnd=%p captured after a click", hwnd);
+        }
+        UpdateTimer();
+    }
+
     void Poll() {
         SweepHidden();
         for (auto it = candidates_.begin(); it != candidates_.end();) {
@@ -288,6 +333,9 @@ public:
                 ++it;
                 continue;
             }
+            // Left after a view timeout: the folder can still be shown once
+            // the view exists. A click in Pulse (Rescan) asks for it again.
+            if (step == ExplorerTakeoverStep::Leave && !probe.view_ready) left_.insert(it->hwnd);
             Restore(it->hwnd);
             it = candidates_.erase(it);
         }
@@ -576,6 +624,7 @@ private:
     DWORD advise_cookie_ = 0;
     std::set<HWND> known_;
     std::vector<Candidate> candidates_;
+    std::set<HWND> left_;            // given back after a view timeout; a click can ask again
     UINT_PTR timer_ = 0;
 };
 
@@ -594,6 +643,14 @@ DWORD WINAPI TakeoverThread(void* param) {
         while (!shared->stopping && GetMessageW(&msg, nullptr, 0, 0) > 0) {
             if (!msg.hwnd && msg.message == kScanMessage) {
                 watcher.Scan();
+                continue;
+            }
+            if (!msg.hwnd && msg.message == kRescanMessage) {
+                shared->rescan_pending = false;
+                // A click: windows the shell registered without the watcher
+                // seeing them (Scan) and ones it gave up on (CaptureLeft).
+                watcher.Scan();
+                watcher.CaptureLeft();
                 continue;
             }
             if (!msg.hwnd && msg.message == WM_TIMER) {
@@ -636,6 +693,15 @@ void ExplorerWindowTakeover::Stop(DWORD timeout_ms) {
     WaitForSingleObject(thread_, timeout_ms);
     CloseHandle(thread_);
     thread_ = nullptr;
+}
+
+void ExplorerWindowTakeover::Rescan() {
+    if (!thread_ || shared_->stopping) return;
+    // Coalesced: one rescan runs per loop turn, whatever the click rate.
+    if (shared_->rescan_pending.exchange(true)) return;
+    const DWORD thread_id = shared_->thread_id;
+    if (!thread_id || !PostThreadMessageW(thread_id, kRescanMessage, 0, 0))
+        shared_->rescan_pending = false;
 }
 
 } // namespace pulse::app
