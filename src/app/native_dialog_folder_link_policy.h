@@ -63,6 +63,11 @@ struct PendingObservation {
     bool switching_input_down = false;
     FilenameProbeStatus filename_status = FilenameProbeStatus::Ready;
     bool gui_ready = true;
+    // The click which returned the dialog to the foreground is still holding
+    // the mouse capture. Its input belongs to the return, not to content the
+    // user edited; the baseline must absorb it instead of treating the very
+    // act of coming back as an unsafe interaction.
+    bool transient_capture = false;
 };
 
 // Keep a returning dialog pending while Shell restores its focus. Input ticks
@@ -89,6 +94,20 @@ public:
     PendingDecision Observe(const PendingObservation& value) {
         if (!value.target_current) return PendingDecision::TargetChanged;
         if (value.now < queued_at_ || value.now - queued_at_ >= 1200) return PendingDecision::Expired;
+        // A held activation click is part of the return itself, never user
+        // content: fold its input into the baseline and wait for the release.
+        if (value.gui_ready && value.transient_capture) {
+            baseline_input_ = value.input_tick;
+            capture_rebased_ = true;
+            have_idle_ = false;
+            return PendingDecision::FocusWait;
+        }
+        if (capture_rebased_) {
+            // The release event ends the return interaction; the next input
+            // tick is the last one belonging to the activation click.
+            baseline_input_ = value.input_tick;
+            capture_rebased_ = false;
+        }
         if (!have_filename_ && value.input_tick != baseline_input_) return PendingDecision::UnprotectedInput;
         if (value.gui_ready && !value.safe_focus) return PendingDecision::UnsafeInteraction;
         if (value.gui_ready) {
@@ -138,6 +157,7 @@ public:
         baseline_input_ = 0;
         have_idle_ = false;
         have_filename_ = false;
+        capture_rebased_ = false;
         filename_.clear();
     }
     uint32_t input_tick() const noexcept { return input_tick_; }
@@ -146,7 +166,7 @@ private:
     uint64_t queued_at_ = 0, idle_at_ = 0;
     uintptr_t filename_control_ = 0, focus_ = 0;
     uint32_t input_tick_ = 0, baseline_input_ = 0;
-    bool have_idle_ = false, have_filename_ = false;
+    bool have_idle_ = false, have_filename_ = false, capture_rebased_ = false;
     std::wstring filename_;
 };
 

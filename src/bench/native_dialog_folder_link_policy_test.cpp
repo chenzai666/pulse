@@ -178,6 +178,30 @@ int main() {
     observed.filename_status = FilenameProbeStatus::Missing;
     Check(pending.Observe(observed) == PendingDecision::UnsafeInteraction,
           "capture or menu is rejected even while filename control is missing");
+    pending.BeginBaseline(13000, 150);
+    observed = {13000, 150, 101, 101, L"baseline.txt", true, true, false, false};
+    observed.transient_capture = true;
+    Check(pending.Observe(observed) == PendingDecision::FocusWait,
+          "held activation click capture only waits instead of cancelling");
+    observed.now = 13050; observed.input_tick = 151;
+    Check(pending.Observe(observed) == PendingDecision::FocusWait,
+          "input while the activation click is held folds into the baseline");
+    observed.now = 13100; observed.input_tick = 152; observed.transient_capture = false;
+    observed.safe_focus = true;
+    Check(pending.Observe(observed) == PendingDecision::InputDebounce,
+          "activation click release is absorbed and the idle wait starts");
+    observed.now = 13200;
+    Check(pending.Observe(observed) == PendingDecision::IdleWait,
+          "released activation click still waits for stable input");
+    observed.now = 13251;
+    Check(pending.Observe(observed) == PendingDecision::Ready,
+          "released activation click dispatches after a full idle period");
+    pending.BeginBaseline(14000, 160);
+    observed = {14000, 160, 101, 101, L"baseline.txt", true, true, false, false};
+    observed.transient_capture = true;
+    observed.now = 15200;
+    Check(pending.Observe(observed) == PendingDecision::Expired,
+          "held activation click cannot extend the 1200ms dispatch deadline");
     observed.safe_focus = true; observed.filename_status = FilenameProbeStatus::Ambiguous;
     Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "ambiguous initial filename controls are never awaited");
     observed.filename_status = FilenameProbeStatus::WrongIdentity;

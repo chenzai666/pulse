@@ -721,6 +721,7 @@ struct Watcher {
     std::wstring pending_folder;
     folder_link::PendingNavigation pending_wait;
     bool focus_wait_reported = false, input_debounce_reported = false;
+    bool capture_wait_reported = false;
     uint32_t baseline_wait_reported = 0;
     bool baseline_ready_reported = false;
     bool navigating = false;
@@ -729,7 +730,7 @@ struct Watcher {
         if (pending_dialog.valid() && event) TraceFolderLink(event);
         pending_dialog = {}; pending_pulse = {}; pending_folder.clear();
         pending_wait.Reset();
-        focus_wait_reported = input_debounce_reported = false;
+        focus_wait_reported = input_debounce_reported = capture_wait_reported = false;
         baseline_wait_reported = 0;
         baseline_ready_reported = false;
     }
@@ -757,6 +758,14 @@ struct Watcher {
         const bool gui_ready = GetGUIThreadInfo(pending_dialog.thread, &info) != FALSE;
         DWORD focus_rejection = 0;
         const bool safe_focus = gui_ready && SafePendingFocus(pending_dialog, info, &focus_rejection);
+        // A capture held by the activation click is the return interaction
+        // itself, not an unsafe user edit; the policy waits it out instead of
+        // cancelling the navigation the moment the dialog comes back.
+        const bool transient_capture = gui_ready && !safe_focus && focus_rejection == 1;
+        if (transient_capture && !capture_wait_reported) {
+            TraceFolderLink(L"pending_focus_capture_wait", focus_rejection);
+            capture_wait_reported = true;
+        }
         const bool hidden_focus = safe_focus && info.hwndFocus && !IsWindowVisible(info.hwndFocus);
         const HWND visible_focus = hidden_focus ? nullptr : info.hwndFocus;
         bool switching_input_down = false;
@@ -773,7 +782,7 @@ struct Watcher {
         const auto decision = pending_wait.Observe({GetTickCount64(), input.dwTime,
             reinterpret_cast<uintptr_t>(filename_control), reinterpret_cast<uintptr_t>(visible_focus), filename,
             GetForegroundWindow() == reinterpret_cast<HWND>(pending_dialog.window) && SameIdentity(pending_dialog),
-            controls_ready, safe_focus, switching_input_down, filename_status, gui_ready});
+            controls_ready, safe_focus, switching_input_down, filename_status, gui_ready, transient_capture});
         using folder_link::PendingDecision;
         if (!baseline_ready_reported && gui_ready && safe_focus && visible_focus &&
             (decision == PendingDecision::InputDebounce || decision == PendingDecision::IdleWait ||
@@ -947,7 +956,7 @@ struct Watcher {
                 if (GetLastInputInfo(&input) && window == GetForegroundWindow() && SameIdentity(identity)) {
                     pending_dialog = identity; pending_pulse = current_pulse; pending_folder = std::move(folder);
                     pending_wait.BeginBaseline(queued_at, input.dwTime);
-                    focus_wait_reported = input_debounce_reported = false;
+                    focus_wait_reported = input_debounce_reported = capture_wait_reported = false;
                     baseline_wait_reported = 0;
                     baseline_ready_reported = false;
                     TraceFolderLink(L"pending_queued");
