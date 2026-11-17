@@ -178,6 +178,12 @@ int main() {
     observed.filename_status = FilenameProbeStatus::Missing;
     Check(pending.Observe(observed) == PendingDecision::UnsafeInteraction,
           "capture or menu is rejected even while filename control is missing");
+    observed.safe_focus = true; observed.filename_status = FilenameProbeStatus::Ambiguous;
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "ambiguous initial filename controls are never awaited");
+    observed.filename_status = FilenameProbeStatus::WrongIdentity;
+    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "wrong initial control identity is immediately rejected");
+    observed.target_current = false;
+    Check(pending.Observe(observed) == PendingDecision::TargetChanged, "staged baseline cannot survive loss of the exact foreground target");
     pending.BeginBaseline(13000, 150);
     observed = {13000, 150, 101, 101, L"baseline.txt", true, true, false, false};
     observed.transient_capture = true;
@@ -202,12 +208,6 @@ int main() {
     observed.now = 15200;
     Check(pending.Observe(observed) == PendingDecision::Expired,
           "held activation click cannot extend the 1200ms dispatch deadline");
-    observed.safe_focus = true; observed.filename_status = FilenameProbeStatus::Ambiguous;
-    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "ambiguous initial filename controls are never awaited");
-    observed.filename_status = FilenameProbeStatus::WrongIdentity;
-    Check(pending.Observe(observed) == PendingDecision::FilenameChanged, "wrong initial control identity is immediately rejected");
-    observed.target_current = false;
-    Check(pending.Observe(observed) == PendingDecision::TargetChanged, "staged baseline cannot survive loss of the exact foreground target");
     Transition t;
     using pulse::app::folder_link::CanReconcileForegroundReturn;
     ForegroundEventOrder reconciled_order;
