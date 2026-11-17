@@ -143,15 +143,16 @@ void SyncShellWindows(AppState& s) {
 #endif
     const bool custom_dialogs = !s.isolatedTest && ShellIntegrationAllowed(s, nullptr) &&
         s.appPrefs.integration_enabled && s.appPrefs.integration_file_dialogs;
-    enable_folder_link = enable_folder_link && !custom_dialogs;
+    // The folder link keeps running with the custom takeover: a dialog under
+    // takeover is disabled, and the helper never touches a disabled dialog.
+    // A dialog the takeover released back to Windows is visible and enabled
+    // again, so it follows Pulse's folder like any other native dialog.
     auto& watcher = s.core.native_dialog_folder_link;
     if (!enable_folder_link && watcher) {
         if (watcher->Stop()) watcher.reset();
         else InvalidateRect(s.hwnd, nullptr, FALSE);
     }
-    // Let the native helper finish restoring any active navigation before
-    // custom takeover starts observing those same dialogs.
-    SyncNativeDialogs(s, custom_dialogs && !watcher);
+    SyncNativeDialogs(s, custom_dialogs);
     if (enable_folder_link) {
         if (watcher && watcher->IsStopping() && watcher->Stop()) watcher.reset();
         if (!watcher) watcher = std::make_unique<app::NativeDialogFolderLink>();
