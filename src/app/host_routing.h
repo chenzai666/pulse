@@ -27,6 +27,7 @@ namespace pulse::app {
 
 inline constexpr UINT kHostRoutedMessages[] = {
     WM_WORKER_RESULT,          // PostWorkerResult
+    WM_DIR_NOTIFY_READY,       // prepared directory notifications
     WM_OPS_NOTIFY,             // OpsManager completion
     WM_INDEX_NOTIFY,           // IndexClient status
     WM_INDEX_SEARCH,           // IndexClient search results

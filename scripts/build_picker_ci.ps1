@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation, [switch]$ListarySearchValidation, [switch]$DriveCapacityValidation)
+param([switch]$ReuseRemovalVerification, [switch]$BuildOnly, [switch]$RecycleValidation, [switch]$OperationProgressValidation, [switch]$ListaryAdapterValidation, [switch]$ListarySearchValidation, [switch]$DriveCapacityValidation, [switch]$UpstreamNavigationValidation)
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
@@ -24,6 +24,18 @@ $allowed = @('.github/workflows/custom-build.yml', '.github/workflows/picker.yml
     'src/ops/ops_manager_shell_transfer.cpp', 'src/ops/operation_presentation.h', 'src/bench/ops_test_main.cpp',
     'src/bench/operation_presentation_test.cpp', 'src/ui/file_operation_dialog.cpp', 'src/ui/file_operation_dialog.h',
     'src/app/app_state.h', 'src/app/app_navigation.cpp', 'src/app/app_worker.cpp', 'src/app/app_worker.h',
+    'src/app/app_core.h', 'src/app/host_routing.h', 'src/app/link_resolve.cpp', 'src/app/link_resolve.h',
+    'src/app/link_resolve_batch.h',
+    'src/app/dir_notify_async.h', 'src/app/snapshot_patch.cpp', 'src/app/snapshot_patch.h',
+    'src/app/entry_order_hold.cpp', 'src/app/entry_order_hold.h', 'src/fs/drive_kind.h', 'src/fs/enumeration_schedule.h',
+    'src/app/listing_selection_restore_test.cpp', 'src/app/tab_transfer_test.cpp',
+    'src/bench/dir_notify_async_test.cpp', 'src/bench/enumeration_schedule_test.cpp',
+    'src/bench/link_destination_test.cpp', 'src/bench/sort_updates_test.inc',
+    'src/app/address_completion.cpp', 'src/app/address_completion.h', 'src/app/address_lookup.h',
+    'src/app/address_path_open.cpp', 'src/app/address_path_open.h', 'src/app/address_search.cpp',
+    'src/app/app_hosted_edit.cpp', 'src/app/app_hosted_edit.h', 'src/app/app_input.cpp', 'src/app/breadcrumb_menu.cpp',
+    'src/app/app_commands.h', 'src/bench/address_completion_test.cpp', 'src/ui/fluent_menu.cpp',
+    'src/ui/ui_address_search.cpp', 'src/ui/ui_toolbar.cpp', 'src/ui/ui_view_model.h',
     'src/fs/fs_recycle.cpp', 'src/fs/fs_recycle.h', 'src/bench/recycle_metadata_test.cpp',
     'src/bench/worker_enum_cancel_test.cpp', 'src/bench/virtual_worker_consumers_test.cpp',
     'scripts/build_picker_ci.ps1', 'scripts/build_tab_drag_ci.ps1', 'scripts/verify_native_handoff_evidence.ps1',
@@ -102,7 +114,9 @@ $buildBatch = Join-Path $taskBuild 'compile-picker.bat'
 $selftestMode = if ($ReuseRemovalVerification -or $BuildOnly) { 'OFF' } else { 'ON' }
 $skipRuntime = if ($BuildOnly) { 'goto :compile_release' } else { 'rem Run regression checks' }
 $recycleOnly = if ($RecycleValidation -or $OperationProgressValidation -or $DriveCapacityValidation) { 'goto :compile_release' } else { 'rem Run dialog policy checks' }
-$targets = if ($DriveCapacityValidation) { 'pulse pulse_drive_capacity_format_test' } elseif ($ListarySearchValidation) { 'pulse pulse_listary_search_client_test pulse_picker_listary_search_test' } elseif ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
+$navigationTests = @('pulse_enumeration_schedule_test', 'pulse_dir_notify_async_test', 'pulse_link_destination_test',
+    'pulse_worker_enum_cancel_test', 'pulse_address_completion_test', 'pulse_pane_drop_test')
+$targets = if ($UpstreamNavigationValidation) { 'pulse ' + ($navigationTests -join ' ') } elseif ($DriveCapacityValidation) { 'pulse pulse_drive_capacity_format_test' } elseif ($ListarySearchValidation) { 'pulse pulse_listary_search_client_test pulse_picker_listary_search_test' } elseif ($ListaryAdapterValidation) { 'pulse pulse_listary_adapter_protocol_test' } elseif ($OperationProgressValidation) { 'pulse pulse_operation_presentation_test' } elseif ($RecycleValidation) { 'pulse pulse_recycle_metadata_test pulse_worker_enum_cancel_test pulse_virtual_worker_consumers_test' } else { 'pulse pulse_native_folder_follow_test' }
 @"
 @echo off
 call "$vcvars"
@@ -145,6 +159,23 @@ exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildBatch -Encoding utf8
 & $buildBatch
 if ($LASTEXITCODE) { throw '系统集成设置验证版构建失败' }
+if ($UpstreamNavigationValidation) {
+    $navigationFailures = @()
+    foreach ($case in $navigationTests) {
+        $caseLog = Join-Path $galleryOutput ($case + '.log')
+        & (Join-Path $taskBuild ($case + '.exe')) *> $caseLog
+        if ($LASTEXITCODE) { $navigationFailures += $case }
+        Write-Host "定向验证 $case"
+        Get-Content -LiteralPath $caseLog
+    }
+    foreach ($case in @('sort-updates', 'bounded-links')) {
+        $caseLog = Join-Path $galleryOutput ($case + '.log')
+        & (Join-Path $taskBuild 'pulse_link_destination_test.exe') ('--' + $case) *> $caseLog
+        if ($LASTEXITCODE) { $navigationFailures += $case }
+        Get-Content -LiteralPath $caseLog
+    }
+    if ($navigationFailures.Count) { throw ('目录和导航定向回归失败：' + ($navigationFailures -join ', ')) }
+}
 if ($ListaryAdapterValidation) {
     & (Join-Path $taskBuild 'pulse_listary_adapter_protocol_test.exe') *> (Join-Path $galleryOutput 'listary-adapter-protocol.log')
     if ($LASTEXITCODE) { throw 'Listary 主窗口受限导航协议检查失败' }

@@ -115,6 +115,14 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             return r;
         }
     }
+    if (!vm.settings_open && vm.address_editing && !vm.address_searching) {
+        const int row = HitAddressCompletion(rect.right, rect.bottom, vm.address_completion.size(), x, y);
+        if (row != -1) {
+            r.region = HitTestResult::AddressCompletion;
+            r.index = row;
+            return r;
+        }
+    }
     // Title bar. With vertical tabs the address row sits up here; those
     // points fall through to the toolbar branch below.
     bool titleToolbar = false;
@@ -746,11 +754,19 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         }
         if (ContainsPt(toolbar.address,x,y)) {
             r.region=HitTestResult::AddressBar;
-            if (!vm.address_editing && x < toolbar.address.right-28*scale_) {
+            if (!vm.address_editing) {
                 std::vector<BreadcrumbPlaced> placed;
                 BreadcrumbLayout(vm.pane,rect.right,placed);
-                for (size_t i=0;i<placed.size();++i) if (ContainsPt(placed[i].rc,x,y)) {
-                    r.region=HitTestResult::BreadcrumbSegment; r.index=(int)i; r.path=placed[i].path; break;
+                for (size_t i = 0; i < placed.size(); ++i) {
+                    const auto& segment = placed[i];
+                    const bool arrow = !embedded_ && !fs::IsVirtualPath(segment.path) && ContainsPt(segment.arrow, x, y);
+                    if (arrow || ContainsPt(segment.rc, x, y)) {
+                        r.region = arrow ? HitTestResult::BreadcrumbArrow : HitTestResult::BreadcrumbSegment;
+                        r.index = static_cast<int>(i);
+                        r.path = segment.path;
+                        r.control_bounds = arrow ? segment.arrow : segment.rc;
+                        break;
+                    }
                 }
             }
             return r;

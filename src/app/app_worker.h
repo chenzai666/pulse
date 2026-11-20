@@ -29,6 +29,7 @@ struct WorkItem {
     ui::SortDirection sort_direction;
     bool load_paths = false;
     bool preserve_order = false;
+    bool bounded_drive = false;
     std::vector<std::wstring> paths;
     int group_by = 0;
     std::vector<uint64_t> display_times;
@@ -75,7 +76,7 @@ public:
                        std::vector<uint64_t> display_times = {},
                        int group_by = 0);
 
-    void EnqueueIo(std::function<void()> task);
+    bool EnqueueIo(std::function<void()> task);
     void EnqueueSerialIo(std::function<void()> task);
 
 private:

@@ -1,6 +1,4 @@
-// link_resolve.h — Resolve .lnk shortcuts to their targets (SLGP_RAWPATH: no
-// disk tracking, no UI). Runs on worker threads; COM is initialized lazily
-// per thread. Resolution never touches the UI thread.
+// link_resolve.h — Read saved link destinations without Shell tracking or UI.
 #pragma once
 #include "../fs/fs_enum.h"
 #include <functional>
@@ -15,11 +13,10 @@ namespace pulse::app {
 // shortcut's saved path even when the target is missing; it is presentation only.
 bool ResolveLink(const std::wstring& lnk_path, fs::DirEntry& e);
 
-// Read immediate display destinations for .lnk, .url, symlink and junction entries,
-// and preserve existing .lnk penetration behavior. No recursive resolution or UI.
-// parent_path is the
-// enumerated directory (entries with full_path set ignore it). cancel()
-// returning true aborts early (entries resolved so far keep their link_target).
+// Populate immediate destinations for .lnk, .url, symlinks, and junctions.
+// Only shortcuts on a known local target drive acquire target metadata.
+// Optional metadata has a 100 ms budget and independent provider quota.
+// Entries with a full path use it in place of the enumerated directory.
 void ResolveLinksInPlace(const std::wstring& parent_path,
                          std::vector<fs::DirEntry>& entries,
                          const std::function<bool()>& cancel);

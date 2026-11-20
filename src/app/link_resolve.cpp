@@ -1,6 +1,7 @@
-// link_resolve.cpp — See link_resolve.h. Worker threads live for the whole
-// session, so COM is initialized once per thread via a thread_local guard.
+// link_resolve.cpp — See link_resolve.h.
 #include "link_resolve.h"
+#include "link_resolve_batch.h"
+#include "../fs/enumeration_schedule.h"
 #include <shobjidl.h>
 #include <wrl/client.h>
 #include <cwctype>
@@ -21,9 +22,7 @@ struct ThreadCom {
 };
 
 bool HasLnkSuffix(const std::wstring& name) {
-    if (name.size() < 4) return false;
-    const std::wstring tail = name.substr(name.size() - 4);
-    return _wcsicmp(tail.c_str(), L".lnk") == 0;
+    return name.size() >= 4 && _wcsicmp(name.c_str() + name.size() - 4, L".lnk") == 0;
 }
 
 bool HasUrlSuffix(const std::wstring& name) {
@@ -74,9 +73,7 @@ std::wstring UrlDestination(const std::wstring& path) {
     return target;
 }
 
-} // namespace
-
-bool ResolveLink(const std::wstring& lnk_path, fs::DirEntry& e) {
+bool ResolveLinkImpl(const std::wstring& lnk_path, fs::DirEntry& e, bool listing) {
     e.link_destination.clear();
     e.link_target.clear();
     e.link_target_size = 0;
@@ -99,6 +96,8 @@ bool ResolveLink(const std::wstring& lnk_path, fs::DirEntry& e) {
 
     const std::wstring target = fs::NormalizePath(raw);
     e.link_destination = raw;
+    // Preserve the saved destination without contacting its drive when listing.
+    if (listing && (!fs::DriveLetterOf(target) || fs::NeedsBoundedEnumeration(target))) return false;
     WIN32_FILE_ATTRIBUTE_DATA data{};
     if (!GetFileAttributesExW(target.c_str(), GetFileExInfoStandard, &data))
         return false;
@@ -111,33 +110,34 @@ bool ResolveLink(const std::wstring& lnk_path, fs::DirEntry& e) {
     return true;
 }
 
+} // namespace
+
+bool ResolveLink(const std::wstring& lnk_path, fs::DirEntry& e) {
+    return ResolveLinkImpl(lnk_path, e, false);
+}
+
 void ResolveLinksInPlace(const std::wstring& parent_path,
                          std::vector<fs::DirEntry>& entries,
                          const std::function<bool()>& cancel) {
-    bool any = false;
-    for (const auto& e : entries) {
-        if (fs::ClassifyLink(e.attrs, e.reparse_tag) != fs::LinkKind::None ||
-            (!e.is_dir && (HasLnkSuffix(e.name) || HasUrlSuffix(e.name)))) { any = true; break; }
-    }
-    if (!any) return;
-    for (size_t i = 0; i < entries.size(); ++i) {
-        if (cancel && cancel()) return;
-        fs::DirEntry& e = entries[i];
+    const auto is_link = [](const fs::DirEntry& e) {
+        return fs::ClassifyLink(e.attrs, e.reparse_tag) != fs::LinkKind::None ||
+            (!e.is_dir && (HasLnkSuffix(e.name) || HasUrlSuffix(e.name)));
+    };
+    ResolveLinkBatch(entries, is_link, [parent_path](fs::DirEntry& e) {
         const bool reparse = fs::ClassifyLink(e.attrs, e.reparse_tag) != fs::LinkKind::None;
-        if (!reparse && (e.is_dir || (!HasLnkSuffix(e.name) && !HasUrlSuffix(e.name)))) continue;
         e.link_destination.clear();
-        if (e.cloud_recall || e.change_record_only) continue;
+        if (e.cloud_recall || e.change_record_only) return;
         std::wstring full = e.full_path;
         if (full.empty()) {
-            if (parent_path.empty() || fs::IsVirtualPath(parent_path)) continue;
+            if (parent_path.empty() || fs::IsVirtualPath(parent_path)) return;
             full = parent_path;
             if (full.back() != L'\\') full += L'\\';
             full += e.name;
         }
         if (reparse) e.link_destination = ReparseDestination(full);
         else if (HasUrlSuffix(e.name)) e.link_destination = UrlDestination(full);
-        else ResolveLink(full, e);
-    }
+        else ResolveLinkImpl(full, e, true);
+    }, [&cancel] { return cancel && cancel(); });
 }
 
 } // namespace pulse::app

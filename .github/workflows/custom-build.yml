@@ -80,6 +80,10 @@ on:
         description: '验证磁盘容量精度与 IEC 单位显示'
         type: boolean
         default: false
+      upstream_navigation_validation:
+        description: '验证目录加载、文件重排和地址栏导航'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -217,11 +221,12 @@ jobs:
     uses: ./.github/workflows/picker.yml
     with:
       reuse_removal_verification: ${{ inputs.reuse_removal_verification == true }}
-      build_only: ${{ inputs.picker_build_only == true }}
+      build_only: ${{ inputs.picker_build_only == true || inputs.upstream_navigation_validation == true }}
       recycle_validation: ${{ inputs.recycle_validation == true }}
       operation_progress_validation: ${{ inputs.operation_progress_validation == true }}
       listary_search_validation: ${{ inputs.listary_search_validation == true }}
       drive_capacity_validation: ${{ inputs.drive_capacity_validation == true }}
+      upstream_navigation_validation: ${{ inputs.upstream_navigation_validation == true }}
       publish_release: ${{ inputs.picker_publish_release == true }}
   status-center:
     if: inputs.validation_scope == 'status-center'

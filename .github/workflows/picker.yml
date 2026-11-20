@@ -28,6 +28,9 @@ on:
         default: false
   workflow_call:
     inputs:
+      upstream_navigation_validation:
+        type: boolean
+        default: false
       drive_capacity_validation:
         type: boolean
         default: false
@@ -69,7 +72,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true') -RecycleValidation:('${{ inputs.recycle_validation }}' -eq 'true') -OperationProgressValidation:('${{ inputs.operation_progress_validation }}' -eq 'true') -ListarySearchValidation:('${{ inputs.listary_search_validation }}' -eq 'true') -DriveCapacityValidation:('${{ inputs.drive_capacity_validation }}' -eq 'true')
+        run: ./scripts/build_picker_ci.ps1 -ReuseRemovalVerification:('${{ inputs.reuse_removal_verification }}' -eq 'true') -BuildOnly:('${{ inputs.build_only }}' -eq 'true') -RecycleValidation:('${{ inputs.recycle_validation }}' -eq 'true') -OperationProgressValidation:('${{ inputs.operation_progress_validation }}' -eq 'true') -ListarySearchValidation:('${{ inputs.listary_search_validation }}' -eq 'true') -DriveCapacityValidation:('${{ inputs.drive_capacity_validation }}' -eq 'true') -UpstreamNavigationValidation:('${{ inputs.upstream_navigation_validation }}' -eq 'true')
       - name: 制作并发布最新弹窗修复安装包
         if: inputs.publish_release == true
         shell: pwsh

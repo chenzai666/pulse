@@ -275,7 +275,8 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
         s.dropBadgeY = (float)pt.y;
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return effect;
-    } else if (hit.region == ui::HitTestResult::BreadcrumbSegment && !hit.path.empty()) {
+    } else if ((hit.region == ui::HitTestResult::BreadcrumbSegment ||
+                hit.region == ui::HitTestResult::BreadcrumbArrow) && !hit.path.empty()) {
         s.dropDestDir = hit.path;
         s.dropBreadcrumb = hit.index;
         destName = BaseName(hit.path);
@@ -2252,7 +2253,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         s->blankDoublePending = false;
         int mx = GET_X_LPARAM(lParam);
         int my = GET_Y_LPARAM(lParam);
-        DismissPathEditorOutside(*s, mx, my);
+        if (DismissPathEditorOutside(*s, mx, my, true)) return 0;
         CancelRenameClick(*s);
         CancelScrollAnimation(*s);
         // Commit explicitly before changing pane/selection; a click on a
@@ -2271,6 +2272,12 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             hit.region != ui::HitTestResult::AddressSearchClear &&
             hit.region != ui::HitTestResult::AddressSearchClose) {
             HideAddressEditor(*s, false);
+        }
+        if (hit.region == ui::HitTestResult::BreadcrumbArrow) {
+            POINT point{static_cast<LONG>(hit.control_bounds.left), static_cast<LONG>(hit.control_bounds.bottom)};
+            ClientToScreen(hwnd, &point);
+            ShowBreadcrumbChildren(*s, std::move(hit.path), point);
+            return 0;
         }
         if (s->filterEditing && hit.region != ui::HitTestResult::FilterBox &&
             hit.region != ui::HitTestResult::FilterClear) {
@@ -3794,7 +3801,8 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             shown = true;
         } else if (HandleHomeWidgetContextMenu(*s, hit, sp)) {
             shown = true;
-        } else if (hit.region == ui::HitTestResult::BreadcrumbSegment && !hit.path.empty()) {
+        } else if ((hit.region == ui::HitTestResult::BreadcrumbSegment ||
+                    hit.region == ui::HitTestResult::BreadcrumbArrow) && !hit.path.empty()) {
             ShowBreadcrumbMenu(*s, hit.path, sp);
             shown = true;
         } else if (hit.region == ui::HitTestResult::TrayCard ||

@@ -80,6 +80,9 @@
 
 namespace pulse {
 
+struct AddressCompletionState;
+struct AddressPathOpen;
+
 constexpr UINT kTimerUi = 1;
 // Scrolls the list while a marquee is dragged past its edge.
 constexpr UINT_PTR kTimerMarqueeScroll = 0x4D51;
@@ -476,6 +479,8 @@ struct AppState : AppCoreOwner {
     bool shot_high_contrast = false;
 
     HWND hwndAddressEdit = nullptr;
+    std::shared_ptr<AddressCompletionState> addressCompletion;
+    std::shared_ptr<AddressPathOpen> addressPathOpen;
     bool addressEditing = false;
     bool addressSearching = false;
     bool searchHistoryOpen = false;

@@ -22,6 +22,7 @@
 #include "closed_windows.h"
 #include "context_menu_controller.h"
 #include "context_menu_prefs.h"
+#include "dir_notify_async.h"
 #include "duplicate_scan.h"
 #include "explorer_window_takeover.h"
 #include "external_open.h"
@@ -79,6 +80,8 @@ struct AppCore {
     };
     std::mutex notify_mu;
     std::vector<DirNotifyBatch> notify_queue;
+    app::DirNotifyAsync notify_async;
+    uint64_t notify_async_round = 0;
     struct CoalescedSizePatch {
         std::wstring path;
         std::wstring name;

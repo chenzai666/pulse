@@ -45,10 +45,14 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                         seg.rc.right - seg.rc.left, seg.rc.bottom - seg.rc.top,
                         theme.radius_control * scale_);
                 }
-                if (i > 0) {
-                    // Chevron separator.
-                    float chX = seg.rc.left - 14.0f * scale_;
-                    DrawIconText(chX, addrRc.top, 14.0f * scale_, addrRc.bottom - addrRc.top,
+                if (seg.arrow.right > seg.arrow.left) {
+                    if (IsHovered(vm, HitTestResult::BreadcrumbArrow, static_cast<int>(i))) {
+                        MakeBrush(dc, theme.fill_hover, brFillHover_);
+                        FillRoundedRect(dc, brFillHover_.get(), seg.arrow.left, seg.arrow.top,
+                            seg.arrow.right - seg.arrow.left, seg.arrow.bottom - seg.arrow.top,
+                            theme.radius_control * scale_);
+                    }
+                    DrawIconText(seg.arrow.left, addrRc.top, seg.arrow.right - seg.arrow.left, addrRc.bottom - addrRc.top,
                         kIconChevronRight, L">", theme.text_secondary, 0.55f);
                 }
                 const bool search_crumb = vm.pane.is_query_search && vm.pane.has_search_origin &&
@@ -62,11 +66,11 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                         seg.rc.right - seg.rc.left, seg.rc.bottom - seg.rc.top, theme.radius_control * scale_);
                 }
                 MakeBrush(dc, theme.text, brText_);
-                // Width measured exactly; let the ink use the right padding as slack
-                // so the trailing glyph is not shaved by the clip rect.
-                DrawTextRect(dc, compositor_->AddressFormat(), brText_.get(), seg.text,
-                    seg.rc.left + 8 * scale_, seg.rc.top, seg.rc.right - seg.rc.left - 8 * scale_,
-                    seg.rc.bottom - seg.rc.top);
+                const float text_width = seg.rc.right - seg.rc.left - 8.0f * scale_;
+                if (text_width > 0.0f) {
+                    DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->AddressFormat(), brText_.get(),
+                        seg.text, seg.rc.left + 8.0f * scale_, seg.rc.top, text_width, seg.rc.bottom - seg.rc.top);
+                }
             }
             if (placed.empty() && !vm.pane.path.empty()) {
                 MakeBrush(dc, theme.text, brText_);

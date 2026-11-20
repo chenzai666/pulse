@@ -58,6 +58,7 @@ void SaveAddressSearchDraft(AppState& s) {
 }
 
 void FillAddressSearchView(AppState& s, ui::WindowViewModel& vm) {
+    FillAddressCompletionView(s, vm);
     vm.address_search_content = s.addressSearchContent;
     auto* tab = ActiveTab(s);
     if (!s.addressEditing && IsAddressSearchResults(tab)) {

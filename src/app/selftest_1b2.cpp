@@ -4031,7 +4031,7 @@ void TestSnapshotPatchBatch() {
     RemoveDirectoryW(dir.c_str());
 }
 
-// #13: patches keep rows on screen in place like File Explorer.
+// #13: ordinary renames and arrivals keep their displayed placement.
 void TestSnapshotPatchHoldsRows() {
     wchar_t temp[MAX_PATH]{};
     GetTempPathW(ARRAYSIZE(temp), temp);
@@ -4086,9 +4086,9 @@ void TestSnapshotPatchHoldsRows() {
     make(L"beta.txt", 5000);
     Check(ApplyDirNotify(entries, dir, ev(FILE_ACTION_MODIFIED, L"beta.txt"),
                          ui::SortColumn::Size, ui::SortDirection::Desc) == NotifyPatch::Applied &&
-          names(entries) == L"zeta.txt,beta.txt,gamma.txt,aardvark.txt" &&
-          entries[1].size == 5000u,
-          L"patch hold: a modified row keeps its place and takes the new size");
+          names(entries) == L"beta.txt,zeta.txt,gamma.txt,aardvark.txt" &&
+          entries[0].size == 5000u,
+          L"patch hold: a modified row moves to its new size position");
 
     {
         const ScopedEntryGrouping grouping(static_cast<int>(GroupBy::Type));
@@ -4096,7 +4096,7 @@ void TestSnapshotPatchHoldsRows() {
         make(L"notes.md", 1);
         name_asc(entries, ev(FILE_ACTION_ADDED, L"new"), dir);
         name_asc(entries, ev(FILE_ACTION_ADDED, L"notes.md"), dir);
-        Check(names(entries) == L"new,notes.md,zeta.txt,beta.txt,gamma.txt,aardvark.txt",
+        Check(names(entries) == L"new,notes.md,beta.txt,zeta.txt,gamma.txt,aardvark.txt",
               L"patch hold: grouped, a new row joins the end of its own group");
         MoveFileW(full(L"zeta.txt").c_str(), full(L"zeta.md").c_str());
         name_asc(entries, ev(FILE_ACTION_RENAMED_NEW_NAME, L"zeta.md", L"zeta.txt"), dir);

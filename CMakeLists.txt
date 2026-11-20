@@ -1182,9 +1182,14 @@ target_link_libraries(pulse_shell_command_test PRIVATE shell32 user32)
 add_executable(pulse_reparse_entry_test src/bench/reparse_entry_test.cpp)
 target_link_libraries(pulse_reparse_entry_test PRIVATE pulse_localization user32 shell32 shlwapi netapi32)
 
-add_executable(pulse_link_destination_test src/bench/link_destination_test.cpp src/app/link_resolve.cpp src/fs/fs_enum.cpp
+add_executable(pulse_link_destination_test src/bench/link_destination_test.cpp src/fs/fs_enum.cpp
     src/app/snapshot_patch.cpp src/app/entry_order_hold.cpp src/app/entry_group.cpp src/app/entry_sort.cpp)
 target_link_libraries(pulse_link_destination_test PRIVATE pulse_localization shell32 shlwapi netapi32 ole32 uuid)
+add_executable(pulse_dir_notify_async_test src/bench/dir_notify_async_test.cpp
+    src/fs/fs_enum.cpp src/app/entry_order_hold.cpp src/app/entry_group.cpp src/app/entry_sort.cpp)
+target_link_libraries(pulse_dir_notify_async_test PRIVATE pulse_localization shell32 shlwapi netapi32)
+add_executable(pulse_address_completion_test src/bench/address_completion_test.cpp src/app/address_completion.cpp)
+target_link_libraries(pulse_address_completion_test PRIVATE pulse_fs_watch)
 add_executable(pulse_entry_sort_key_test src/bench/entry_sort_key_test.cpp src/app/entry_group.cpp src/app/entry_sort.cpp)
 target_link_libraries(pulse_entry_sort_key_test PRIVATE pulse_localization shlwapi)
 add_executable(pulse_link_pill_test src/bench/link_pill_test.cpp)
@@ -1476,6 +1481,7 @@ add_executable(pulse_enum_cancel_test src/bench/enum_cancel_test.cpp)
 target_link_libraries(pulse_enum_cancel_test PRIVATE pulse_localization shell32 shlwapi netapi32)
 
 add_executable(pulse_worker_enum_cancel_test src/bench/worker_enum_cancel_test.cpp)
+add_executable(pulse_enumeration_schedule_test src/bench/enumeration_schedule_test.cpp)
 
 add_executable(pulse_shell_benchmark_test src/bench/shell_benchmark_test.cpp)
 target_link_libraries(pulse_shell_benchmark_test PRIVATE ole32 shell32 uuid comctl32)

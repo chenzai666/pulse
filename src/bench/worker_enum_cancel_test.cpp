@@ -98,13 +98,14 @@ int main() {
         app::WorkerPool worker;
         worker.Start([](app::WorkResult) { ++callbacks; SetEvent(delivered); });
         for (int i = 0; i < 4; ++i)
-            worker.Refresh(L"\\\\server\\blocked" + std::to_wstring(i), ui::SortColumn::Name, ui::SortDirection::Asc);
+            worker.Refresh(L"\\\\?\\Volume{fixture}\\blocked" + std::to_wstring(i),
+                           ui::SortColumn::Name, ui::SortDirection::Asc);
         const auto waiting = GetTickCount64();
         const unsigned expected = std::min(4u, std::max(2u, std::thread::hardware_concurrency())) - 1;
         while (block_count < static_cast<int>(expected) && GetTickCount64() - waiting < 2000) Sleep(2);
-        Check(block_count == static_cast<int>(expected), "network concurrency reserves one navigation worker");
+        Check(block_count == static_cast<int>(expected), "unknown volumes reserve one navigation worker");
         worker.Refresh(L"C:\\healthy", ui::SortColumn::Name, ui::SortDirection::Asc);
-        Check(WaitForSingleObject(delivered, 1000) == WAIT_OBJECT_0, "queued local navigation bypasses blocked UNC workers");
+        Check(WaitForSingleObject(delivered, 1000) == WAIT_OBJECT_0, "local navigation bypasses blocked volume workers");
         const auto start = GetTickCount64();
         worker.Stop();
         Check(GetTickCount64() - start < 1000, "Stop cancels concurrent and queued generations");

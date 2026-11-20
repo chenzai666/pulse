@@ -456,15 +456,14 @@ void MainRenderer::BreadcrumbLayout(const PaneViewModel& vm, float w,
     D2D1_RECT_F addr = AddressBarRect(w);
     const float segPad = 8.0f * scale_;
     const float chevronW = 14.0f * scale_;
-    const float hint = 0.0f;
-    const float avail = std::max(0.0f, addr.right - addr.left - 2 * margin_ - hint);
+    const float avail = std::max(0.0f, addr.right - addr.left - 2 * margin_);
+    const bool trailing_arrow = !embedded_ && !vm.is_query_search && !fs::IsVirtualPath(segments.back().path);
 
     IDWriteFactory2* dwrite = compositor_ ? compositor_->DwriteFactory() : nullptr;
     IDWriteTextFormat* fmt = compositor_ ? compositor_->AddressFormat() : nullptr;
 
-    struct Measured { float w; };
     std::vector<float> widths(segments.size(), 0.0f);
-    float total = 0.0f;
+    float total = trailing_arrow ? chevronW : 0.0f;
     for (size_t i = 0; i < segments.size(); ++i) {
         widths[i] = MeasureTextWidth(dwrite, fmt, segments[i].text) + segPad * 2;
         total += widths[i] + (i ? chevronW : 0.0f);
@@ -478,13 +477,17 @@ void MainRenderer::BreadcrumbLayout(const PaneViewModel& vm, float w,
 
     float x = addr.left + margin_;
     for (size_t i = first; i < segments.size(); ++i) {
-        if (i > first) x += chevronW;
+        const bool has_arrow = i + 1 < segments.size() || trailing_arrow;
+        const float remaining = std::max(0.0f, addr.right - margin_ - x);
+        const float arrow_width = has_arrow && remaining >= chevronW + 2 * segPad ? chevronW : 0.0f;
+        const float width = std::min(widths[i], remaining - arrow_width);
         BreadcrumbPlaced p;
-        p.rc = D2D1::RectF(x, addr.top + 2 * scale_, x + widths[i], addr.bottom - 2 * scale_);
+        p.rc = D2D1::RectF(x, addr.top + 2 * scale_, x + width, addr.bottom - 2 * scale_);
+        p.arrow = D2D1::RectF(p.rc.right, p.rc.top, p.rc.right + arrow_width, p.rc.bottom);
         p.text = segments[i].text;
         p.path = segments[i].path;
-        out.push_back(p);
-        x += widths[i];
+        x = p.arrow.right;
+        out.push_back(std::move(p));
     }
 }
 void MainRenderer::DrawTextRect(ID2D1DeviceContext* dc, IDWriteTextFormat* fmt,
@@ -663,6 +666,7 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
                                    theme.bg, theme.text, false);
         if (peek) DrawSidebarPeek(vm, rect, theme);
         if (!embedded_) DrawStatusBar(vm, rect, theme);
+        DrawAddressCompletion(vm, rect, theme);
     }
 
     // A tab dragged from another window over the content (multi-window M6d):

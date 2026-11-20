@@ -729,6 +729,9 @@ struct WindowViewModel {
     std::wstring settings_global_search_error;
     std::wstring settings_content_status, settings_content_summary;
     bool address_search_has_text = false;
+    struct AddressCompletionRow { std::wstring name; bool directory = false; };
+    std::vector<AddressCompletionRow> address_completion;
+    int address_completion_selected = -1;
     std::wstring address_search_text;
     std::wstring address_search_placeholder;
     std::wstring address_search_scope_label;
@@ -1072,6 +1075,8 @@ struct HitTestResult {
         SettingsPreviewStore,  // Settings > Quick Look formats: get a missing system extension (index = row)
         SettingsPackAction,    // Settings > 预览增强包: index = PackAction
         TabScroll,             // overflowing tab strip arrows: index -1 = left, 1 = right
+        BreadcrumbArrow,
+        AddressCompletion,
     } region = None;
     SidebarAddAction sidebar_action = SidebarAddAction::None;
     int index = -1;          // tab/row/sidebar item/tray batch/tray item.
@@ -1428,11 +1433,15 @@ public:
     D2D1_RECT_F SplitCommandRect(float w) const;
     D2D1_RECT_F AddressSearchButtonRect(float w) const;
     void DrawAddressSearchChrome(const WindowViewModel& vm, float w, const Theme& theme);
+    int AddressCompletionRows(float w, float h, size_t count) const;
+    // Row index, -2 for the card padding, or -1 outside the card.
+    int HitAddressCompletion(float w, float h, size_t count, float x, float y) const;
     float NewButtonWidthPx(bool compact) const;
 
     // One placed breadcrumb segment (after left-truncation to fit the bar).
     struct BreadcrumbPlaced {
         D2D1_RECT_F rc{};
+        D2D1_RECT_F arrow{};
         std::wstring text;
         std::wstring path;
     };
@@ -1545,6 +1554,8 @@ private:
     TabStripMetrics ComputeTabStrip(const WindowViewModel& vm, float window_w) const;
     void DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
+    D2D1_RECT_F AddressCompletionBounds(float w, int rows) const;
+    void DrawAddressCompletion(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     bool DrawRecycleToolbar(const WindowViewModel& vm, const ToolbarLayout& toolbar, float width);
     int HitRecycleToolbar(const WindowViewModel& vm, const ToolbarLayout& toolbar,
         float width, float x, float y) const;

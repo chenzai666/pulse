@@ -3,6 +3,68 @@
 #include "address_search_layout.h"
 
 namespace pulse::ui {
+namespace {
+
+constexpr float kCompletionRowDip = 30.0f;
+constexpr float kCompletionPaddingDip = 4.0f;
+
+} // namespace
+
+int MainRenderer::AddressCompletionRows(float w, float h, size_t count) const {
+    const auto address = AddressBarRect(w);
+    if (embedded_ || count == 0 || address.right - address.left < 80.0f * scale_) return 0;
+    const float space = h - address.bottom - status_height_ - 3 * kCompletionPaddingDip * scale_;
+    return std::clamp(static_cast<int>(space / (kCompletionRowDip * scale_)), 0, static_cast<int>(count));
+}
+
+D2D1_RECT_F MainRenderer::AddressCompletionBounds(float w, int rows) const {
+    const auto address = AddressBarRect(w);
+    const float top = address.bottom + kCompletionPaddingDip * scale_;
+    return D2D1::RectF(address.left, top, address.right,
+        top + (static_cast<float>(rows) * kCompletionRowDip + 2 * kCompletionPaddingDip) * scale_);
+}
+
+int MainRenderer::HitAddressCompletion(float w, float h, size_t count, float x, float y) const {
+    const int rows = AddressCompletionRows(w, h, count);
+    const auto bounds = AddressCompletionBounds(w, rows);
+    if (rows == 0 || !ContainsPt(bounds, x, y)) return -1;
+    const float offset = y - bounds.top - kCompletionPaddingDip * scale_;
+    if (offset < 0 || offset >= static_cast<float>(rows) * kCompletionRowDip * scale_) return -2;
+    return static_cast<int>(offset / (kCompletionRowDip * scale_));
+}
+
+void MainRenderer::DrawAddressCompletion(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
+    const int rows = AddressCompletionRows(rect.right, rect.bottom, vm.address_completion.size());
+    if (!vm.address_editing || vm.address_searching || rows == 0) return;
+    const auto bounds = AddressCompletionBounds(rect.right, rows);
+    auto* dc = compositor_->Dc();
+    const float radius = theme.radius_flyout * scale_;
+    const float pad = kCompletionPaddingDip * scale_;
+    const float row_height = kCompletionRowDip * scale_;
+    MakeBrush(dc, theme.surface_flyout, brFillInput_);
+    dc->FillRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), brFillInput_.get());
+    MakeBrush(dc, theme.stroke_divider, brStrokeDivider_);
+    dc->DrawRoundedRectangle(D2D1::RoundedRect(bounds, radius, radius), brStrokeDivider_.get());
+    const auto saved_background = text_background_;
+    text_background_ = theme.surface_flyout;
+    for (int i = 0; i < rows; ++i) {
+        const auto& entry = vm.address_completion[static_cast<size_t>(i)];
+        const float y = bounds.top + pad + static_cast<float>(i) * row_height;
+        const bool selected = vm.address_completion_selected == i;
+        const bool hovered = IsHovered(vm, HitTestResult::AddressCompletion, i);
+        if (selected || hovered) {
+            MakeBrush(dc, selected ? theme.fill_selected : theme.fill_hover, brFillHover_);
+            FillRoundedRect(dc, brFillHover_.get(), bounds.left + pad, y,
+                bounds.right - bounds.left - 2 * pad, row_height, theme.radius_control * scale_);
+        }
+        DrawIconText(bounds.left + 10.0f * scale_, y, 18.0f * scale_, row_height,
+            entry.directory ? kIconFolder : kIconFile, L"", entry.directory ? theme.icon_folder : theme.text_secondary, 0.75f);
+        MakeBrush(dc, theme.text, brText_);
+        DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->TextFormat(), brText_.get(),
+            entry.name, bounds.left + 34.0f * scale_, y, bounds.right - bounds.left - 44.0f * scale_, row_height);
+    }
+    text_background_ = saved_background;
+}
 
 D2D1_RECT_F MainRenderer::AddressSearchButtonRect(float w) const {
     const auto field = SearchBarRect(w);

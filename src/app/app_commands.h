@@ -68,6 +68,7 @@ bool HandleShellMenuCommand(AppState& s, int cmd);
 void ShowItemContextMenu(AppState& s, POINT screen_pt);
 void ShowBackgroundContextMenu(AppState& s, POINT screen_pt);
 void ShowBreadcrumbMenu(AppState& s, std::wstring path, POINT screen_pt);
+void ShowBreadcrumbChildren(AppState& s, std::wstring path, POINT screen_pt);
 void ShowNewDropdown(AppState& s);
 void ShowSplitDropdown(AppState& s);
 app::SidebarEntry* QuickAccessEntryForPath(AppState& s,

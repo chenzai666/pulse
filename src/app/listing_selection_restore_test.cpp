@@ -60,6 +60,28 @@ bool RunListingSelectionRestoreTest() {
         check(tab.EntryAt(static_cast<size_t>(tab.selected_index)).name == L"c", "latest focused identity survives reorder");
     }
     {
+        app::Tab tab; initialize(tab);
+        auto shown = snapshot({L"a", L"b", L"c"});
+        (*shown)[0].size = 10;
+        (*shown)[1].size = 20;
+        (*shown)[2].size = 30;
+        tab.SetSnapshot(shown);
+        tab.SelectOnly(0);
+        tab.ToggleSelect(2);
+        tab.selected_index = 0;
+        app::CapturePendingListingSelection(tab);
+        auto restore = app::TakeListingSelection(tab, tab.current_path);
+        auto fresh = snapshot({L"b", L"a", L"c"});
+        (*fresh)[0].size = 20;
+        (*fresh)[1].size = 25;
+        (*fresh)[2].size = 30;
+        tab.SetSnapshot(std::make_shared<std::vector<fs::DirEntry>>(app::KeepEntryOrder(
+            *shown, *fresh, {}, ui::SortColumn::Size, ui::SortDirection::Asc)));
+        app::RestoreListingSelection(tab, restore);
+        check(names(tab) == std::set<std::wstring>{L"a", L"c"} && tab.selected_index == 1 &&
+              tab.EntryAt(1).name == L"a", "overwrite moves the focused row and keeps all selected identities");
+    }
+    {
         app::Tab tab; initialize(tab); tab.SelectRange(1, 3);
         check(publish(tab, {L"d", L"c", L"b", L"a"}) &&
             names(tab) == std::set<std::wstring>{L"b", L"c", L"d"}, "latest range maps by identity");

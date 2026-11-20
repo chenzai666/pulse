@@ -748,6 +748,8 @@ bool RunTabTransferTest() {
             for (int i = 0; i < 100 && !(core->watches.Armed(watch_left) && core->watches.Armed(watch_right)); ++i) Sleep(20);
             check(core->watches.Armed(watch_left) && core->watches.Armed(watch_right),
                   "the shared folder watches cover the folders every window shows, not only one window's");
+            core->watches.Sync({}, nullptr);
+            core->worker.Start({});
             fs::DirNotifyEvent added;
             added.action = FILE_ACTION_ADDED;
             added.name = L"added.txt";
@@ -756,12 +758,15 @@ bool RunTabTransferTest() {
                 core->notify_queue.clear();
                 QueueDirNotify(core->notify_queue, watch_right, false, std::vector<fs::DirNotifyEvent>{added});
             }
-            DrainDirNotifies(*src);  // the change is drained by the window that does not show the folder
             bool listed = false;
-            for (size_t i = 0; right_view->snapshot && i < right_view->EntryCount(); ++i)
-                listed = listed || right_view->EntryAt(i).name == L"added.txt";
+            for (int attempt = 0; attempt < 100 && !listed; ++attempt) {
+                DrainDirNotifies(*src);  // a window that does not show the folder drains its changes
+                for (size_t i = 0; right_view->snapshot && i < right_view->EntryCount(); ++i)
+                    listed = listed || right_view->EntryAt(i).name == L"added.txt";
+                if (!listed) Sleep(20);
+            }
             check(listed, "a folder change drained by one window reaches the other window that lists the folder");
-            core->watches.Sync({}, nullptr);
+            core->worker.Stop();
             std::lock_guard<std::mutex> lock(core->notify_mu);
             core->notify_queue.clear();
         }

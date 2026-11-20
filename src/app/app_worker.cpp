@@ -7,6 +7,7 @@
 #include "../fs/fs_enum.h"
 #include "../fs/bitlocker_volume.h"
 #include "../fs/bounded_enumeration.h"
+#include "../fs/enumeration_schedule.h"
 #include "../fs/fs_recycle.h"
 #include "../fs/fs_net_cache.h"
 #include "../common/runtime_log.h"
@@ -81,6 +82,7 @@ void WorkerPool::CancelGeneration(uint64_t generation) {
 uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
                              ui::SortDirection dir, int group_by,
                              std::shared_ptr<const FolderSizeLookup> folder_sizes) {
+    const bool bounded_drive = fs::NeedsBoundedEnumeration(path);
     std::lock_guard<std::mutex> lock(mutex_);
     uint64_t gen = ++global_gen_;
     const std::wstring key = WorkKey(path, col, dir, group_by);
@@ -95,6 +97,7 @@ uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
     }
     queue_ = std::move(filtered);
     WorkItem work{ path, key, gen, col, dir };
+    work.bounded_drive = bounded_drive;
     work.cache_write = fs::BeginNetSnapshotWrite(path);
     work.group_by = group_by;
     work.folder_sizes = std::move(folder_sizes);
@@ -110,6 +113,7 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
                                bool preserve_order,
                                std::vector<uint64_t> display_times,
                                int group_by) {
+    const bool bounded_drive = fs::NeedsBoundedEnumeration(view_path);
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t gen = ++global_gen_;
     // Virtual consumers can share a path/sort but have different Recent
@@ -118,6 +122,7 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
         L"\x1fpaths:" + std::to_wstring(gen);
     current_gen_[key] = gen;
     WorkItem item{ view_path, key, gen, col, dir };
+    item.bounded_drive = bounded_drive;
     item.load_paths = true;
     item.preserve_order = preserve_order;
     item.group_by = group_by;
@@ -129,12 +134,13 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
     return gen;
 }
 
-void WorkerPool::EnqueueIo(std::function<void()> task) {
-    if (!task) return;
+bool WorkerPool::EnqueueIo(std::function<void()> task) {
+    if (!task) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!running_ || stopped_) return;
+    if (!running_ || stopped_) return false;
     io_queue_.Push(std::move(task), false);
     cv_.notify_one();
+    return true;
 }
 
 void WorkerPool::EnqueueSerialIo(std::function<void()> task) {
@@ -234,18 +240,33 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
                 std::vector<fs::DirEntry> entries;
                 fs::DirectoryIdentity identity;
                 std::wstring git_root;
+                bool error = false;
+                bool bitlocker_locked = false;
             };
-            auto listing = fs::RunBoundedEnumeration<Listing>(fs::IsUncPath(item.path),
+            auto listing = fs::RunBoundedEnumeration<Listing>(item.bounded_drive,
                 [path = item.path](const std::atomic_bool& cancel) {
                     Listing result;
-                    fs::EnumerateDirectory(path, result.entries, &cancel);
-                    if (cancel) throw fs::EnumerationCancelled();
-                    fs::QueryDirectoryIdentity(path, result.identity);
-                    if (cancel) throw fs::EnumerationCancelled();
-                    if (!fs::IsVirtualPath(path) && !fs::IsUncPath(path))
-                        result.git_root = FindGitRoot(path);
+                    try {
+                        fs::EnumerateDirectory(path, result.entries, &cancel);
+                        if (cancel) throw fs::EnumerationCancelled();
+                        fs::QueryDirectoryIdentity(path, result.identity);
+                        if (cancel) throw fs::EnumerationCancelled();
+                        if (!fs::IsVirtualPath(path) && !fs::IsUncPath(path))
+                            result.git_root = FindGitRoot(path);
+                    } catch (const fs::EnumerationCancelled&) {
+                        throw;
+                    } catch (...) {
+                        if (cancel) throw fs::EnumerationCancelled();
+                        result.error = true;
+                        result.bitlocker_locked = fs::IsBitLockerLocked(path);
+                    }
                     return result;
                 }, cancelled);
+            if (listing.error) {
+                res.error = true;
+                res.bitlocker_locked = listing.bitlocker_locked;
+                return res;
+            }
             *entries = std::move(listing.entries);
             res.identity = listing.identity;
             res.git_root = std::move(listing.git_root);
@@ -259,7 +280,6 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
                 res.cancelled = !running_ || current == current_gen_.end() || current->second != item.generation;
             }
             res.error = !res.cancelled;
-            res.bitlocker_locked = res.error && fs::IsBitLockerLocked(item.path);
             res.snapshot = nullptr;
             return res;
         }
@@ -278,13 +298,8 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
     }
 
     // Read link destinations on this worker before display (including .lnk targets).
-    if (!fs::IsRecycleViewPath(item.path)) {
-        ResolveLinksInPlace(item.path, *entries, [&] {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = current_gen_.find(item.request_key);
-            return !running_ || it == current_gen_.end() || it->second != item.generation;
-        });
-    }
+    if (!fs::IsRecycleViewPath(item.path))
+        ResolveLinksInPlace(item.path, *entries, cancelled);
 
     auto t2 = std::chrono::steady_clock::now();
     // Interruptible sort: check every 8192 comparisons roughly via chunking.
@@ -347,7 +362,7 @@ void WorkerPool::WorkerThread() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             const auto eligible = [&](const WorkItem& candidate) {
-                return !fs::IsUncPath(candidate.path) || active_network_jobs_ < max_network_jobs_;
+                return !candidate.bounded_drive || active_network_jobs_ < max_network_jobs_;
             };
             cv_.wait(lock, [&] {
                 return stopped_ || !running_ || io_queue_.Ready() ||
@@ -358,7 +373,7 @@ void WorkerPool::WorkerThread() {
             if (next != queue_.end()) {
                 item = std::move(*next);
                 queue_.erase(next);
-                network_job = fs::IsUncPath(item.path);
+                network_job = item.bounded_drive;
                 if (network_job) ++active_network_jobs_;
             } else if (io_queue_.Ready()) {
                 io_job = io_queue_.Pop();

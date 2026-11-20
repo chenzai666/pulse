@@ -45,6 +45,13 @@ struct FoldedNameEqual {
 
 } // namespace
 
+bool EntrySortMetadataChanged(const fs::DirEntry& before, const fs::DirEntry& after,
+                              ui::SortColumn col) {
+    if (col == ui::SortColumn::Size) return before.size != after.size;
+    if (col == ui::SortColumn::Mtime) return CompareFileTime(&before.mtime, &after.mtime) != 0;
+    return false;
+}
+
 bool SameEntryGroup(const fs::DirEntry& a, const fs::DirEntry& b,
                     ui::SortColumn col, ui::SortDirection dir) {
     return GroupOrder(a, b, col, dir) == 0;
@@ -92,29 +99,59 @@ std::vector<fs::DirEntry> KeepEntryOrder(const std::vector<fs::DirEntry>& shown,
     for (const auto& rename : renames) renamed_to[rename.old_name] = rename.new_name;
 
     // Rows that keep their place, in the order shown.
-    std::vector<char> used(fresh.size(), 0);
+    enum class Placement { New, Held, Updated };
+    std::vector<Placement> placement(fresh.size(), Placement::New);
     std::vector<size_t> kept;
     kept.reserve(std::min(shown.size(), fresh.size()));
+    std::vector<size_t> updated;
     for (const auto& row : shown) {
+        bool renamed = false;
         auto it = fresh_at.find(row.name);
         if (it == fresh_at.end()) {
             const auto rename = renamed_to.find(row.name);
             if (rename == renamed_to.end()) continue;
+            renamed = true;
             it = fresh_at.find(rename->second);
             if (it == fresh_at.end()) continue;
         }
         const size_t at = it->second;
-        if (used[at] || !SameEntryGroup(row, fresh[at], col, dir)) continue;
-        used[at] = 1;
-        kept.push_back(at);
+        if (!renamed && row.name != fresh[at].name) {
+            const auto rename = renamed_to.find(row.name);
+            renamed = rename != renamed_to.end() && rename->second == fresh[at].name;
+        }
+        if (!renamed && EntrySortMetadataChanged(row, fresh[at], col)) {
+            if (placement[at] != Placement::Updated) updated.push_back(at);
+            placement[at] = Placement::Updated;
+        } else if (placement[at] == Placement::New && SameEntryGroup(row, fresh[at], col, dir)) {
+            placement[at] = Placement::Held;
+            kept.push_back(at);
+        }
     }
 
-    // Everything else is new to this view: fresh is in sort order, so each
-    // group's newcomers follow its kept rows in sort order.
+    if (!updated.empty()) {
+        // Indices in fresh include the worker's order by cached folder sizes.
+        std::sort(updated.begin(), updated.end());
+        std::vector<size_t> merged;
+        merged.reserve(kept.size() + updated.size());
+        auto next_update = updated.begin();
+        for (const size_t at : kept) {
+            // A rename onto an existing name may have first claimed its destination.
+            if (placement[at] == Placement::Updated) continue;
+            while (next_update != updated.end() && *next_update < at)
+                merged.push_back(*next_update++);
+            merged.push_back(at);
+        }
+        merged.insert(merged.end(), next_update, updated.end());
+        kept.swap(merged);
+    }
+
+    // Fresh is in sort order, so each group's newcomers follow its kept rows.
     std::vector<fs::DirEntry> out;
     out.reserve(fresh.size());
     size_t next = 0;
-    const auto skip_used = [&] { while (next < fresh.size() && used[next]) ++next; };
+    const auto skip_used = [&] {
+        while (next < fresh.size() && placement[next] != Placement::New) ++next;
+    };
     skip_used();
     for (const size_t at : kept) {
         while (next < fresh.size() && GroupOrder(fresh[next], fresh[at], col, dir) < 0) {
@@ -124,7 +161,7 @@ std::vector<fs::DirEntry> KeepEntryOrder(const std::vector<fs::DirEntry>& shown,
         out.push_back(fresh[at]);
     }
     for (; next < fresh.size(); ++next)
-        if (!used[next]) out.push_back(fresh[next]);
+        if (placement[next] == Placement::New) out.push_back(fresh[next]);
     return out;
 }
 

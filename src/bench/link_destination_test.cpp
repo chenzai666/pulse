@@ -7,13 +7,88 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include "../app/entry_group.h"
+#include "../app/entry_order_hold.h"
+#include "../app/entry_sort.h"
 #include "../app/link_resolve.h"
 #include "../app/snapshot_patch.h"
+
+static std::atomic<wchar_t> simulated_mapped_drive{0};
+static std::atomic<unsigned> target_probes{0};
+
+static DWORD TestQueryDosDeviceW(LPCWSTR device, LPWSTR value, DWORD capacity) {
+    if (device[0] == simulated_mapped_drive) {
+        constexpr wchar_t mapped[] = L"\\Device\\Mup\\fixture\\share\0";
+        if (capacity < std::size(mapped)) return 0;
+        std::copy_n(mapped, std::size(mapped), value);
+        return static_cast<DWORD>(std::size(mapped));
+    }
+    return QueryDosDeviceW(device, value, capacity);
+}
+
+static BOOL TestGetFileAttributesExW(LPCWSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID data) {
+    ++target_probes;
+    return GetFileAttributesExW(path, level, data);
+}
+
+#define QueryDosDeviceW TestQueryDosDeviceW
+#define GetFileAttributesExW TestGetFileAttributesExW
+#include "../app/link_resolve.cpp"
+#undef GetFileAttributesExW
+#undef QueryDosDeviceW
 
 static int failures;
 static void Check(bool ok, const char* label) {
     printf("[%s] %s\n", ok ? "PASS" : "FAIL", label);
     failures += !ok;
+}
+
+#include "sort_updates_test.inc"
+
+static int TestBoundedLinks() {
+    using namespace pulse::app;
+    using namespace std::chrono_literals;
+    const auto select = [](int value) { return value > 0; };
+    const auto never_cancel = [] { return false; };
+    auto entered = std::make_shared<std::atomic<unsigned>>(0);
+    auto release = std::make_shared<std::atomic_bool>(false);
+    const auto stalled = [entered, release](int& value) {
+        if (value == 1) {
+            value = 10;
+            return;
+        }
+        ++*entered;
+        release->wait(false);
+        value = 42;
+    };
+
+    std::vector<int> first{1, 0, 2};
+    const auto start = std::chrono::steady_clock::now();
+    ResolveLinkBatch(first, select, stalled, never_cancel, 200ms);
+    Check(first == std::vector<int>{10, 0, 2} && *entered == 1 &&
+        std::chrono::steady_clock::now() - start < 1s,
+        "budget publishes completed links and leaves stalled and unselected entries intact");
+    std::vector<int> second{3};
+    ResolveLinkBatch(second, select, stalled, never_cancel, 200ms);
+    std::vector<int> third{4};
+    ResolveLinkBatch(third, select, stalled, never_cancel);
+    Check(*entered == 2 && third[0] == 4, "stalled link providers exhaust only their own quota");
+    release->store(true);
+    release->notify_all();
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (active_link_batches && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    Check(!active_link_batches && first[2] == 2 && second[0] == 3,
+        "late results release quota without changing published entries");
+
+    ResolveLinkBatch(third, select, [](int& value) { value = 99; }, [] { return true; });
+    Check(third[0] == 4, "cancelled navigation skips link metadata");
+    ResolveLinkBatch(third, select, [](int&) { throw 1; }, never_cancel);
+    Check(third[0] == 4 && !active_link_batches, "provider failure releases quota and preserves listing");
+    return failures ? 1 : 0;
 }
 
 static bool MakeShortcut(const std::filesystem::path& path, const std::filesystem::path& target) {
@@ -129,7 +204,9 @@ static void TestNotifyRefresh(const std::filesystem::path& root,
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--sort-updates") == 0) return SortUpdatesTest();
+    if (argc == 2 && std::strcmp(argv[1], "--bounded-links") == 0) return TestBoundedLinks();
     using namespace pulse;
     const auto root = std::filesystem::absolute(L"bench_data/link-destination-" +
         std::to_wstring(GetCurrentProcessId()));
@@ -161,6 +238,17 @@ int main() {
     };
     Check(!find(L"live.lnk").link_destination.empty() && !find(L"live.lnk").link_target.empty(),
         "live shortcut has display destination and penetration metadata");
+    {
+        const auto& local = find(L"live.lnk");
+        const auto before = target_probes.load();
+        simulated_mapped_drive = fs::DriveLetterOf(local.link_target);
+        std::vector<fs::DirEntry> remote{local};
+        app::ResolveLinksInPlace(root.wstring(), remote, {});
+        simulated_mapped_drive = 0;
+        Check(!remote.front().link_destination.empty() && remote.front().link_target.empty() &&
+            target_probes == before,
+            "listing shows mapped target destination without probing it");
+    }
     Check(find(L"dead.lnk").link_destination.ends_with(L"missing.txt") && find(L"dead.lnk").link_target.empty(),
         "broken shortcut retains saved destination without penetration");
     Check(find(L"site.URL").link_destination == L"https://example.invalid/a?q=1#part" &&

@@ -3,6 +3,9 @@
 // app_hosted_edit.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
 #include "address_bar_command.h"
+#include "address_completion.h"
+#include "address_lookup.h"
+#include "address_path_open.h"
 #include "tab_shortcuts.h"
 #include "../ui/address_search_layout.h"
 #include "../ui/lumatext_renderer.h"
@@ -43,11 +46,102 @@
 using namespace pulse;
 
 namespace pulse {
+
+struct AddressCompletionState : AddressLookup<std::vector<AddressCompletionEntry>> {
+    AddressCompletionQuery query;
+    const app::Tab* tab = nullptr;
+    uint64_t view_generation = 0;
+    std::wstring origin;
+    int selected = -1;
+    bool started = false;
+};
+
+namespace {
+
+constexpr UINT_PTR kAddressCompletionDebounce = 0xAC31;
+
+std::wstring ReadAddressEdit(HWND hwnd) {
+    std::wstring text(static_cast<size_t>(GetWindowTextLengthW(hwnd)) + 1, L'\0');
+    text.resize(static_cast<size_t>(GetWindowTextW(hwnd, text.data(), static_cast<int>(text.size()))));
+    return text;
+}
+
+void CancelAddressCompletion(AppState& s) {
+    if (!s.addressCompletion) return;
+    KillTimer(s.hwndAddressEdit, kAddressCompletionDebounce);
+    s.addressCompletion->cancelled = true;
+    s.addressCompletion.reset();
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+bool IsCurrentAddressCompletion(const AppState& s) {
+    const auto* tab = s.pane ? s.pane->ActiveTab() : nullptr;
+    const auto& state = s.addressCompletion;
+    return s.addressEditing && !s.addressSearching && state && tab && state->tab == tab &&
+        state->view_generation == tab->view_generation && state->origin == tab->current_path;
+}
+
+const std::vector<AddressCompletionEntry>* VisibleAddressCompletion(const AppState& s) {
+    if (!IsCurrentAddressCompletion(s) || !s.addressCompletion->ready || !s.addressCompletion->result) return nullptr;
+    return &*s.addressCompletion->result;
+}
+
+void StartAddressCompletion(AppState& s) {
+    KillTimer(s.hwndAddressEdit, kAddressCompletionDebounce);
+    if (!IsCurrentAddressCompletion(s) || s.addressCompletion->started) return;
+    const auto job = s.addressCompletion;
+    job->started = true;
+    StartAddressLookup<std::vector<AddressCompletionEntry>>(job, fs::NeedsBoundedEnumeration(job->query.parent),
+        [query = job->query](const std::atomic_bool& cancelled) {
+            return EnumerateAddressCompletion(query, cancelled);
+        }, s.hwnd, WM_ADDRESS_LOOKUP_READY);
+}
+
+void OpenAddressCompletion(AppState& s, const AddressCompletionEntry& entry) {
+    const std::wstring path = entry.path;
+    const bool directory = entry.directory;
+    HideAddressEditor(s, false);
+    if (directory) NavigateTo(s, path);
+    else OpenAddressPath(s, path);
+}
+
+} // namespace
+
+void UpdateAddressCompletion(AppState& s) {
+    CancelAddressCompletion(s);
+    const auto* tab = ActiveTab(s);
+    if (!s.addressEditing || s.addressSearching || s.addressIgnoreKillFocus ||
+        s.addressSearchComposing || !s.hwndAddressEdit || !tab) return;
+    auto text = ReadAddressEdit(s.hwndAddressEdit);
+    if (text.empty() || text.size() > 32767 ||
+        app::ParseAddressBarCommand(text).program != app::AddressBarProgram::None) return;
+    AddressCompletionQuery query;
+    if (!ParseAddressCompletion(std::move(text), tab->current_path, query)) return;
+    const auto job = std::make_shared<AddressCompletionState>();
+    job->query = std::move(query);
+    job->tab = tab;
+    job->view_generation = tab->view_generation;
+    job->origin = tab->current_path;
+    s.addressCompletion = job;
+    if (!SetTimer(s.hwndAddressEdit, kAddressCompletionDebounce, 90, nullptr)) StartAddressCompletion(s);
+}
+
+void PollAddressCompletion(AppState& s) {
+    if (IsCurrentAddressCompletion(s) && s.addressCompletion->ready) InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void FillAddressCompletionView(const AppState& s, ui::WindowViewModel& vm) {
+    const auto* paths = VisibleAddressCompletion(s);
+    if (!paths) return;
+    for (const auto& entry : *paths) vm.address_completion.push_back({entry.name, entry.directory});
+    vm.address_completion_selected = s.addressCompletion->selected;
+}
+
 std::wstring FormatAddressPath(const std::wstring& text) {
     std::wstring t = text;
     if (t.empty()) return L"C:\\";
-    auto start = t.find_first_not_of(L" \"");
-    auto end = t.find_last_not_of(L" \"");
+    auto start = t.find_first_not_of(L" \t\r\n\"");
+    auto end = t.find_last_not_of(L" \t\r\n\"");
     if (start == std::wstring::npos) return L"C:\\";
     t = t.substr(start, end - start + 1);
     if (t.size() == 2 && t[1] == L':') t += L'\\';
@@ -153,6 +247,8 @@ void HideRenameOverlay(AppState& s, bool commit);
 void ShowAddressEditor(AppState& s) {
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
+    CancelAddressCompletion(s);
+    CancelAddressPathOpen(s);
     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
     if (!s.tagRenameId.empty()) HideTagRenameOverlay(s, true);
     if (s.filterEditing) HideFilterEditor(s, true);
@@ -202,16 +298,10 @@ static void RunAddressBarCommand(AppState& s, const app::AddressBarCommand& comm
 
 void HideAddressEditor(AppState& s, bool navigate) {
     if (!s.hwndAddressEdit) return;
+    CancelAddressCompletion(s);
     FlushAddressSearch(s);
     SaveAddressSearchDraft(s);
-    if (navigate) {
-        wchar_t buf[MAX_PATH * 4];
-        GetWindowTextW(s.hwndAddressEdit, buf, ARRAYSIZE(buf));
-        // cmd / powershell / pwsh / wt open a console here instead of navigating.
-        const app::AddressBarCommand command = app::ParseAddressBarCommand(buf);
-        if (command.program != app::AddressBarProgram::None) RunAddressBarCommand(s, command);
-        else NavigateTo(s, AddressNavigationTarget(buf));
-    }
+    const std::wstring text = navigate ? ReadAddressEdit(s.hwndAddressEdit) : std::wstring{};
     s.addressIgnoreKillFocus = true;
     ShowWindow(s.hwndAddressEdit, SW_HIDE);
     s.addressEditing = false;
@@ -220,14 +310,28 @@ void HideAddressEditor(AppState& s, bool navigate) {
     if (s.hwnd) SetFocus(s.hwnd);
     s.addressIgnoreKillFocus = false;
     InvalidateRect(s.hwnd, nullptr, FALSE);
+    if (!navigate) return;
+    const auto command = app::ParseAddressBarCommand(text);
+    if (command.program != app::AddressBarProgram::None) RunAddressBarCommand(s, command);
+    else OpenAddressPath(s, AddressNavigationTarget(text));
 }
 
-void DismissPathEditorOutside(AppState& s, int x, int y) {
-    if (!s.addressEditing || s.addressSearching) return;
+bool DismissPathEditorOutside(AppState& s, int x, int y, bool open_suggestion) {
+    if (!s.addressEditing || s.addressSearching) return false;
+    if (open_suggestion) {
+        if (const auto* paths = VisibleAddressCompletion(s); paths && !paths->empty()) {
+            const int row = s.renderer.HitAddressCompletion(static_cast<float>(s.compositor.Width()),
+                static_cast<float>(s.compositor.Height()),
+                paths->size(), static_cast<float>(x), static_cast<float>(y));
+            if (row >= 0) OpenAddressCompletion(s, (*paths)[static_cast<size_t>(row)]);
+            if (row != -1) return true;
+        }
+    }
     const auto bounds = s.renderer.AddressBarRect(static_cast<float>(s.compositor.Width()));
-    if (x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom) return;
+    if (x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom) return false;
     // Owner-drawn controls need not transfer keyboard focus from the native edit.
     HideAddressEditor(s, false);
+    return false;
 }
 
 void ApplyFilterCue(AppState& s) {
@@ -584,10 +688,20 @@ static LRESULT DefPresentedHostedEditProc(AppState* s, HWND hwnd, UINT msg, WPAR
 LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                         UINT_PTR /*uIdSubclass*/, DWORD_PTR dwRefData) {
     AppState* s = reinterpret_cast<AppState*>(dwRefData);
-    if (s && msg == WM_IME_STARTCOMPOSITION) s->addressSearchComposing = true;
+    if (s && msg == WM_IME_STARTCOMPOSITION) {
+        s->addressSearchComposing = true;
+        CancelAddressCompletion(*s);
+    }
     if (s && msg == WM_IME_ENDCOMPOSITION) {
         s->addressSearchComposing = false;
         QueueAddressSearch(*s);
+        UpdateAddressCompletion(*s);
+    }
+
+    if (s && msg == WM_NCDESTROY && hwnd == s->hwndAddressEdit) CancelAddressCompletion(*s);
+    if (s && msg == WM_TIMER && wParam == kAddressCompletionDebounce) {
+        StartAddressCompletion(*s);
+        return 0;
     }
 
     if (s && s->addressSearchComposing && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_CHAR))
@@ -598,6 +712,34 @@ LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     if (s && HandleHostedEditMessage(*s, hwnd, msg, wParam, lParam, handled)) return handled;
     switch (msg) {
     case WM_KEYDOWN:
+        if (const auto* paths = VisibleAddressCompletion(*s); paths && !paths->empty()) {
+            const int rows = s->renderer.AddressCompletionRows(static_cast<float>(s->compositor.Width()),
+                static_cast<float>(s->compositor.Height()), paths->size());
+            int& selected = s->addressCompletion->selected;
+            if (rows > 0 && (wParam == VK_DOWN || wParam == VK_UP)) {
+                if (selected < 0 || selected >= rows) selected = wParam == VK_DOWN ? 0 : rows - 1;
+                else selected = (selected + rows + (wParam == VK_DOWN ? 1 : -1)) % rows;
+                InvalidateRect(s->hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (rows > 0 && wParam == VK_TAB && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                const auto& entry = (*paths)[selected >= 0 && selected < rows ? static_cast<size_t>(selected) : 0];
+                const bool directory = entry.directory;
+                const std::wstring path = entry.path + (directory ? L"\\" : L"");
+                SetWindowTextW(hwnd, path.c_str());
+                SendMessageW(hwnd, EM_SETSEL, path.size(), path.size());
+                if (!directory) CancelAddressCompletion(*s);
+                return 0;
+            }
+            if (wParam == VK_RETURN && selected >= 0 && selected < rows) {
+                OpenAddressCompletion(*s, (*paths)[static_cast<size_t>(selected)]);
+                return 0;
+            }
+            if (wParam == VK_ESCAPE && rows > 0) {
+                CancelAddressCompletion(*s);
+                return 0;
+            }
+        }
         if (s->addressSearching && wParam == VK_DOWN) {
             // On a results page Down moves into the list; otherwise it opens history.
             if (IsAddressSearchResults(ActiveTab(*s))) FocusSearchResults(*s, true);
@@ -648,7 +790,7 @@ LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (s->addressSearching && wParam == VK_RETURN) return 0;
         break;
     case WM_CHAR:
-        if (s->addressSearching && (wParam == VK_RETURN || wParam == VK_ESCAPE || wParam == VK_TAB))
+        if (wParam == VK_RETURN || wParam == VK_ESCAPE || wParam == VK_TAB)
             return 0;
         break;
     case WM_KILLFOCUS:

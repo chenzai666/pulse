@@ -1513,7 +1513,11 @@ bool FluentMenu::HandleFilterKey(UINT msg, WPARAM wParam) {
 
 int FluentMenu::RunModalLoop() {
     MSG msg{};
-    while (open_) {
+    const bool owner_was_visible = IsWindowVisible(owner_) != FALSE;
+    const auto owner_available = [&] {
+        return !owner_ || (IsWindow(owner_) && (!owner_was_visible || IsWindowVisible(owner_)));
+    };
+    while (open_ && owner_available()) {
         // Animation progress (fade + slide for open, fade for dismiss).
         if (hwnd_) {
             double elapsed = std::chrono::duration<double, std::milli>(
@@ -1569,12 +1573,13 @@ int FluentMenu::RunModalLoop() {
                 ShowWindow(hwnd_, SW_HIDE);
             }
         }
-        while (open_ && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        while (open_ && owner_available() && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 open_ = false;
                 PostQuitMessage((int)msg.wParam);
                 break;
             }
+            if (!owner_available()) break;
             bool swallow = false;
             if (open_ && !animating_out_) {
                 switch (msg.message) {
@@ -1690,6 +1695,10 @@ int FluentMenu::RunModalLoop() {
                 DispatchMessageW(&msg);
             }
         }
+    }
+    if (!owner_available()) {
+        open_ = false;
+        result_ = 0;
     }
     HideSubWindow();
     if (hwnd_ && IsWindow(hwnd_)) ShowWindow(hwnd_, SW_HIDE);

@@ -1254,6 +1254,8 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     if (fs::IsUncPath(normalized)) RequestUncProbe(s, normalized);
 }
 
+static void RefreshChangedFolder(AppState& s, const std::wstring& path);
+
 // Data layer of a worker result (multi-window M3b): the snapshot store and Git
 // roots are process-wide, so they change once per result, before any window
 // applies it. Returns whether the folder changed again while it was listed.
@@ -1270,7 +1272,7 @@ static bool ApplyWorkerResultData(AppCore& core, const app::WorkResult& res) {
 
 // Window layer: the panes of one window that wait for this listing. Returns
 // whether a failed listing was awaited here (that window owns the unlock prompt).
-static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool again) {
+static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res) {
     if (Panes(s).empty()) return false;
     NoteColumnStripResult(s, res);
     if (res.error) {
@@ -1428,7 +1430,6 @@ static bool ApplyWorkerResultToWindow(AppState& s, app::WorkResult& res, bool ag
             if (!res.partial)
                 CompleteExplorerNavigation(*tab, res.generation, !res.cancelled && res.snapshot != nullptr);
     });
-    if (again) RefreshPath(s, res.path);
     if (!any) return false;
     SyncQuickPreview(s);
 
@@ -1449,8 +1450,9 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
     const bool again = ApplyWorkerResultData(s.core, res);
     AppState* awaiting = nullptr;
     app::ForEachWindowSharingCore(s, [&](AppState& window) {
-        if (ApplyWorkerResultToWindow(window, res, again) && !awaiting) awaiting = &window;
+        if (ApplyWorkerResultToWindow(window, res) && !awaiting) awaiting = &window;
     });
+    if (again) RefreshChangedFolder(s, res.path);
     // As File Explorer does for a locked drive: ask for the password, then open
     // it (ApplyBitLockerUnlock). One prompt, owned by the window that waits for
     // the drive (or the caller when none does); the result goes to the host and
@@ -1488,32 +1490,8 @@ bool PathHasPendingRefresh(AppState& s, const std::wstring& path) {
     return pending;
 }
 
-void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
-    const std::wstring normalized = fs::NormalizePath(path);
-    if (!path.empty() && normalized.empty()) return;
-    std::vector<app::Tab*> tabs;
-    ForEachPane(s, [&](app::Pane& pane) {
-        app::Tab* tab = pane.ActiveTab();
-        if (tab && tab->current_path == normalized) tabs.push_back(tab);
-    });
-    if (tabs.empty()) return;
-    if (fs::IsVirtualPath(normalized) && !fs::IsRecycleViewPath(normalized)) {
-        for (app::Tab* tab : tabs) {
-            if (tab->search_content_stopped && reason != RefreshReason::Explicit) continue;
-            // The subscribed session consumes changes since its initial snapshot,
-            // including changes committed while its first scan is still running.
-            const bool retain = reason != RefreshReason::Explicit &&
-                (tab->search_live_generation != 0 || tab->content_subscription_error != ERROR_SUCCESS);
-            if (tab->search_live_generation || tab->search_content_active || tab->content_results)
-                LogSearchRefresh(reason, retain, tab->search_session_id,
-                    tab->search_live_generation ? tab->search_live_generation : tab->pending_generation,
-                    tab->search_content_active);
-            if (retain) RefreshContentResults(s);
-            else LoadVirtualView(s, *tab, normalized);
-        }
-        InvalidateRect(s.hwnd, nullptr, FALSE);
-        return;
-    }
+static void RefreshFolderTabs(AppState& s, const std::wstring& normalized,
+                              const std::vector<app::Tab*>& tabs, RefreshReason reason) {
     for (app::Tab* tab : tabs) {
         // F5 re-sorts; anything else merges into the rows on screen unless an
         // in-flight load (navigation, F5) already wants sort order (#13).
@@ -1547,6 +1525,49 @@ void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
                 SortFolderSizes(s, *tab, normalized));
         }
     }
+}
+void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
+    const std::wstring normalized = fs::NormalizePath(path);
+    if (!path.empty() && normalized.empty()) return;
+    std::vector<app::Tab*> tabs;
+    ForEachPane(s, [&](app::Pane& pane) {
+        app::Tab* tab = pane.ActiveTab();
+        if (tab && tab->current_path == normalized) tabs.push_back(tab);
+    });
+    if (tabs.empty()) return;
+    if (fs::IsVirtualPath(normalized) && !fs::IsRecycleViewPath(normalized)) {
+        for (app::Tab* tab : tabs) {
+            if (tab->search_content_stopped && reason != RefreshReason::Explicit) continue;
+            // The subscribed session consumes changes since its initial snapshot,
+            // including changes committed while its first scan is still running.
+            const bool retain = reason != RefreshReason::Explicit &&
+                (tab->search_live_generation != 0 || tab->content_subscription_error != ERROR_SUCCESS);
+            if (tab->search_live_generation || tab->search_content_active || tab->content_results)
+                LogSearchRefresh(reason, retain, tab->search_session_id,
+                    tab->search_live_generation ? tab->search_live_generation : tab->pending_generation,
+                    tab->search_content_active);
+            if (retain) RefreshContentResults(s);
+            else LoadVirtualView(s, *tab, normalized);
+        }
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return;
+    }
+    RefreshFolderTabs(s, normalized, tabs, reason);
+}
+
+static void RefreshChangedFolder(AppState& s, const std::wstring& path) {
+    s.store.MarkDirty(path);
+    std::vector<app::Tab*> tabs;
+    app::ForEachWindowSharingCore(s, [&](AppState& window) {
+        ForEachPane(window, [&](app::Pane& pane) {
+            auto* tab = pane.ActiveTab();
+            if (tab && tab->current_path == path) tabs.push_back(tab);
+        });
+    });
+    // Share a generation per sort/group across windows. An in-flight listing
+    // sees the dirty mark and schedules a follow-up after it lands.
+    if (std::none_of(tabs.begin(), tabs.end(), [](const auto* tab) { return tab->pending_generation != 0; }))
+        RefreshFolderTabs(s, path, tabs, RefreshReason::Background);
 }
 
 void RevalidateVisibleFolders(AppState& s) {
@@ -1649,13 +1670,8 @@ void QueueSnapshotValidation(AppState& s, app::Tab& tab) {
 // it, copying each snapshot once. Returns false when a full enumeration should
 // run instead: an unsupported event, no visible tab, or more patch work than a
 // background re-enumeration costs.
-static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
-                                   const std::vector<fs::DirNotifyEvent>& events) {
-    if (events.empty()) return true;
-    // The batch is merged in one O(entries + events log events) pass, but every
-    // touched file is stat'ed on this thread, so huge bursts go async instead.
-    constexpr size_t kMaxIncrementalEvents = 512;
-    if (events.size() > kMaxIncrementalEvents) return false;
+static bool ApplyPreparedNotifiesToVisible(AppState& s, const std::wstring& path,
+                                          const app::PreparedDirNotifyBatch& prepared) {
     bool any = false;
     bool need_full = false;
     fs::SnapshotPtr store_snap;
@@ -1665,7 +1681,7 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
         if (!tab || tab->current_path != path || !tab->snapshot) return;
         auto copy = std::make_shared<std::vector<fs::DirEntry>>(*tab->snapshot);
         const app::ScopedEntryGrouping grouping(tab->EffectiveGroup(), tab->current_path);
-        if (app::ApplyDirNotifyBatch(*copy, path, events, tab->sort_column, tab->sort_direction) ==
+        if (app::ApplyPreparedDirNotifyBatch(*copy, prepared, tab->sort_column, tab->sort_direction) ==
             app::NotifyPatch::NeedFullEnum) {
             need_full = true;
             return;
@@ -1682,7 +1698,7 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
                 focus = tab->EntryAt(static_cast<size_t>(tab->selected_index)).name;
             }
         }
-        for (const auto& event : events) {
+        for (const auto& event : prepared.events) {
             if (event.action != FILE_ACTION_RENAMED_NEW_NAME || event.old_name.empty()) continue;
             for (auto& name : names) {
                 if (_wcsicmp(name.c_str(), event.old_name.c_str()) == 0) name = event.name;
@@ -1703,6 +1719,39 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
     if (store_snap) s.store.Put(path, store_snap);
     if (any) SyncQuickPreview(s);
     return any;
+}
+
+static auto NotifyWorker(AppState& s) {
+    return [&worker = s.worker, notify = ServiceWindow(s)](std::function<void()> job) {
+        return worker.EnqueueIo([notify, job = std::move(job)] {
+            job();
+            PostMessageW(notify, WM_DIR_NOTIFY_READY, 0, 0);
+        });
+    };
+}
+
+static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
+                                  const std::vector<fs::DirNotifyEvent>& events) {
+    if (events.empty()) return true;
+    if (events.size() > app::DirNotifyAsync::kMaxEvents) return false;
+    auto& pending = s.core.notify_async;
+    if (!pending.Pending(path) && std::all_of(events.begin(), events.end(), [](const auto& event) {
+            return event.action == FILE_ACTION_REMOVED;
+        })) {
+        app::PreparedDirNotifyBatch removals;
+        removals.events = events;
+        return ApplyPreparedNotifiesToVisible(s, path, removals);
+    }
+    app::DirNotifyAsync::Guards guards;
+    app::ForEachWindowSharingCore(s, [&](AppState& window) {
+        ForEachPane(window, [&](app::Pane& pane) {
+            const auto* tab = pane.ActiveTab();
+            if (tab && tab->current_path == path && tab->snapshot)
+                guards.push_back({tab, tab->view_generation, tab->snapshot});
+        });
+    });
+    if (guards.empty()) return false;
+    return pending.Queue(path, events, s.core.notify_async_round, std::move(guards), NotifyWorker(s));
 }
 
 bool ApplyNotifyToVisible(AppState& s, const std::wstring& path,
@@ -1788,7 +1837,8 @@ static bool WindowShowsFolder(AppState& s, const std::wstring& path) {
 // once.
 static void ApplyDirNotifiesToWindow(AppState& s, const std::vector<AppState::DirNotifyBatch>& batch,
                                      const std::vector<AppState::CoalescedSizePatch>& due, bool poll_unc,
-                                     ULONGLONG now, std::vector<std::wstring>& shown) {
+                                     ULONGLONG now, std::vector<std::wstring>& shown,
+                                     std::unordered_set<std::wstring>& refresh_paths) {
     bool changed = false;
     // The watcher queues one batch per notification buffer; during a slow bulk
     // copy that is one or two events each, so thousands can pile up behind a
@@ -1801,11 +1851,7 @@ static void ApplyDirNotifiesToWindow(AppState& s, const std::vector<AppState::Di
             if (WindowShowsFolder(s, path)) {
                 shown.push_back(path);
                 DropSizePatches(s, path);
-                s.store.MarkDirty(path);
-                // A scan already in flight (a newly armed watch reports one overflow
-                // while the folder is still loading) finishes and is shown first; the
-                // dirty mark then runs one more pass instead of discarding its work.
-                if (!PathHasPendingRefresh(s, path)) RefreshPath(s, path);
+                refresh_paths.insert(path);
                 changed = true;
             }
             // The refresh re-enumerates; this drain's earlier events are moot.
@@ -1832,8 +1878,7 @@ static void ApplyDirNotifiesToWindow(AppState& s, const std::vector<AppState::Di
         shown.push_back(folder);
         if (!ApplyNotifiesToVisible(s, folder, events)) {
             DropSizePatches(s, folder);
-            s.store.MarkDirty(folder);
-            RefreshPath(s, folder);
+            refresh_paths.insert(folder);
         }
         changed = true;
     }
@@ -1857,10 +1902,7 @@ static void ApplyDirNotifiesToWindow(AppState& s, const std::vector<AppState::Di
         due_by_path[group].second.push_back(std::move(event));
     }
     for (const auto& [patch_path, events] : due_by_path) {
-        if (!ApplyNotifiesToVisible(s, patch_path, events)) {
-            s.store.MarkDirty(patch_path);
-            RefreshPath(s, patch_path);
-        }
+        if (!ApplyNotifiesToVisible(s, patch_path, events)) refresh_paths.insert(patch_path);
         changed = true;
     }
 
@@ -1879,6 +1921,7 @@ void DrainDirNotifies(AppState& s) {
     // The watches, their queue and the size patches are shared by every
     // window: take them once and hand them to each window.
     std::vector<AppState::DirNotifyBatch> batch;
+    ++s.core.notify_async_round;
     {
         std::lock_guard<std::mutex> lock(s.notify_mu);
         batch.swap(s.notify_queue);
@@ -1896,9 +1939,11 @@ void DrainDirNotifies(AppState& s) {
     const bool poll_unc = now - s.last_unc_poll >= 1000;
     if (poll_unc) s.last_unc_poll = now;
     std::vector<std::wstring> shown;
+    std::unordered_set<std::wstring> refresh_paths;
     app::ForEachWindowSharingCore(s, [&](AppState& window) {
-        ApplyDirNotifiesToWindow(window, batch, due, poll_unc, now, shown);
+        ApplyDirNotifiesToWindow(window, batch, due, poll_unc, now, shown, refresh_paths);
     });
+    for (const auto& path : refresh_paths) RefreshChangedFolder(s, path);
     // Folders no window shows (a background tab's cached listing) are only
     // marked stale, once.
     const auto was_shown = [&](const std::wstring& path) {
@@ -1916,6 +1961,34 @@ void DrainDirNotifies(AppState& s) {
     }
     for (const auto& patch : due)
         if (!was_shown(patch.path)) s.store.MarkDirty(patch.path);
+
+    // Incorporate notifications from this drain before publishing a prepared
+    // result, so a rapid rename chain is applied against its final state.
+    for (const auto& result : s.core.notify_async.TakeReady(NotifyWorker(s))) {
+        bool visible = false;
+        bool pending_refresh = false;
+        bool stale = result.fallback;
+        app::ForEachWindowSharingCore(s, [&](AppState& window) {
+            ForEachPane(window, [&](app::Pane& pane) {
+                const auto* tab = pane.ActiveTab();
+                if (!tab || tab->current_path != result.path) return;
+                visible = true;
+                pending_refresh = pending_refresh || tab->pending_generation != 0;
+                if (std::none_of(result.guards.begin(), result.guards.end(), [&](const auto& guard) {
+                        return guard.Matches(tab, tab->view_generation, tab->snapshot);
+                    }))
+                    stale = true;
+            });
+        });
+        if (visible && !pending_refresh && !stale) {
+            app::ForEachWindowSharingCore(s, [&](AppState& window) {
+                if (!WindowShowsFolder(window, result.path)) return;
+                if (!ApplyPreparedNotifiesToVisible(window, result.path, result.prepared)) stale = true;
+                if (window.hwnd) InvalidateRect(window.hwnd, nullptr, FALSE);
+            });
+        }
+        if (!visible || pending_refresh || stale) RefreshChangedFolder(s, result.path);
+    }
 }
 
 void RestoreNavigationReturnSelection(AppState& s, app::Tab& tab,

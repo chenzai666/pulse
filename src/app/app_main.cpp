@@ -37,6 +37,8 @@
 #include "../fs/fs_net_cache.h"
 #include "app_model.h"
 #include "app_worker.h"
+#include "address_path_open.h"
+#include "app_hosted_edit.h"
 #include "snapshot_patch.h"
 #include "session.h"
 #include "session_save.h"
@@ -1877,7 +1879,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         if (s && reinterpret_cast<HWND>(lParam) == s->hwndAddressEdit &&
             (HIWORD(wParam) == EN_CHANGE || HIWORD(wParam) == EN_UPDATE)) {
-            if (HIWORD(wParam) == EN_CHANGE) QueueAddressSearch(*s);
+            if (HIWORD(wParam) == EN_CHANGE) {
+                QueueAddressSearch(*s);
+                UpdateAddressCompletion(*s);
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1897,6 +1902,17 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         return 0;
     }
+
+    case WM_DIR_NOTIFY_READY:
+        if (s) DrainDirNotifies(*s);
+        return 0;
+
+    case WM_ADDRESS_LOOKUP_READY:
+        if (s) {
+            PollAddressCompletion(*s);
+            PollAddressPathOpen(*s);
+        }
+        return 0;
 
     case WM_NETWORK_LOCATIONS:
         if (s) ApplyNetworkLocations(*s);
@@ -2386,6 +2402,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) DetachListaryAdapter(*s);
         if (s) CancelPendingTabDrop(*s);
         if (s) CancelDroppedNavigation(*s);
+        if (s) CancelAddressPathOpen(*s);
         // Closing one of several windows (M3f) tears down what the window
         // owns; services, saved state and the shared caches go with the last.
         const bool last_window = !s || s->core.windows.IsLastWindow(hwnd);
