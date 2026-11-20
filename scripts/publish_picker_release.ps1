@@ -137,8 +137,24 @@ if($driveCapacity){
 安装包 SHA-256：$hash。来源记录见 provenance.json。
 "@|Set-Content -LiteralPath $notes -Encoding utf8
 }
-$tag='custom-v1.0.53-'+$(if($driveCapacity){'capacity-'}elseif($listarySearch){'listary-'}elseif($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
-$releaseTitle=if($driveCapacity){'Pulse 定制版 v1.0.53 · 磁盘容量显示'}elseif($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索完整性'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
+$navigation=$env:PULSE_UPSTREAM_NAVIGATION_VALIDATION -eq 'true'
+if($navigation){
+@"
+# Pulse 定制版 v1.0.53 · 目录加载与地址栏
+
+源码提交：$commit。支持自定义安装路径和覆盖安装，例如 E:\PulseCustom。
+
+- 目录加载限制快捷方式解析耗时，继续显示目标路径，跳过远程目标属性探测。映射盘和网络目录使用独立并发额度，目录变更由后台读取文件信息。
+- 按大小或修改时间排序时，同名文件覆盖后会重新定位，并保留选中项和焦点。
+- 地址栏支持异步补全、相对路径和用默认应用打开文件。点击面包屑分隔箭头可展开并筛选子目录。
+
+Windows 构建运行了目录加载、文件重排、地址补全和相关交互策略的定向检查。构建与验证记录：https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID
+
+安装包 SHA-256：$hash。来源记录见 provenance.json。
+"@|Set-Content -LiteralPath $notes -Encoding utf8
+}
+$tag='custom-v1.0.53-'+$(if($navigation){'navigation-'}elseif($driveCapacity){'capacity-'}elseif($listarySearch){'listary-'}elseif($progress){'progress-'}elseif($recycle){'recycle-'}else{'dialogs-'})+$commit.Substring(0,9)
+$releaseTitle=if($navigation){'Pulse 定制版 v1.0.53 · 目录加载与地址栏'}elseif($driveCapacity){'Pulse 定制版 v1.0.53 · 磁盘容量显示'}elseif($listarySearch){'Pulse 定制版 v1.0.53 · Listary 搜索完整性'}elseif($progress){'Pulse 定制版 v1.0.53 · 文件操作进度修复'}elseif($recycle){'Pulse 定制版 v1.0.53 · 回收站性能与稳定性'}else{'Pulse 定制版 v1.0.53 · 弹窗与目录联动修复'}
 & gh release view $tag --repo $repository --json tagName 2>$null|Out-Null
 if($LASTEXITCODE -eq 0){throw '本次提交的 Release 已存在，停止重复发布'}
 & gh release create $tag $installer ($installer+'.sha256') (Join-Path $output 'provenance.json') --repo $repository --target $commit --draft --title $releaseTitle --notes-file $notes

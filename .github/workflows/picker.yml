@@ -83,6 +83,7 @@ jobs:
           PULSE_PROGRESS_VALIDATION: ${{ inputs.operation_progress_validation }}
           PULSE_LISTARY_SEARCH_VALIDATION: ${{ inputs.listary_search_validation }}
           PULSE_DRIVE_CAPACITY_VALIDATION: ${{ inputs.drive_capacity_validation }}
+          PULSE_UPSTREAM_NAVIGATION_VALIDATION: ${{ inputs.upstream_navigation_validation }}
         run: ./scripts/publish_picker_release.ps1
       - uses: actions/upload-artifact@v4
         if: inputs.publish_release == true && success()
